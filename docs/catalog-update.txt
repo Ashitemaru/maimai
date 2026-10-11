@@ -1,0 +1,77 @@
+曲库更新与人工裁决（schema 2，2026-10-11）
+
+入口：http://127.0.0.1:8766/#settings
+启动：./start-app.sh；一个 uvicorn worker，默认仅监听本机。
+
+更新顺序
+1. 获取更新锁并建立隔离暂存目录。前端继续读完整的已发布快照。
+2. fetch 落雪歌单/别名、水鱼歌单、arcade-songs；保存原始字节、URL、SHA、时间、缓存头。
+   落雪失败不发布；可选来源失败可以复用有效缓存并明确标 stale，无缓存标 unavailable。
+3. 从落雪有效集构建全部 chart。来源消失的旧记录写 retained 并标 upstream_missing，
+   不因上游短暂缺项删除个人历史。将原始 ID/格式规范为 (id,difficulty)。
+4. 普通元数据、物量与谱师只比较落雪/水鱼；arcade 只提供日服版本。
+   对同一 chart 的同域有效值去重，至少两个不同值才冲突；单值直接采用，空缺或 pending 状态不算冲突。
+   套用持久字段裁决；已有裁决不因来源变化过期。
+   普通日服版本由 arcade-songs 提供，白谱由已有 Remy 证据提供。
+5. 没有未决值冲突的 chart 写正式库；其余整个 entry 写待入库区，并列出所有差异选项。
+   仅无版本证据不算矛盾，可带 null/version_pending 入库。
+6. 补曲绘；构建 flat JSON、复合主键 SQLite、搜索索引、差异及准入报告。
+7. 校验来源/哈希、准入集合、主键、SQL/JSON、图片与证据；预载 Store，再原子切换快照。
+8. 发布后排队低频 Remy；缺失或失败不阻塞主更新。补证后仍经过同一准入规则。
+
+新普通谱面准入后自动进入 AP 图鉴和统计，包括解禁谱；宴保留在库中，当前不计普通 AP。
+曲库重建、更新、回退均不触发水鱼个人成绩同步，不重做或上传 B 站封面。
+
+整张谱面裁决
+GET /api/catalog/records/review：返回待入库 chart、全部差异字段和入库计数。
+POST /api/catalog/records/decisions：
+  {id,difficulty,choices:[{field_key,option_id}],base_catalog_revision,base_decision_revision}
+请求必须包含这张谱面全部必选差异。任一值非法、缺字段、跨 chart 或陈旧时整批不写。
+两份修订号用来拒绝陈旧页面提交（409）；不会让历史人工选择失效。
+后端核对选项真实值与出处，在一个 SQLite 事务保存整条选择，再重建一次。
+正式库只在构建校验成功后切换。构建失败时选择仍保留，并显示已保存待应用；可以重试。
+GET /api/catalog/records/decisions：独立查看人工记录。
+POST /api/catalog/records/decisions/revoke：同样传 id/difficulty 与两个修订号；
+可传 field_keys 撤销部分字段，省略则撤销整张。
+POST /api/catalog/decisions/reapply：将已保存决定重新构建发布。
+旧单对象/身份/逐字段版本写接口已停用，不能绕过整条准入。
+无“当前值”“推荐值”列，无默认选择；同一字段的来源值使用单选，整条确认合并。
+封面临时版本选择仅影响图片，不写曲库裁决。
+
+持久策略
+已选值永久有效，只有明确撤销才重新参与冲突比较。
+上游的值、证据哈希、候选集合变化不会重复报告已裁决字段。
+新字段差异仍可使该 chart 暂回待入库；其他已选字段不会被清除。
+回退也重新编译旧原始数据 + 当前人工决定，不回滚裁决数据库。
+
+Remy
+固定规则解析明确的日服追加版本、日期和 Re:MASTER 列；歧义进入裁决，不调用 LLM。
+保存 URL/revision/原始行/HTML/SHA，优先缓存后联网。
+串行至少 60 秒间隔、默认 8 次预算、30 秒超时；403/验证冷却 24 小时，429 至少一小时。
+默认补缺，“重新核对”才请求全量复核；未知页面结构或新版本不猜测。
+缺证据允许先发布国服库；矛盾必须裁决，人工已选的字段不会因复核重新报冲突。
+
+磁盘
+  data/catalog/current -> updates/snapshots/<revision>
+  updates/staging/：构建暂存；updates/snapshots/：不可变来源、证据、正式库与待入库快照
+  updates/adjudications.sqlite3：独立裁决及历史；updates/status.json：任务状态
+  updates/remy-reports/、data/catalog/remy-cache/：Remy 报告及限流缓存
+  backend/runtime/personal.sqlite3：独立的 AP、机厅、水鱼、原表和备注
+更新写入使用临时文件 replace，不原地截断共享硬链接。
+发布前检查任务代次和裁决修订号，防止旧异步任务覆盖新决定。
+服务器重启不自动联网。个人数据不随快照回退。
+
+schema 1 升级
+先备份原始快照、个人数据库和裁决数据库；停止旧服务。
+显式执行 CatalogUpdates.migrate_legacy_decisions()：旧选择展开到对应 chart 字段，
+旧完整决定保存在迁移审计事件；不能恢复明确选值时中止，不丢弃或猜测。
+调用 reapply_decisions() 重建正式库，仅准入无未决差异的 chart，再部署新前端并启动服务。
+Store 事务迁移个人表旧 chart_key 为新两段键，保留所有记录内容（包括待入库谱面）。
+旧快照和升级备份保留作审计；新曲库不是直接沿用旧库中的已接受值。
+
+验证
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+.venv/bin/python -m unittest backend.test_app
+npm --prefix frontend run build
+测试用隔离目录与模拟请求；不代替用户给真实冲突选择答案。
+字段与来源详见 docs/catalog-schema-and-sources.txt。

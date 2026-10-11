@@ -1,0 +1,237 @@
+import { useEffect, useRef, useState } from 'react';
+import type { Chart } from './types';
+import { renderCover } from './cover';
+import type { CoverAspect, CoverReceipt } from './cover';
+import { loadBackgroundManifest, resolveVersion } from './coverAssets';
+import type { BackgroundManifest } from './coverAssets';
+import { messageOf } from './api';
+import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
+export interface CoverState {
+  chart: Chart | null;
+  score: string;
+  version: string;
+  aspect: CoverAspect;
+  safeGuides: boolean;
+}
+const validScore = (value: string) =>
+  /^\d{1,3}(\.\d{1,4})?$/.test(value) && Number(value) >= 0 && Number(value) <= 101;
+const chartName = (chart: Chart) => chart.display_title || chart.title || '（空白曲名）';
+const chartType = (chart: Chart) =>
+  chart.type === 'dx' ? 'DX' : chart.type === 'utage' ? 'UTAGE' : 'STD';
+export function CoverPage({
+  value,
+  onChange,
+  onPick,
+  notify,
+}: {
+  value: CoverState;
+  onChange: (value: CoverState) => void;
+  onPick: () => void;
+  notify: (value: string) => void;
+}) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [rendering, setRendering] = useState(false);
+  const [receipt, setReceipt] = useState<CoverReceipt | null>(null);
+  const [manifest, setManifest] = useState<BackgroundManifest | null>(null);
+  const change = (patch: Partial<CoverState>) => onChange({ ...value, ...patch });
+  useEffect(() => {
+    loadBackgroundManifest()
+      .then(setManifest)
+      .catch((error) => setError(messageOf(error)));
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const output = canvas.current;
+    if (!output) return;
+    if (!value.chart || !validScore(value.score)) {
+      output.width = value.aspect === '4:3' ? 1440 : 1920;
+      output.height = 1080;
+      const ctx = output.getContext('2d')!;
+      ctx.fillStyle = '#f7f3f8';
+      ctx.fillRect(0, 0, output.width, 1080);
+      ctx.fillStyle = '#8f8199';
+      ctx.font = '36px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(value.chart ? '填写达成率以预览' : '选择谱面以预览', output.width / 2, 540);
+      setError(value.score && !validScore(value.score) ? '达成率需为 0–101，最多四位小数' : '');
+      setReceipt(null);
+      setRendering(false);
+      return;
+    }
+    setRendering(true);
+    const temporary = document.createElement('canvas');
+    renderCover(temporary, value.chart, {
+      achievement: value.score,
+      versionOverride: value.version,
+      aspect: value.aspect,
+    })
+      .then((result) => {
+        if (cancelled) return;
+        output.width = temporary.width;
+        output.height = temporary.height;
+        output.getContext('2d')!.drawImage(temporary, 0, 0);
+        setReceipt(result);
+        setError('');
+      })
+      .catch((error) => {
+        if (!cancelled) setError(messageOf(error));
+      })
+      .finally(() => {
+        if (!cancelled) setRendering(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [value]);
+  async function download() {
+    if (!value.chart || !validScore(value.score)) {
+      setError('请填写达成率');
+      return;
+    }
+    setExporting(true);
+    try {
+      const output = document.createElement('canvas');
+      await renderCover(output, value.chart, {
+        achievement: value.score,
+        versionOverride: value.version,
+        aspect: value.aspect,
+        safeGuides: false,
+      });
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        output.toBlob(
+          (blob) => (blob ? resolve(blob) : reject(new Error('导出失败'))),
+          'image/png',
+        ),
+      );
+      const name = chartName(value.chart).replace(/[\\/:*?"<>|]/g, '_');
+      const filename = `${name}_${chartType(value.chart)}_${value.chart.difficulty_name.replace(':', '')}_${Number(value.score).toFixed(4)}_${value.aspect.replace(':', 'x')}.png`;
+      const file = new File([blob], filename, { type: 'image/png' });
+      if (/iPhone|iPad/.test(navigator.userAgent) && navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: chartName(value.chart) });
+          return;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') return;
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      notify('封面已导出');
+    } catch (error) {
+      setError(messageOf(error));
+    } finally {
+      setExporting(false);
+    }
+  }
+  const automatic = manifest && value.chart ? resolveVersion(value.chart, manifest) : null;
+  const automaticLabel = automatic?.asset
+    ? `自动 · ${automatic.asset.version_name}`
+    : automatic?.versionName
+      ? `自动 · ${automatic.versionName}（缺少素材）`
+      : '自动 · 版本待核实';
+  const notices =
+    receipt?.notices || (!value.version && automatic?.notice ? [automatic.notice] : []);
+  return (
+    <>
+      <div className="heading">
+        <div>
+          <div className="eyebrow">MAKE YOUR PERFECT VISIBLE</div>
+          <h1>封面工坊</h1>
+        </div>
+      </div>
+      <div className="cover-workspace">
+        <div className="preview-panel">
+          <div className="preview-label">
+            <span>{rendering ? '生成中…' : '实时预览'}</span>
+            <span>{value.aspect === '4:3' ? '1440' : '1920'} × 1080 · PNG</span>
+          </div>
+          <div className="canvas-frame" aria-busy={rendering}>
+            <canvas ref={canvas} width={1920} height={1080} aria-label="视频封面预览" />
+          </div>
+        </div>
+        <aside className="cover-controls">
+          <h2>封面信息</h2>
+          <button type="button" className="cover-song" onClick={onPick}>
+            {value.chart ? (
+              <>
+                <img src={value.chart.jacket_url} alt="" />
+                <div className="cover-song-details">
+                  <strong>{chartName(value.chart)}</strong>
+                  <div className="chart-meta">
+                    <ChartTypeBadge type={value.chart.type} />
+                    <DifficultyBadge
+                      difficulty={value.chart.difficulty}
+                      name={value.chart.difficulty_name}
+                      type={value.chart.type}
+                    />
+                  </div>
+                </div>
+              </>
+            ) : (
+              '选择谱面'
+            )}
+          </button>
+          <div className="field">
+            <label htmlFor="cover-score">达成率</label>
+            <input
+              id="cover-score"
+              inputMode="decimal"
+              value={value.score}
+              onChange={(event) => change({ score: event.target.value })}
+              placeholder="100.9876"
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="cover-version">版本</label>
+            <select
+              id="cover-version"
+              value={value.version}
+              onChange={(event) => change({ version: event.target.value })}
+            >
+              <option value="">{automaticLabel}</option>
+              {manifest &&
+                Object.entries(manifest.version_map).map(([key, asset]) => (
+                  <option key={key} value={key}>
+                    {asset.version_name}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="cover-aspect">导出比例</label>
+            <select
+              id="cover-aspect"
+              value={value.aspect}
+              onChange={(event) => change({ aspect: event.target.value as CoverAspect })}
+            >
+              <option value="16:9">16:9 · 1920 × 1080</option>
+              <option value="4:3">4:3 · 1440 × 1080</option>
+            </select>
+          </div>
+          {notices.length > 0 && (
+            <div className="cover-notices">
+              {notices.map((notice) => (
+                <div key={notice}>{notice}</div>
+              ))}
+            </div>
+          )}
+          {error && <div className="form-message">{error}</div>}
+          <button
+            className="btn primary full"
+            type="button"
+            disabled={exporting || rendering || !value.chart || !validScore(value.score)}
+            onClick={download}
+          >
+            {exporting ? '导出中…' : '导出封面'}
+          </button>
+        </aside>
+      </div>
+    </>
+  );
+}

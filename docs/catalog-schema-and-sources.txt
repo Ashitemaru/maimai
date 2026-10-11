@@ -1,0 +1,110 @@
+曲库结构与来源（schema_version=2 / policy_version=5）
+
+一、实体与主键
+
+正式曲库的业务实体是 chart，主键为 (id, difficulty)。
+STD 的 id 是落雪原 id；DX 的 id 为落雪原 id + 10000；UTAGE 保留落雪原 id。
+difficulty 是来源难度索引；chart_key 为 "id:difficulty"。
+构建必须检查整个有效曲库的复合键唯一性，出现冲突就中止，不能静默覆盖。
+原始来源可以仍有 songs/difficulties 嵌套，进入正式库后必须拆平。
+每张谱面拥有自己的曲名、作者、定数、版本等字段；没有 songs 主表。
+legacy_chart_key、lxns_song_id 和 source_ids 仅用于来源追溯、迁移，不是主键。
+同曲的不同难度独立裁决，不将一个难度的决定自动套用到其他难度。
+
+二、来源与字段
+
+落雪：raw/lxns_songs.json，https://maimai.lxns.net/api/v0/maimai/song/list?notes=true
+别名：raw/lxns_aliases.json，https://maimai.lxns.net/api/v0/maimai/alias/list
+水鱼：raw/divingfish_music_data.json，https://www.diving-fish.com/api/maimaidxprober/music_data
+日服曲库：raw/arcade_songs.json，https://dp4p6x0xfi5o9.cloudfront.net/maimai/data.json
+白谱：remy_release_overrides.json / remy_conflicts.json 及缓存的 Remy 原始页面证据。
+
+字段                              落雪  水鱼  arcade-songs  Remy
+id / difficulty / type             ✓
+title / artist / bpm / genre        ✓     ✓
+aliases                            ✓
+level / constant（国服）            ✓     ✓
+notes / note_designer               ✓     ✓
+cn_version / api_version            ✓
+rights / locked / map               ✓
+UTAGE 的 kanji/description/is_buddy ✓
+普通 STD/DX 的 jp_release_version                    ✓
+Re:MASTER 的 jp_release_version/date                              ✓
+jacket_path/source/available        ✓（下载后记录本地状态）
+
+单源字段直接取值。多源字段只比较相同语义域、相同谱面下可比的非缺失值。
+一致则合并；不同则整张谱面进入待入库区，用户按字段多选一，选齐后一起提交。
+数字 2 与 2.0 等价；分类使用固定同义映射；空谱师/横线按缺失处理。
+STD 四项和 DX 五项物量转为同一键结构，STD 缺省 touch=0；未知物量不能伪造为零。
+国服 level/constant 不能与日服对应字段合并。水鱼及落雪的 CN 版本不能推导 JP 版本。
+只比较规范化后的有效值：零个值保留缺失状态；一个不同值直接采用；两个及以上不同值才是冲突。
+落雪缺值但水鱼提供有效值时直接采用水鱼，并记录 automatic_field_sources。
+日服曲库的曲名、作者、BPM、分类、谱师、物量不参与业务字段取值或冲突比较。
+
+arcade 的 songId 是该来源的外部 ID，不是落雪/水鱼同名命名空间。
+来源适配阶段按规范化曲名和谱面格式定位；作者只用于同名消歧。
+双方均为唯一同名同格式记录时，作者写法差异不阻挡版本取值；无法唯一关联时保留版本缺失，
+不伪造一个只有单一选项的版本冲突。关联不改变曲库的曲名或作者。
+普通日服版本只使用 songs[].sheets[].version，难度 0–3；不使用 song.version、
+国际区域覆盖、SEGA song-level 版本、CN 代码或更新延迟推断。
+白谱独立使用 Remy 中明确的 Re:MASTER 追加记录；普通谱版本不传递给白谱。
+仅缺少版本证据、没有矛盾时，jp_release_version=null 且 version_pending=true，
+允许先入库，Remy 异步补充。存在矛盾的整张谱面不入库。
+SEGA JSON、官方公告、搜索与 LLM 不参与自动更新。
+
+三、正式条目
+
+catalog.json 顶层：schema_version=2、primary_source、data_region、source_policy、
+decision_revision、snapshot_at、counts、sources、input_files、versions_cn、genres、charts[]。
+charts[] 是全部已准入谱面，不含待裁决谱面，没有 songs[]。
+counts.total/admitted/pending 分别为来源谱面数、正式谱面数、待入库谱面数。
+
+每个 chart 的主要业务字段：
+  id / difficulty / chart_key / type / difficulty_name
+  title / artist / bpm / genre / aliases
+  level / constant / constant_source / notes / note_designer
+  cn_version / api_version（同一个国服谱面版本，api_version 为兼容字段）
+  rights / locked / map / UTAGE 附加字段
+  jacket_path / jacket_available / jacket_source
+  jp_release_version / jp_release_date / jp_release_provider / jp_release_source
+  jp_release_evidence / jp_release_provenance / release_status / release_source_scope
+  version_pending / admission_status=admitted
+  upstream_status / upstream_missing_since（仅在来源缺失时）
+  legacy_chart_key / lxns_song_id / source_identity / source_ids / external_ids
+  field_decisions（按字段保存已生效的持久裁决）
+兼容与原始来源字段不是独立取信来源；衍生状态和 URL/本地路径由代码生成。
+
+SQLite：metadata、charts、aliases、external_ids、search_terms；没有 songs 表。
+charts 主键 (id,difficulty)，chart_key UNIQUE；业务字段有结构化列，完整条目保存在 data_json。
+aliases、external_ids、search_terms 用 (id,difficulty) 外键指向 charts。
+chart_key_map.json 包含全部原始谱面（包括待入库）的新旧键映射。
+AP 接口的 song_id/difficulty_index 是兼容别名，分别等于新 id/difficulty。
+
+四、待入库与裁决
+
+catalog_record_review.json 包含全部来源谱面及状态；pending_charts.json 只保存待入库条目。
+每个 record：id、difficulty、chart_key、title、type、difficulty_name、status、fields、decisions。
+fields 只列该 chart 尚未裁决且至少有两个不同有效值的 key；每行 field_key、label、required、options。
+entry 至少有一个这种字段才进入裁决界面；来源 pending/status 或作者差异不代替值比较。
+上一次发布值不是新来源：当前唯一来源更新值时正常更新，已存在的人工裁决仍永久优先。
+options 提供 option_id、value、source、external_id、证据；版本选项的 date 与版本一起选择。
+不存在 current/default/recommended 字段，不做预选。所有 required 字段必须同一次提交。
+整张 chart 仍有任何未解决差异，就不进入 catalog.json / catalog.sqlite。
+
+持久裁决保存在独立 adjudications.sqlite3，kind=chart_field，
+object_key=chart:{id}:{difficulty}:{field_key}，action=select。
+保存 id、difficulty、field_key、value、source、证据、时间和审计事件。
+证据用于追溯和提交时校验，不用于让已保存的决定过期。
+人工选中的值一直生效，后续源值、作者、候选集合或指纹变化都不会重新报告该字段冲突。
+只有用户显式撤销才恢复此字段的自动比较；新出现的其他字段差异仍需裁决。
+不存在于本轮来源中的人工记录也保存，不丢弃。
+撤销字段与撤销整张谱面均保留审计历史。
+
+五、完整性与个人数据
+
+原始来源、快照输入和输出有 SHA256；构建与校验分别重算准入集合和人工覆盖。
+校验主键、来源职责、待入库/正式库隔离、JSON/SQL 各列一致、外键、图片、Remy 证据。
+发布使用隔离暂存、不可变快照、原子 current 指针、单任务锁与修订号检查。
+个人 AP、机厅、成绩、原表在 backend/runtime/personal.sqlite3，曲库重建不删除它们。
+升级只迁移个人表中的 chart_key，事务内检查重复，并记录 schema marker 防止重复迁移。
+待入库 chart 的个人记录继续保留，水鱼同步也可附着到来源索引；准入后自动重新显示。

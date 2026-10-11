@@ -1,0 +1,139 @@
+Maimai personal app API (all requests same origin, http://127.0.0.1:8766)
+
+GET /api/health -> {ok, catalog_charts, imported_charts}
+GET /api/catalog/update -> catalog updater status, current snapshot and last result
+GET /api/catalog/update/report -> {diff,issues,sources,source_policy} from the active snapshot
+  Reads catalog_diff.json, build_report.json and raw/sources.json on demand.
+  source_policy records the authority rules used to build that snapshot; old snapshots
+  without it return null, never the current program's policy as a historical claim.
+  Missing diff/issues/sources default to {}, [] and []; Cache-Control: no-store.
+POST /api/catalog/update -> HTTP 202, starts the catalog update job
+POST /api/catalog/remy/retry -> HTTP 202, retries Japanese chart-release research
+POST /api/catalog/rollback -> HTTP 202, starts rollback to the previous snapshot
+  No request body. A concurrent job returns HTTP 409; invalid operation -> HTTP 422.
+  Jobs are owned by app.state.catalog_updates and closed on application shutdown.
+  Public catalog updates do not replace the personal SQLite database.
+GET /api/catalog/data -> active catalog.json, Cache-Control: no-store
+GET /api/summary?group=all|low|high|catalog
+  -> {total,complete,ap,remaining,conflicts,legacy_complete,groups:{low,high,catalog},
+      levels:[{level,total,complete,ap,remaining,conflicts}],
+      constants:[{constant,total,complete,ap,remaining,conflicts}],sync,import_info}
+  Default summary totals include every current non-Utage catalog chart, including
+  newly added charts outside the original TSV. import_info remains the import receipt.
+  Accepts the same q, difficulty, type, status, constant_min, constant_max, level,
+  venue and version filters as /api/charts. Totals, levels and constants reflect all
+  active filters; groups remain the unfiltered global group counts.
+GET /api/chart-filters?group=all|low|high|catalog
+  -> {levels:[string],constants:[number],versions:[{value:string,label:string}]}
+  Options cover the full group regardless of active chart filters. Levels/constants
+  sort ascending; versions sort chronologically with unknown last.
+GET /api/charts?q=&group=all|low|high|catalog&difficulty=0..4&type=standard|dx
+  &status=all|complete|incomplete|ap|legacy|conflict&constant_min=&constant_max=
+  &level=&venue=&version=&offset=0&limit=100&sort=constant_desc|constant_asc|title
+  -> {items:[Chart],total,offset,limit}
+  Default and group=catalog lists include all non-Utage catalog charts. low/high are
+  internal legacy-source filters, not separate libraries in the frontend.
+  Constant sorts use numeric song_id ascending as the first tiebreaker, then type,
+  difficulty_index and chart_key. Default is constant descending.
+  Version values use only the final jp_release_version, shared with the cover UI.
+  No SEGA/CN fallback. Missing JP versions match __unknown__ (版本待核实).
+  Catalog conflicts withhold the entire chart. Only admitted charts are returned.
+  Persisted field choices survive future source changes until explicitly revoked.
+  PLUS versions remain distinct. Set constant_min=constant_max for an exact constant.
+GET /api/charts/{chart_key} -> Chart
+PUT /api/charts/{chart_key}/manual {ap:true,venue:"",achievement:null,note:"",date:null}
+  -> {chart:Chart,warnings:[string]}. Conflict with provider NEVER blocks saving.
+  ap:true requires a nonblank trimmed venue when Chart.requires_venue is true;
+  otherwise returns HTTP 422 without changing the record. Missing chart -> HTTP 404.
+  ap:false explicitly corrects local completion/AP claim, without erasing provider facts.
+DELETE /api/charts/{chart_key}/manual -> {chart:Chart}; removes override, reveals original.
+GET /api/venues -> {items:[{name,count}]}
+GET /api/settings/divingfish -> {configured,source:"environment"|"local"|null,sync}
+PUT /api/settings/divingfish {token:"Import-Token"} -> same public settings.
+  Empty token clears local saved token. Token is never returned or logged.
+POST /api/sync/divingfish (no body) -> {ok,records,matched,unmatched,conflicts,synced_at}
+  Reads full records from official /player/records endpoint, Import-Token header.
+  No credentials configured -> HTTP 409, detail {code:"not_configured",message:...}.
+  Never uploads/modifies game or waterfish records. Sync preserves local records.
+
+Chart fields:
+id, difficulty, chart_key (id:difficulty), lxns_song_id, song_id (alias of id),
+title, display_title, artist, type, difficulty_index (alias of difficulty),
+difficulty_name, level, constant, divingfish_id, jacket_url,
+jp_release_version, jp_release_version_candidate, release_status,
+group(low/high/catalog), in_original_table, requires_venue, legacy_complete, legacy_venue,
+manual_ap(null/true/false), manual_venue, venue, note, manual_date,
+achievement(null or number, explicit manual score preferred),
+provider_achievement, provider_fc, provider_synced_at,
+is_ap, is_complete, status(app/ap/legacy/incomplete), conflict, warnings.
+Legacy completion is distinct from verified AP because original table includes deletion exemptions.
+Low/high are imported directly from original TSV source. Catalog-only charts remain a separate group.
+requires_venue is true for imported high charts, false for imported low charts;
+catalog-only charts use constant >= 12.6. Clients use this flag for the venue field
+without presenting the source groups as separate AP libraries. Existing imported
+records are preserved, and ap:false does not require a venue.
+Provider AP requires fc=ap/app; 100+ achievement alone never means AP.
+Manual AP accepts user's claim without waiting for provider. Provider missing/not AP only warns.
+High venues and notes are always local, never overwritten by provider.
+Provider exact achievement is not auto-confirmed for covers (account score masks may apply).
+
+GET /jackets/{song_id}.png -> active snapshot image, falling back to base catalog cache
+  Numeric PNG filenames only. Cache-Control: no-cache permits updated art at the same URL.
+GET / -> frontend/dist/index.html, React + TypeScript app built with Vite.
+
+Run: ./start-app.sh (installs missing dependencies and builds the React app)
+Front-end development: npm --prefix frontend run dev (API proxy to 8766)
+Runtime data: backend/runtime/personal.sqlite3 (0600), secrets.json (0600).
+Catalog base: data/catalog. If data/catalog/current exists, its resolved directory
+provides catalog.sqlite, catalog.json and preferred jackets. Store.load_catalog(path)
+preloads both read-only indexes without publishing them; install_catalog(tuple)
+publishes them together. reload_catalog() follows current. Personal data stays separate.
+Environment overrides: MAIMAI_RUNTIME_DIR, DIVINGFISH_IMPORT_TOKEN.
+Tests use isolated temp DBs and mocked provider responses, never personal remote records.
+Import source path defaults ~/Downloads; override MAIMAI_IMPORT_DIR before first startup.
+This build binds loopback only. Add authentication and HTTPS before public deployment.
+
+Catalog adjudication (independent of personal /charts/{key}/manual):
+GET /api/catalog/data -> schema_version=2, charts[] (no songs[]), counts={total,admitted,pending,...}.
+  Canonical ID = LXNS ID for STD/UTAGE, LXNS ID + 10000 for DX.
+  Primary key = (id,difficulty). Pending chart entries are not returned here.
+GET /api/catalog/records/review -> {revision,decision_revision,applied_decision_revision,
+  decisions_pending,counts:{total,admitted,pending},records}
+  Each record is one (id,difficulty), with only unresolved fields that have at least
+  two distinct valid comparable values. Empty values and status flags are not conflicts.
+  arcade-songs contributes JP versions only, never metadata/notes/designer options.
+  No current/default/recommended values. Each required field must be selected.
+POST /api/catalog/records/decisions/batch -> CatalogUpdateState (202)
+  {base_catalog_revision,base_decision_revision,
+   records:[{id,difficulty,choices:[{field_key,option_id}],note?}]}
+  Submit 1-10000 charts together after previewing all choices in the confirmation dialog.
+  Each included chart must submit all and only its required fields; duplicate charts
+  or fields are rejected. Charts without any selection may be left for a later batch.
+  All records validate against one review and one pair of base revisions before any
+  writes. One atomic DB transaction saves every choice; only one rebuild is queued.
+  Invalid or incomplete -> 422, stale or busy -> 409, with no partial decision writes.
+  A failure in the last chart never saves the earlier charts or starts a rebuild.
+  Version/date stay paired. Server resolves values/evidence from submitted option IDs.
+  Selected values persist through source changes/rebuilds/rollback until explicit revoke.
+  Failed publication keeps prior snapshot and saved decisions; decisions_pending=true.
+POST /api/catalog/records/decisions -> CatalogUpdateState (202)
+  {base_catalog_revision,base_decision_revision,id,difficulty,
+   choices:[{field_key,option_id}],note?}
+  Compatibility endpoint; delegates to the same batch implementation with one record.
+GET /api/catalog/records/decisions -> {revision,decision_revision,decisions_pending,records}
+  Independent saved manual choices, grouped by chart; includes missing-source records.
+POST /api/catalog/records/decisions/revoke -> CatalogUpdateState (202)
+  {base_catalog_revision,base_decision_revision,id,difficulty,field_keys?}
+  Omit field_keys to revoke all fields for this chart; otherwise revoke the selected fields.
+  Revocation restores comparison and may withdraw the entire chart to pending admission.
+POST /api/catalog/decisions -> 422 (legacy per-object/identity writes disabled).
+GET /api/catalog/review -> legacy read-only provenance report; not the new adjudication API.
+POST /api/catalog/decisions/reapply -> CatalogUpdateState (202), no network.
+GET /api/catalog/decisions/history?object_key=&limit=100 -> {items:[events]}
+  Events include original value, revision, timestamp and batch_id; revoke retains history.
+POST /api/catalog/remy/recheck -> CatalogUpdateState (202)
+  Bounded deterministic evidence check. Missing evidence alone does not block admission.
+  Does not claim completion when rate limits or request budget interrupt work.
+State includes decision_revision,applied_decision_revision,decisions_pending.
+Rollback rebuilds prior raw data with current permanent choices.
+Personal records for pending charts remain stored and can reattach after admission.

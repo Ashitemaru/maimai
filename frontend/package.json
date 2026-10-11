@@ -1,0 +1,46 @@
+{
+  "name": "mai-journal",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "npm run check:styles && npm run typecheck && vite build",
+    "check:styles": "node scripts/check-styles.mjs",
+    "verify:ui": "node scripts/verify-ui.mjs",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify:matrix": "node scripts/verify-completion-matrix.mjs",
+    "verify:preferences": "node scripts/verify-preferences.mjs",
+    "verify:catalog-review": "node scripts/verify-catalog-review.mjs",
+    "verify:completion-export": "node scripts/verify-completion-export.mjs",
+    "verify:cover:legacy": "node scripts/verify-cover-v6.mjs",
+    "test:ci": "npm run build && npm run verify:ui && npm run verify:matrix && npm run verify:preferences && npm run verify:catalog-review && npm run verify:completion-export"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "eslint": "10.12.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.7",
+    "globals": "17.13.0",
+    "playwright": "1.64.0",
+    "postcss": "^8.5.28",
+    "prettier": "3.9.10",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "8.71.1",
+    "vite": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
