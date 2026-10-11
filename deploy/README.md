@@ -31,8 +31,11 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
    mode 0755. Copy the three unit files into `/etc/systemd/system`, root-owned 0644.
    Normal releases do not automatically update these root-owned bootstrap files.
 4. Create `/etc/mai-journal/app.env` and `deploy.env` from the examples, root-owned
-   0600. Set the actual public repository and allowed HTTPS hostname. The app unit
-   adds production paths and reads the release SHA from `current/release.env`.
+   0600. Set the actual public repository and allowed HTTPS hostname. Generate
+   `MAIMAI_MASTER_KEY_HASH` with `python -m backend.auth hash`, supplying the key
+   through stdin. Keep the key in a password manager, never in shell arguments,
+   code or releases. Production refuses to start without a valid hash. The app
+   unit adds production paths and reads the release SHA from `current/release.env`.
 5. Install the reviewed sudoers file at `/etc/sudoers.d/mai-journal`, root-owned
    0440, and validate with `visudo -cf`. It permits only start/stop/restart of the
    exact application service. The application unit's `NoNewPrivileges` prevents
@@ -41,7 +44,18 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
 6. Run `systemctl daemon-reload`, then `systemctl start mai-journal-deploy.service`.
    Inspect its journal and `/api/ready` through localhost. Enable
    `mai-journal.service` and `mai-journal-deploy.timer` only after initial validation.
-   Configure the HTTPS/authentication proxy separately; never expose 8766 publicly.
+   Configure Caddy from `Caddyfile.example`; never expose 8766 publicly. The app's
+   login page uses one Master Key, without usernames. Caddy must overwrite the
+   forwarded headers as shown so clients cannot forge the login rate-limit IP.
+   Remove any old Basic Auth proxy gate only after this authenticated application
+   is healthy. Do not roll back to a pre-authentication release afterward.
+
+The login page and its static bundle/icons are public. Personal APIs, jackets,
+cover assets and exported images require an authenticated session. A successful
+login creates a Secure, HttpOnly, SameSite=Lax cookie valid for 30 days; only its
+token digest is stored in `shared/runtime/auth.sqlite3`. Sessions survive restarts,
+logout revokes the session and changing the configured key hash invalidates all
+existing sessions. The Master Key is not stored in browser local storage.
 
 ## Activation and recovery
 
@@ -55,7 +69,8 @@ later timer run; a release in progress is not an error.
 
 The deployer writes a recovery journal, stops the single application service
 (90-second systemd budget), makes SQLite online-backup copies of personal and
-adjudications databases, changes `current` atomically and starts the new code.
+adjudications databases (plus the session database when present), changes
+`current` atomically and starts the new code.
 It accepts `/api/ready` only when `ok` is true and `release_sha` matches. A failed
 activation stops the new process before restoring the old pointer and restarting
 it. Rollback never overwrites personal data. An interrupted activation is rolled

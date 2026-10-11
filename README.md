@@ -45,7 +45,7 @@ Python 测试使用临时曲库、合成 TSV 和 Remy 页面，禁止外网；�
 .venv/bin/python -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8766 --workers 1
 ```
 
-服务器安装、数据迁移、systemd 单元和恢复步骤见 [部署文档](deploy/README.md)。公网入口需要配置 HTTPS 与整站认证，后端只监听本机。生产模式会检查已导入的个人数据库、曲库和素材；`/api/ready` 用于确认当前发布版本及数据库可读状态。
+服务器安装、数据迁移、systemd 单元和恢复步骤见 [部署文档](deploy/README.md)。公网入口使用 HTTPS 和应用内的 Master Key 登录页，无需用户名或用户系统；后端只监听本机。登录有效期为 30 天，可主动退出，刷新和服务重启不会丢失登录状态。生产模式会检查认证配置、已导入的个人数据库、曲库和素材；`/api/ready` 用于确认当前发布版本及数据库可读状态。
 
 网页包含在线 PWA 清单和主屏幕图标，可在 iPhone 的 Safari 中添加到主屏幕。手机导出生成整张 PNG 后提供保存或分享操作；没有离线缓存和离线写入功能。QQ 接入尚未实现。
 

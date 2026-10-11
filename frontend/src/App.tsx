@@ -602,7 +602,7 @@ function SettingsPage({
   );
 }
 
-export default function App() {
+export default function App({ onLogout }: { onLogout?: () => void }) {
   const initialPage = location.hash.slice(1) as Page;
   const [page, setPage] = useState<Page>(initialPage in pageLabels ? initialPage : 'ap');
   const [q, setQ] = useState('');
@@ -1007,6 +1007,11 @@ export default function App() {
             </div>
             <div className="topbar-right">
               <span>maimai でらっくす</span>
+              {onLogout && (
+                <button className="btn quiet auth-logout" onClick={onLogout}>
+                  退出
+                </button>
+              )}
               <span className="pill">
                 <span className="dot" />
                 国服曲库

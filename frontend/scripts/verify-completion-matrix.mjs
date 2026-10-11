@@ -219,6 +219,10 @@ const catalog = {
 async function mock(context, name) {
   const control = { hold: null, fail: null };
   await context.route('**/api/**', async (route) => {
+    if (new URL(route.request().url()).pathname === '/api/auth/session') {
+      await route.fulfill({ json: { authenticated: true, auth_required: false } });
+      return;
+    }
     const request = route.request(),
       url = new URL(request.url()),
       params = url.searchParams,

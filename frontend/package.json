@@ -18,10 +18,11 @@
     "verify:catalog-review": "node scripts/verify-catalog-review.mjs",
     "verify:completion-export": "node scripts/verify-completion-export.mjs",
     "verify:cover:legacy": "node scripts/verify-cover-v6.mjs",
-    "test:ci": "npm run build && npm run verify:ui && npm run verify:matrix && npm run verify:preferences && npm run verify:catalog-review && npm run verify:completion-export && npm run verify:detail-concurrency && npm run verify:mobile-export",
+    "test:ci": "npm run build && npm run verify:ui && npm run verify:matrix && npm run verify:preferences && npm run verify:catalog-review && npm run verify:completion-export && npm run verify:detail-concurrency && npm run verify:mobile-export && npm run verify:auth",
     "generate:icons": "node scripts/generate-icons.mjs",
     "verify:detail-concurrency": "node scripts/verify-detail-concurrency.mjs",
-    "verify:mobile-export": "node scripts/verify-mobile-export.mjs"
+    "verify:mobile-export": "node scripts/verify-mobile-export.mjs",
+    "verify:auth": "node scripts/verify-auth.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",

@@ -117,6 +117,10 @@ function complete() {
   };
 }
 await page.route('**/api/**', async (route) => {
+  if (new URL(route.request().url()).pathname === '/api/auth/session') {
+    await route.fulfill({ json: { authenticated: true, auth_required: false } });
+    return;
+  }
   const request = route.request(),
     pathname = new URL(request.url()).pathname;
   if (pathname === '/api/catalog/update') {

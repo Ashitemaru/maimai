@@ -1,3 +1,5 @@
+import { authGeneration, reportExpiredSession } from './auth';
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -7,8 +9,16 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const generation = authGeneration();
+  const response = await fetch(path, { ...init, credentials: 'same-origin' });
+  if (response.status === 401 && !new URL(path, location.origin).pathname.startsWith('/api/auth/'))
+    reportExpiredSession(generation);
+  return response;
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch('/api' + path, {
+  const response = await apiFetch('/api' + path, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...init.headers },
   });

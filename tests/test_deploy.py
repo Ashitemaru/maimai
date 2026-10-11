@@ -312,6 +312,7 @@ class DeploymentTests(unittest.TestCase):
         self.deployer = Deployer(self.root, self.github, self.host)
 
     def test_success_stops_before_backup_then_starts_exact_sha(self):
+        make_database(self.root / "shared/runtime/auth.sqlite3", "persistent login")
         real_backup = self.deployer.backup
 
         def backup(previous, target):
@@ -330,6 +331,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(database_value(backups[0] / "personal.sqlite3"), "before")
         self.assertEqual(database_value(backups[0] / "adjudications.sqlite3"), "permanent decision")
+        self.assertEqual(database_value(backups[0] / "auth.sqlite3"), "persistent login")
         self.assertEqual(
             (self.root / "current/release.env").read_text(), f"MAIMAI_RELEASE_SHA={NEW}\n"
         )

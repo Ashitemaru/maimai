@@ -8,13 +8,17 @@ import ts from 'typescript';
 const root = path.resolve(import.meta.dirname, '..');
 const dateTime = await fs.readFile(path.join(root, 'src/dateTime.ts'), 'utf8');
 const badges = await fs.readFile(path.join(root, 'src/completionBadges.ts'), 'utf8');
-const apiSource = await fs.readFile(path.join(root, 'src/api.ts'), 'utf8');
+const authSource = await fs.readFile(path.join(root, 'src/auth.ts'), 'utf8');
+const apiSource = (await fs.readFile(path.join(root, 'src/api.ts'), 'utf8')).replace(
+  /^import .*;\n/gm,
+  '',
+);
 const source = (await fs.readFile(path.join(root, 'src/completionExport.ts'), 'utf8')).replace(
   /^import .*;\n/gm,
   '',
 );
 const { outputText } = ts.transpileModule(
-  `${dateTime}\n${badges}\n${apiSource}\n${source}\nexport {layoutImage, layoutStrips, renderStrip, loadBadgeImages, drawTile, readPalette};`,
+  `${dateTime}\n${badges}\n${authSource}\n${apiSource}\n${source}\nexport {layoutImage, layoutStrips, renderStrip, loadBadgeImages, drawTile, readPalette};`,
   {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   },

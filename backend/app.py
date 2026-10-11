@@ -18,6 +18,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .auth import (
+    AuthConfig,
+    AuthStore,
+    LoginBodyLimitMiddleware,
+    auth_router,
+    local_probe,
+    public_paths,
+)
 from .catalog_decisions import StaleDecisionError
 from .catalog_updates import BusyError, CatalogUpdates
 from .completion_exports import completion_export_router
@@ -272,6 +280,7 @@ class CatalogRecordRevokeInput(BaseModel):
 
 
 def create_app(store=None, updater=None):
+    auth_config = AuthConfig.from_environment()
     assets = Path(os.environ.get("MAIMAI_ASSETS_DIR", ROOT / "data/assets"))
     frontend = Path(os.environ.get("MAIMAI_FRONTEND_DIR", ROOT / "frontend/dist"))
     if os.environ.get("MAIMAI_ENV") == "production":
@@ -292,6 +301,10 @@ def create_app(store=None, updater=None):
             updater.close()
 
     app = FastAPI(title="Ashitemaru · maimai", version="0.1.0", lifespan=lifespan)
+    auth = AuthStore(auth_config, store.runtime)
+    public_frontend = public_paths(frontend)
+    app.state.auth = auth
+    app.include_router(auth_router(auth))
     app.state.store = store
     app.state.catalog_updates = updater
     app.include_router(completion_export_router(store.runtime / "completion-exports"))
@@ -300,9 +313,12 @@ def create_app(store=None, updater=None):
         h.strip() for h in os.environ.get("MAIMAI_ALLOWED_HOSTS", "").split(",") if h.strip()
     ]
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+    app.add_middleware(LoginBodyLimitMiddleware)
 
     @app.exception_handler(RequestValidationError)
     async def safe_validation(request: Request, exc):
+        if request.url.path == "/api/auth/login":
+            return JSONResponse({"detail": "Master key 格式无效。"}, status_code=422)
         if request.url.path == "/api/settings/divingfish":
             # Pydantic's default error includes the rejected input; never echo a secret.
             return JSONResponse({"detail": "Token 格式无效，请检查输入。"}, status_code=422)
@@ -318,10 +334,32 @@ def create_app(store=None, updater=None):
     async def local_mutations(request: Request, call_next):
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
-            if origin and urlsplit(origin).netloc != request.headers.get("host"):
+            expected_origin = (request.url.scheme, request.headers.get("host"))
+            try:
+                origin_parts = urlsplit(origin or "")
+            except ValueError:
+                return JSONResponse({"detail": "请求来源无效"}, status_code=403)
+            foreign_origin = (
+                origin and (origin_parts.scheme, origin_parts.netloc) != expected_origin
+            )
+            if foreign_origin or request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"detail": "仅接受本应用页面的修改请求"}, status_code=403)
+        path = request.url.path
+        public_auth = (request.method, path) in {
+            ("GET", "/api/auth/session"),
+            ("POST", "/api/auth/login"),
+            ("POST", "/api/auth/logout"),
+        }
+        public_static = request.method in ("GET", "HEAD") and path in public_frontend
+        if auth_config.required and not (public_auth or public_static or local_probe(request)):
+            if not auth.authenticated(request):
+                return JSONResponse(
+                    {"detail": "请先使用 Master key 登录。"},
+                    status_code=401,
+                    headers={"Cache-Control": "no-store"},
+                )
         response = await call_next(request)
-        if request.url.path.startswith("/api/"):
+        if auth_config.required or request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 

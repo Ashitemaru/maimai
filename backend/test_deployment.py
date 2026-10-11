@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
+from backend.auth import hash_master_key
 from backend.store import Store
 from backend.test_app import FakeUpdater
 from tests.fixtures.catalog import write_catalog
@@ -237,6 +238,7 @@ class DeploymentTests(unittest.TestCase):
         (frontend / "index.html").write_text("fixture frontend")
         environment = {
             "MAIMAI_ENV": "production",
+            "MAIMAI_MASTER_KEY_HASH": hash_master_key("synthetic-deployment-master-key"),
             "MAIMAI_CATALOG_DIR": str(self.catalog),
             "MAIMAI_RUNTIME_DIR": str(self.store.runtime),
             "MAIMAI_ASSETS_DIR": str(assets),
@@ -244,7 +246,15 @@ class DeploymentTests(unittest.TestCase):
         }
         with patch.dict(os.environ, environment):
             rebuilt = Store()
-            with TestClient(create_app(rebuilt, updater=FakeUpdater())) as client:
+            with TestClient(
+                create_app(rebuilt, updater=FakeUpdater()), base_url="https://testserver"
+            ) as client:
+                self.assertEqual(
+                    client.post(
+                        "/api/auth/login", json={"master_key": "synthetic-deployment-master-key"}
+                    ).status_code,
+                    200,
+                )
                 self.assertEqual(client.get("/").text, "fixture frontend")
                 self.assertEqual(client.get("/cover-assets/fixture.txt").text, "fixture asset")
             with patch.dict(os.environ, {"MAIMAI_RUNTIME_DIR": str(self.root / "missing-runtime")}):

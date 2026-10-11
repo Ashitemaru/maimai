@@ -417,6 +417,7 @@ class Deployer:
         names = {
             "personal.sqlite3": self.root / "shared/runtime/personal.sqlite3",
             "adjudications.sqlite3": self.root / "shared/catalog/updates/adjudications.sqlite3",
+            "auth.sqlite3": self.root / "shared/runtime/auth.sqlite3",
         }
         completed = []
         for name, source in names.items():

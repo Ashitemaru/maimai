@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CompletionChart, CompletionTableData } from './types';
-import { messageOf } from './api';
+import { apiFetch, messageOf } from './api';
 import { COMPLETION_BADGES, completionBadgeKey } from './completionBadges';
 import { discardCompletionExport, exportCompletionTable } from './completionExport';
 import { ImageSaveActions } from './ImageSaveActions';
@@ -173,7 +173,7 @@ export function CompletionTable({
       });
       artifactId = id;
       setExportProgress('准备下载…');
-      const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+      const response = await apiFetch(url, { signal: controller.signal, cache: 'no-store' });
       if (!response.ok) throw new Error('下载图片失败，请重试');
       const blob = await response.blob();
       if (controller.signal.aborted) return;
