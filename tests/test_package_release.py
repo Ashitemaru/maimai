@@ -1,0 +1,158 @@
+import hashlib
+import json
+import subprocess
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+from deploy.deploy_release import CORE_SCRIPTS as DEPLOY_SCRIPTS
+from deploy.deploy_release import extract_archive
+from scripts.package_release import CORE_SCRIPTS, package, publish_release
+
+SHA = "a" * 40
+
+
+class FakeReleaseService:
+    def __init__(self, destination):
+        self.destination = destination
+        self.metadata = None
+        self.sha = SHA
+        self.assets = {}
+        self.created = 0
+
+    def __call__(self, *args, **kwargs):
+        if args[0] == "api":
+            if "/commits/" in args[1]:
+                return json.dumps({"sha": self.sha})
+            return json.dumps(self.metadata) if self.metadata is not None else None
+        if args[:2] == ("release", "create"):
+            self.created += 1
+            self.assets = {path.name: path.read_bytes() for path in self.destination.iterdir()}
+            self.metadata = {
+                "tag_name": f"app-{SHA}",
+                "draft": False,
+                "prerelease": False,
+                "assets": [{"name": name, "state": "uploaded"} for name in self.assets],
+            }
+            return ""
+        if args[:2] == ("release", "download"):
+            folder = Path(args[args.index("--dir") + 1])
+            for name, payload in self.assets.items():
+                (folder / name).write_bytes(payload)
+            return ""
+        raise AssertionError(f"Unexpected command: {args}")
+
+
+class PackageReleaseTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        for name in (
+            "backend/app.py",
+            "backend/store.py",
+            "backend/test_app.py",
+            "backend/testing.py",
+            "backend/runtime/private.py",
+            "scripts/catalog_pipeline.py",
+            "scripts/package_release.py",
+            "scripts/nested/catalog_pipeline.py",
+            "deploy/deploy_release.py",
+            "requirements.lock",
+            "frontend/dist/index.html",
+            "backend/runtime/secrets.json",
+            "data/catalog/personal.sqlite3",
+        ):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture")
+        (self.root / "requirements.lock").write_text("example==1.0.0\n")
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+
+    def test_only_code_and_built_frontend_are_packaged(self):
+        archive = package(self.root, self.root / "release", "a" * 40)
+        with tarfile.open(archive) as tar:
+            self.assertEqual(
+                set(tar.getnames()),
+                {
+                    "backend/app.py",
+                    "backend/store.py",
+                    "scripts/catalog_pipeline.py",
+                    "deploy/deploy_release.py",
+                    "requirements.lock",
+                    "frontend/dist/index.html",
+                    "RELEASE_SHA",
+                },
+            )
+        first = archive.read_bytes()
+        self.assertEqual(first, package(self.root, self.root / "release", "a" * 40).read_bytes())
+        self.assertEqual(
+            (archive.parent / "SHA256SUMS").read_text().split()[0],
+            hashlib.sha256(first).hexdigest(),
+        )
+
+    def test_symlink_input_is_rejected(self):
+        path = self.root / "backend/app.py"
+        path.unlink()
+        path.symlink_to(self.root / "backend/runtime/secrets.json")
+        with self.assertRaises(ValueError):
+            package(self.root, self.root / "release", "a" * 40)
+
+    def test_archive_is_accepted_by_real_server_extractor(self):
+        archive = package(self.root, self.root / "release", SHA)
+        destination = self.root / "extracted"
+        destination.mkdir()
+        extract_archive(archive, destination, SHA)
+        self.assertEqual((destination / "RELEASE_SHA").read_text().strip(), SHA)
+        self.assertEqual(CORE_SCRIPTS, DEPLOY_SCRIPTS)
+
+    def test_missing_runtime_module_prevents_release(self):
+        (self.root / "backend/store.py").unlink()
+        with self.assertRaises(ValueError):
+            package(self.root, self.root / "release", SHA)
+
+    def create_release(self):
+        destination = self.root / "release"
+        package(self.root, destination, SHA)
+        service = FakeReleaseService(destination)
+        publish_release(destination, SHA, "fixture/mai-journal", gh=service)
+        return destination, service
+
+    def test_identical_rerun_does_not_create_or_overwrite_release(self):
+        destination, service = self.create_release()
+        first_assets = dict(service.assets)
+        publish_release(destination, SHA, "fixture/mai-journal", gh=service)
+        self.assertEqual(service.created, 1)
+        self.assertEqual(service.assets, first_assets)
+
+    def test_different_archive_is_rejected_without_replacing_release(self):
+        destination, service = self.create_release()
+        service.assets[f"mai-journal-{SHA}.tar.gz"] = b"existing different release"
+        first_assets = dict(service.assets)
+        with self.assertRaisesRegex(RuntimeError, "asset differs"):
+            publish_release(destination, SHA, "fixture/mai-journal", gh=service)
+        self.assertEqual(service.created, 1)
+        self.assertEqual(service.assets, first_assets)
+
+    def test_changed_checksum_manifest_is_rejected(self):
+        destination, service = self.create_release()
+        service.assets["SHA256SUMS"] = b"different checksum manifest"
+        with self.assertRaisesRegex(RuntimeError, "asset differs"):
+            publish_release(destination, SHA, "fixture/mai-journal", gh=service)
+        self.assertEqual(service.created, 1)
+
+    def test_incomplete_existing_release_is_not_silently_repaired(self):
+        destination, service = self.create_release()
+        service.metadata["assets"].pop()
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            publish_release(destination, SHA, "fixture/mai-journal", gh=service)
+        self.assertEqual(service.created, 1)
+
+    def test_existing_tag_must_point_to_exact_commit(self):
+        destination, service = self.create_release()
+        service.sha = "b" * 40
+        with self.assertRaisesRegex(RuntimeError, "another commit"):
+            publish_release(destination, SHA, "fixture/mai-journal", gh=service)
+        self.assertEqual(service.created, 1)

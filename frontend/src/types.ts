@@ -24,6 +24,7 @@ export interface Chart {
   legacy_complete: boolean;
   legacy_venue: string;
   manual_ap: boolean | null;
+  manual_revision: number;
   manual_venue: string;
   venue: string;
   note: string;

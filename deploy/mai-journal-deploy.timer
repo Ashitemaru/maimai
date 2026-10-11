@@ -1,0 +1,12 @@
+[Unit]
+Description=Check mai journal main for a CI-approved release every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=10s
+Persistent=true
+Unit=mai-journal-deploy.service
+
+[Install]
+WantedBy=timers.target

@@ -20,6 +20,7 @@ playwright-report/
 # User data, downloaded assets, sessions and generated media stay local.
 /data/
 /output/
+/release/
 /backend/runtime/
 /.playwright-mcp/
 /ashitemaru-bilibili-covers/

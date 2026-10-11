@@ -7,6 +7,7 @@ interface ExportOptions {
   grouped: boolean;
   description: string;
   onProgress?: (value: string) => void;
+  signal?: AbortSignal;
 }
 
 interface Row {
@@ -217,7 +218,15 @@ function pill(
   return width;
 }
 
-async function loadSameOriginImage(source: string): Promise<HTMLImageElement | null> {
+function checkCancelled(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
+}
+
+async function loadSameOriginImage(
+  source: string,
+  signal?: AbortSignal,
+): Promise<HTMLImageElement | null> {
+  checkCancelled(signal);
   let url: URL;
   try {
     url = new URL(source, window.location.href);
@@ -228,30 +237,48 @@ async function loadSameOriginImage(source: string): Promise<HTMLImageElement | n
     return null;
   const img = new Image();
   img.decoding = 'async';
-  return await new Promise<HTMLImageElement | null>((resolve) => {
+  return await new Promise<HTMLImageElement | null>((resolve, reject) => {
+    let finished = false;
     const timer = window.setTimeout(() => {
-      img.src = '';
       finish(false);
+      img.src = '';
     }, 10000);
-    function finish(ok: boolean) {
+    function cleanup() {
       window.clearTimeout(timer);
       img.onload = null;
       img.onerror = null;
+      signal?.removeEventListener('abort', cancel);
+    }
+    function finish(ok: boolean) {
+      if (finished) return;
+      finished = true;
+      cleanup();
       resolve(ok && img.naturalWidth ? img : null);
     }
+    function cancel() {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      img.src = '';
+      reject(new DOMException('导出已取消', 'AbortError'));
+    }
+    signal?.addEventListener('abort', cancel, { once: true });
     img.onload = () => finish(true);
     img.onerror = () => finish(false);
     img.src = url.href;
   });
 }
 
-async function loadBadgeImages(items: CompletionChart[]): Promise<Map<string, HTMLImageElement>> {
+async function loadBadgeImages(
+  items: CompletionChart[],
+  signal?: AbortSignal,
+): Promise<Map<string, HTMLImageElement>> {
   const keys = [...new Set(items.map(completionBadgeKey).filter((key) => key !== null))];
   const images = new Map<string, HTMLImageElement>();
   await Promise.all(
     keys.map(async (key) => {
       const source = COMPLETION_BADGES[key].src;
-      const image = await loadSameOriginImage(source);
+      const image = await loadSameOriginImage(source, signal);
       if (!image) throw new Error(`${key === 'app' ? 'AP+' : 'AP'} 徽章加载失败，请重试导出`);
       images.set(source, image);
     }),
@@ -259,7 +286,10 @@ async function loadBadgeImages(items: CompletionChart[]): Promise<Map<string, HT
   return images;
 }
 
-async function loadBatchImages(items: CompletionChart[]): Promise<Map<string, HTMLImageElement>> {
+async function loadBatchImages(
+  items: CompletionChart[],
+  signal?: AbortSignal,
+): Promise<Map<string, HTMLImageElement>> {
   const urls = [...new Set(items.map((item) => item.jacket_url).filter(Boolean))];
   const images = new Map<string, HTMLImageElement>();
   let cursor = 0;
@@ -267,7 +297,7 @@ async function loadBatchImages(items: CompletionChart[]): Promise<Map<string, HT
     Array.from({ length: Math.min(6, urls.length) }, async () => {
       while (cursor < urls.length) {
         const source = urls[cursor++];
-        const image = await loadSameOriginImage(source);
+        const image = await loadSameOriginImage(source, signal);
         if (image) images.set(source, image);
       }
     }),
@@ -402,6 +432,7 @@ async function renderStrip(
   badgeImages: Map<string, HTMLImageElement>,
   drawnBefore: number,
 ): Promise<Blob> {
+  checkCancelled(options.signal);
   const canvas = document.createElement('canvas');
   canvas.width = layout.width;
   canvas.height = strip.height;
@@ -447,7 +478,11 @@ async function renderStrip(
         batchItems += row.items.length;
       }
       options.onProgress?.(`加载曲绘 ${drawn} / ${items.length}`);
-      const images = await loadBatchImages(batch.flatMap((row) => row.items));
+      checkCancelled(options.signal);
+      const images = await loadBatchImages(
+        batch.flatMap((row) => row.items),
+        options.signal,
+      );
       try {
         for (const row of batch) {
           let y = row.y;
@@ -494,10 +529,25 @@ async function renderStrip(
   }
 }
 
+export async function discardCompletionExport(id: string) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 10000);
+  try {
+    await api<{ ok: boolean }>(`/completion-exports/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      keepalive: true,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export async function exportCompletionTable(
   items: CompletionChart[],
   options: ExportOptions,
-): Promise<{ url: string; name: string }> {
+): Promise<{ url: string; name: string; id: string }> {
+  checkCancelled(options.signal);
   if (!items.length) throw new Error('没有可导出的谱面');
   const timestamp = formatTimestamp(new Date().toISOString());
   const name = `AP完成表-${timestamp.replaceAll(/[-: ]/g, '')}.png`;
@@ -506,8 +556,11 @@ export async function exportCompletionTable(
   const strips = layoutStrips(layout);
   options.onProgress?.('准备图片…');
   await document.fonts.ready;
-  const badgeImages = await loadBadgeImages(items);
+  checkCancelled(options.signal);
+  const badgeImages = await loadBadgeImages(items, options.signal);
+  let jobId: string | undefined;
   try {
+    // Receive the creation ID even when cancelled so the server job can be deleted.
     const job = await api<{ id: string }>('/completion-exports', {
       method: 'POST',
       body: JSON.stringify({
@@ -517,21 +570,40 @@ export async function exportCompletionTable(
         parts: strips.length,
       }),
     });
+    jobId = job.id;
+    checkCancelled(options.signal);
     const path = `/completion-exports/${encodeURIComponent(job.id)}`;
     let drawn = 0;
     for (let index = 0; index < strips.length; index++) {
+      checkCancelled(options.signal);
       const strip = strips[index];
       const blob = await renderStrip(strip, layout, items, options, palette, badgeImages, drawn);
+      checkCancelled(options.signal);
       options.onProgress?.(`上传图片 ${index + 1} / ${strips.length}`);
       await api<{ ok: boolean }>(`${path}/parts/${index}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'image/png' },
         body: blob,
+        signal: options.signal,
       });
       drawn += strip.rows.reduce((total, row) => total + row.items.length, 0);
     }
+    checkCancelled(options.signal);
     options.onProgress?.('合成完整 PNG…');
-    return await api<{ url: string; name: string }>(`${path}/finish`, { method: 'POST' });
+    const artifact = await api<{ url: string; name: string }>(`${path}/finish`, {
+      method: 'POST',
+      signal: options.signal,
+    });
+    checkCancelled(options.signal);
+    return { ...artifact, id: job.id };
+  } catch (error) {
+    if (jobId) {
+      // Cleanup must use a fresh request, not the signal that just aborted the export.
+      await discardCompletionExport(jobId).catch(() => {
+        // The server's idle-job expiry is the fallback when the network is unavailable.
+      });
+    }
+    throw error;
   } finally {
     badgeImages.clear();
   }

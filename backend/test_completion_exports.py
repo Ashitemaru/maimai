@@ -3,9 +3,11 @@ import json
 import random
 import struct
 import tempfile
+import threading
 import time
 import unittest
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -257,6 +259,129 @@ class CompletionExportTests(unittest.TestCase):
                 self.assertEqual(self.finish(job_id).status_code, 200)
                 completed.append(job_id)
             self.assertFalse((self.root / completed[0]).exists())
+
+    def test_cancel_is_idempotent_releases_slots_and_removes_completed_download(self):
+        with patch.object(module, "MAX_JOBS", 1):
+            job_id = self.create().json()["id"]
+            self.assertEqual(self.create().status_code, 429)
+            path = f"/api/completion-exports/{job_id}"
+            for _ in range(2):
+                self.assertEqual(self.client.delete(path).json(), {"ok": True})
+            self.assertFalse((self.root / job_id).exists())
+            self.assertEqual(self.finish(job_id).status_code, 404)
+            replacement = self.create().json()["id"]
+            self.upload(replacement, self.png())
+            url = self.finish(replacement).json()["url"]
+            self.assertEqual(self.client.get(url).status_code, 200)
+            self.assertEqual(
+                self.client.delete(f"/api/completion-exports/{replacement}").status_code, 200
+            )
+            self.assertEqual(self.client.get(url).status_code, 404)
+            self.assertEqual(self.client.delete("/api/completion-exports/invalid").status_code, 404)
+
+    def test_cancel_during_upload_cleans_reserved_files_after_worker_exits(self):
+        job_id = self.create().json()["id"]
+        entered, release = threading.Event(), threading.Event()
+        original = module.CompletionExports.accept_upload
+
+        def held_upload(manager, *args):
+            entered.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("test did not release upload")
+            return original(manager, *args)
+
+        with (
+            patch.object(module.CompletionExports, "accept_upload", held_upload),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            request = pool.submit(self.upload, job_id, self.png())
+            try:
+                self.assertTrue(entered.wait(timeout=5))
+                self.assertEqual(
+                    self.client.delete(f"/api/completion-exports/{job_id}").status_code, 200
+                )
+            finally:
+                release.set()
+            response = request.result(timeout=5)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["code"], "export_cancelled")
+        self.assertFalse((self.root / job_id).exists())
+        self.assertEqual(self.create().status_code, 200)
+
+    def test_cancel_during_finalization_stops_assembly_and_removes_job(self):
+        job_id = self.create().json()["id"]
+        self.upload(job_id, self.png())
+        entered, release = threading.Event(), threading.Event()
+        original = module.assemble_png
+
+        def held_assembly(*args, **kwargs):
+            entered.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("test did not release assembly")
+            return original(*args, **kwargs)
+
+        with (
+            patch.object(module, "assemble_png", side_effect=held_assembly),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            request = pool.submit(self.finish, job_id)
+            try:
+                self.assertTrue(entered.wait(timeout=5))
+                self.assertEqual(
+                    self.client.delete(f"/api/completion-exports/{job_id}").status_code, 200
+                )
+            finally:
+                release.set()
+            response = request.result(timeout=5)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["code"], "export_cancelled")
+        self.assertFalse((self.root / job_id).exists())
+
+    def test_idle_cleanup_survives_restart_but_retains_completed_images_and_busy_jobs(self):
+        abandoned = self.create().json()["id"]
+        complete = self.create().json()["id"]
+        self.upload(complete, self.png())
+        self.finish(complete)
+        busy = self.create().json()["id"]
+        manager = module.CompletionExports(self.root)
+        temporary = manager.begin_upload(busy, 0)
+        for job_id in (abandoned, complete, busy):
+            path = self.root / job_id / "manifest.json"
+            manifest = json.loads(path.read_text())
+            manifest["touched"] = time.time() - module.IDLE_TTL_SECONDS - 1
+            path.write_text(json.dumps(manifest))
+        manager.cleanup()
+        self.assertFalse((self.root / abandoned).exists())
+        self.assertTrue((self.root / complete / "image.png").exists())
+        self.assertTrue((self.root / busy).exists())
+        manager.end_upload(busy, temporary)
+        manager.cleanup()
+        self.assertFalse((self.root / busy).exists())
+
+    def test_lifespan_collects_idle_jobs_without_another_export_request(self):
+        job_id = self.create().json()["id"]
+        path = self.root / job_id / "manifest.json"
+        collected = threading.Event()
+        original = module.CompletionExports.cleanup
+
+        def observe(manager):
+            original(manager)
+            if not path.exists():
+                collected.set()
+
+        app = FastAPI()
+        app.include_router(module.completion_export_router(self.root))
+        with (
+            patch.object(module, "CLEANUP_INTERVAL_SECONDS", 0.01),
+            patch.object(module.CompletionExports, "cleanup", observe),
+            TestClient(app),
+        ):
+            self.assertTrue(path.exists())
+            manifest = json.loads(path.read_text())
+            manifest["touched"] = time.time() - module.IDLE_TTL_SECONDS - 1
+            path.write_text(json.dumps(manifest))
+            self.assertTrue(collected.wait(timeout=5))
+        self.assertFalse(path.parent.exists())
 
 
 if __name__ == "__main__":

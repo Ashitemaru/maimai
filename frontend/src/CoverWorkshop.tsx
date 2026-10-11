@@ -6,6 +6,9 @@ import { loadBackgroundManifest, resolveVersion } from './coverAssets';
 import type { BackgroundManifest } from './coverAssets';
 import { messageOf } from './api';
 import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
+import { ImageSaveActions } from './ImageSaveActions';
+import { downloadImage, needsSaveGesture, prepareImage } from './imageSave';
+import type { PreparedImage } from './imageSave';
 export interface CoverState {
   chart: Chart | null;
   score: string;
@@ -32,6 +35,21 @@ export function CoverPage({
   const canvas = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [readyImage, setReadyImage] = useState<PreparedImage | null>(null);
+  const exportGeneration = useRef(0);
+  useEffect(() => {
+    setReadyImage(null);
+    setExporting(false);
+    return () => {
+      exportGeneration.current += 1;
+    };
+  }, [value]);
+  useEffect(
+    () => () => {
+      if (readyImage) URL.revokeObjectURL(readyImage.url);
+    },
+    [readyImage],
+  );
   const [rendering, setRendering] = useState(false);
   const [receipt, setReceipt] = useState<CoverReceipt | null>(null);
   const [manifest, setManifest] = useState<BackgroundManifest | null>(null);
@@ -90,9 +108,12 @@ export function CoverPage({
       setError('请填写达成率');
       return;
     }
+    if (exporting) return;
+    const generation = ++exportGeneration.current;
+    setReadyImage(null);
     setExporting(true);
+    const output = document.createElement('canvas');
     try {
-      const output = document.createElement('canvas');
       await renderCover(output, value.chart, {
         achievement: value.score,
         versionOverride: value.version,
@@ -107,26 +128,19 @@ export function CoverPage({
       );
       const name = chartName(value.chart).replace(/[\\/:*?"<>|]/g, '_');
       const filename = `${name}_${chartType(value.chart)}_${value.chart.difficulty_name.replace(':', '')}_${Number(value.score).toFixed(4)}_${value.aspect.replace(':', 'x')}.png`;
-      const file = new File([blob], filename, { type: 'image/png' });
-      if (/iPhone|iPad/.test(navigator.userAgent) && navigator.canShare?.({ files: [file] })) {
-        try {
-          await navigator.share({ files: [file], title: chartName(value.chart) });
-          return;
-        } catch (error) {
-          if (error instanceof DOMException && error.name === 'AbortError') return;
-        }
+      if (generation !== exportGeneration.current) return;
+      const image = prepareImage(blob, filename);
+      setReadyImage(image);
+      if (needsSaveGesture()) notify('封面已生成，请选择分享或保存');
+      else {
+        downloadImage(image);
+        notify('封面已导出');
       }
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
-      notify('封面已导出');
     } catch (error) {
-      setError(messageOf(error));
+      if (generation === exportGeneration.current) setError(messageOf(error));
     } finally {
-      setExporting(false);
+      output.width = output.height = 0;
+      if (generation === exportGeneration.current) setExporting(false);
     }
   }
   const automatic = manifest && value.chart ? resolveVersion(value.chart, manifest) : null;
@@ -230,6 +244,7 @@ export function CoverPage({
           >
             {exporting ? '导出中…' : '导出封面'}
           </button>
+          {readyImage && <ImageSaveActions image={readyImage} key={readyImage.url} />}
         </aside>
       </div>
     </>

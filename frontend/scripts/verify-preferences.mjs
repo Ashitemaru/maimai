@@ -87,6 +87,7 @@ const charts = [1, 12.5, 13, 13.5, 13.9, 14.5, 15].map((constant, index) => ({
   in_original_table: true,
   legacy_complete: false,
   legacy_venue: '',
+  manual_revision: 0,
   manual_ap: null,
   manual_venue: '',
   venue: '',

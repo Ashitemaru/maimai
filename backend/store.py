@@ -9,6 +9,8 @@ import math
 import os
 import re
 import sqlite3
+import tempfile
+import threading
 import unicodedata
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -17,6 +19,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DIFFICULTIES = {"BAS": 0, "ADV": 1, "EXP": 2, "MAS": 3, "ReM": 4}
 DEFAULT_PREFERENCES = {"default_constant_min": 13.0, "default_constant_max": 13.9}
+
+
+class ManualConflictError(Exception):
+    """A form is based on an older version of the manual record."""
+
+
+class SyncBusyError(Exception):
+    """Only one provider request may be in flight for this account."""
+
+
+class SyncTokenChangedError(Exception):
+    """A provider response belongs to credentials that have since changed."""
+
+
 CN_VERSION_SHORT_LABELS = {
     "maimai": "初",
     "maimai PLUS": "真",
@@ -118,15 +134,40 @@ class Store:
         self.runtime = Path(
             runtime or os.environ.get("MAIMAI_RUNTIME_DIR", ROOT / "backend/runtime")
         )
-        self.runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db_path = self.runtime / "personal.sqlite3"
         self.secret_path = self.runtime / "secrets.json"
         self.import_dir = Path(
             import_dir or os.environ.get("MAIMAI_IMPORT_DIR", Path.home() / "Downloads")
         )
-        self.catalog_root = Path(catalog_dir or ROOT / "data/catalog").resolve()
+        self.catalog_root = Path(
+            catalog_dir or os.environ.get("MAIMAI_CATALOG_DIR", ROOT / "data/catalog")
+        ).resolve()
+        self._token_lock = threading.RLock()
+        self._sync_lock = threading.Lock()
+        self._token_generation = 0
+        if os.environ.get("MAIMAI_ENV") == "production":
+            if not (self.catalog_directory() / "catalog.sqlite").is_file():
+                raise RuntimeError("Production catalog.sqlite is missing; set MAIMAI_CATALOG_DIR.")
+            if not self.db_path.is_file():
+                raise RuntimeError(
+                    "Production personal.sqlite3 is missing; restore MAIMAI_RUNTIME_DIR."
+                )
+            try:
+                with self.db() as conn:
+                    imported = conn.execute(
+                        "SELECT value FROM metadata WHERE key='import'"
+                    ).fetchone()
+                if not imported or not isinstance(json.loads(imported[0]), dict):
+                    raise ValueError("missing import metadata")
+            except (sqlite3.Error, ValueError) as exc:
+                raise RuntimeError(
+                    "Production personal.sqlite3 has no valid import metadata; restore the existing personal database."
+                ) from exc
+        self.runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._initialized = False
         self.reload_catalog()
+        if os.environ.get("MAIMAI_ENV") == "production" and not self.catalog:
+            raise RuntimeError("Production catalog has no admitted charts.")
         self._initialize()
         self._initialized = True
 
@@ -448,10 +489,18 @@ class Store:
     def all_charts(self):
         catalog = self.catalog
         with self.db() as conn:
+            # Record fields and their revisions must describe one SQLite snapshot.
+            conn.execute("BEGIN")
             legacy = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM legacy")}
             manual = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM manual")}
             provider = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM provider")}
-        last_sync = self.meta("last_sync")
+            revisions = dict(
+                conn.execute(
+                    "SELECT chart_key,MAX(id) FROM events WHERE kind IN ('manual','manual_reset') GROUP BY chart_key"
+                )
+            )
+            row = conn.execute("SELECT value FROM metadata WHERE key='last_sync'").fetchone()
+            last_sync = json.loads(row[0]) if row else None
         items = ChartList(
             cn_versions=catalog.cn_versions, cn_matrix_versions=catalog.cn_matrix_versions
         )
@@ -523,6 +572,9 @@ class Store:
                     "note": user["note"] if user else "",
                     "manual_date": user["achieved_date"] if user else None,
                     "manual_updated_at": user["updated_at"] if user else None,
+                    "manual_revision": revisions.get(
+                        key, revisions.get(canonical_chart_key(key), 0)
+                    ),
                     "achievement": achievement,
                     "provider_achievement": remote["achievement"] if remote else None,
                     "provider_fc": remote["fc"] if remote else None,
@@ -567,6 +619,8 @@ class Store:
         venue = data["venue"].strip()
         at = now()
         with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._check_manual_revision(conn, key, data["expected_revision"])
             legacy = conn.execute(
                 "SELECT group_name FROM legacy WHERE chart_key=?", (key,)
             ).fetchone()
@@ -590,10 +644,21 @@ class Store:
             )
         return self.chart(key)
 
-    def clear_manual(self, key):
+    @staticmethod
+    def _check_manual_revision(conn, key, expected):
+        actual = conn.execute(
+            "SELECT COALESCE(MAX(id),0) FROM events WHERE chart_key=? AND kind IN ('manual','manual_reset')",
+            (key,),
+        ).fetchone()[0]
+        if actual != expected:
+            raise ManualConflictError()
+
+    def clear_manual(self, key, expected_revision):
         if getattr(self.catalog, "schema_version", 1) >= 2:
             key = canonical_chart_key(key)
         with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._check_manual_revision(conn, key, expected_revision)
             conn.execute("DELETE FROM manual WHERE chart_key=?", (key,))
             conn.execute(
                 "INSERT INTO events(chart_key,kind,created_at,data_json) VALUES(?,?,?,?)",
@@ -605,20 +670,84 @@ class Store:
         token = os.environ.get("DIVINGFISH_IMPORT_TOKEN", "").strip()
         if token:
             return token, "environment"
-        if self.secret_path.exists():
-            token = json.loads(self.secret_path.read_text()).get("divingfish_import_token", "")
-            if token:
-                return token, "local"
+        with self._token_lock:
+            if self.secret_path.exists():
+                try:
+                    value = json.loads(self.secret_path.read_text())
+                    token = value.get("divingfish_import_token", "")
+                    if not isinstance(token, str):
+                        raise ValueError("invalid stored credential")
+                except (OSError, ValueError, AttributeError):
+                    return "", "invalid"
+                if token:
+                    return token, "local"
         return "", None
 
     def save_token(self, token):
-        # Atomic write creates a private file from the outset, including temporary file.
-        temp = self.runtime / ".secrets.tmp"
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            json.dump({"divingfish_import_token": token.strip()}, handle)
-        temp.chmod(0o600)
-        temp.replace(self.secret_path)
+        with self._token_lock:
+            fd, name = tempfile.mkstemp(prefix=".secrets-", suffix=".tmp", dir=self.runtime)
+            temp = Path(name)
+            try:
+                with os.fdopen(fd, "w") as handle:
+                    json.dump({"divingfish_import_token": token.strip()}, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temp.replace(self.secret_path)
+                self._token_generation += 1
+            finally:
+                temp.unlink(missing_ok=True)
+
+    @contextmanager
+    def sync_lease(self):
+        if not self._sync_lock.acquire(blocking=False):
+            raise SyncBusyError()
+        try:
+            with self._token_lock:
+                token, _ = self.token()
+                generation = self._token_generation
+            yield token, generation
+        finally:
+            self._sync_lock.release()
+
+    def publish_sync(self, payload, generation):
+        with self._token_lock:
+            if generation != self._token_generation:
+                raise SyncTokenChangedError()
+            return self.import_provider(payload)
+
+    def readiness(self):
+        checks = {"catalog": False, "personal": False}
+        for name, path in (
+            ("catalog", self.catalog_directory() / "catalog.sqlite"),
+            ("personal", self.db_path),
+        ):
+            try:
+                conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
+                try:
+                    if conn.execute("PRAGMA quick_check(1)").fetchone()[0] != "ok":
+                        continue
+                    if name == "catalog":
+                        checks[name] = (
+                            bool(self.catalog)
+                            and conn.execute("SELECT COUNT(*) FROM charts").fetchone()[0] > 0
+                        )
+                    else:
+                        metadata = dict(
+                            conn.execute(
+                                "SELECT key,value FROM metadata WHERE key IN ('import','preferences')"
+                            )
+                        )
+                        checks[name] = all(
+                            isinstance(json.loads(metadata[key]), dict)
+                            for key in ("import", "preferences")
+                        )
+                        for table in ("manual", "legacy", "provider", "events"):
+                            conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                finally:
+                    conn.close()
+            except (OSError, sqlite3.Error, ValueError, KeyError):
+                checks[name] = False
+        return checks
 
     def import_provider(self, payload):
         if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):

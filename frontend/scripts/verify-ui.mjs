@@ -119,6 +119,7 @@ const charts = Array.from({ length: 18 }, (_, index) => ({
   in_original_table: true,
   legacy_complete: false,
   legacy_venue: '',
+  manual_revision: 0,
   manual_ap: index % 3 === 0 ? true : null,
   manual_venue: index % 3 === 0 ? '上海 · 星光游乐城' : '',
   venue: index % 3 === 0 ? '上海 · 星光游乐城' : '',
@@ -333,6 +334,15 @@ async function mock(context, { completionItems } = {}) {
     ) {
       assert(exportJob.finished, 'Only a finished temporary export may download');
       await route.continue();
+      return;
+    }
+    if (
+      exportJob &&
+      pathname === `/api/completion-exports/${exportJob.id}` &&
+      request.method() === 'DELETE'
+    ) {
+      exportRequests.push({ path: pathname, method: request.method() });
+      await route.fulfill({ json: { ok: true } });
       return;
     }
     if (request.method() !== 'GET') {
@@ -1629,6 +1639,10 @@ async function completionControls(page, label) {
         exportImages.get('/api/completion-exports/ui-audit-export/image').image,
         'Downloaded Blob retains the actual canvas PNG bytes',
       );
+      await waitFor(
+        () => exportRequests.some((request) => request.method === 'DELETE'),
+        'temporary export cleanup',
+      );
       assert.deepEqual(
         exportRequests.map(({ method, path }) => `${method} ${path}`),
         [
@@ -1636,8 +1650,9 @@ async function completionControls(page, label) {
           'PUT /api/completion-exports/ui-audit-export/parts/0',
           'POST /api/completion-exports/ui-audit-export/finish',
           'GET /api/completion-exports/ui-audit-export/image',
+          'DELETE /api/completion-exports/ui-audit-export',
         ],
-        'Export should create, upload, finish, and download only its temporary image job',
+        'Export should create, upload, finish, download, and delete only its temporary image job',
       );
       assert.deepEqual(
         lateScripts,

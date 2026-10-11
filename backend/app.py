@@ -5,6 +5,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -20,7 +21,16 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .catalog_decisions import StaleDecisionError
 from .catalog_updates import BusyError, CatalogUpdates
 from .completion_exports import completion_export_router
-from .store import ROOT, Store, normalized, now, summarize
+from .store import (
+    ROOT,
+    ManualConflictError,
+    Store,
+    SyncBusyError,
+    SyncTokenChangedError,
+    normalized,
+    now,
+    summarize,
+)
 
 VERSION_ORDER = (
     "maimai",
@@ -158,6 +168,7 @@ def chart_filters(
 
 
 class ManualInput(BaseModel):
+    expected_revision: int = Field(ge=0, strict=True)
     ap: bool = True
     venue: str = Field(default="", max_length=200)
     achievement: float | None = Field(default=None, ge=0, le=101, allow_inf_nan=False)
@@ -261,6 +272,15 @@ class CatalogRecordRevokeInput(BaseModel):
 
 
 def create_app(store=None, updater=None):
+    assets = Path(os.environ.get("MAIMAI_ASSETS_DIR", ROOT / "data/assets"))
+    frontend = Path(os.environ.get("MAIMAI_FRONTEND_DIR", ROOT / "frontend/dist"))
+    if os.environ.get("MAIMAI_ENV") == "production":
+        if not assets.is_dir():
+            raise RuntimeError("Production assets directory is missing; set MAIMAI_ASSETS_DIR.")
+        if not (frontend / "index.html").is_file():
+            raise RuntimeError(
+                "Production frontend/index.html is missing; set MAIMAI_FRONTEND_DIR."
+            )
     store = store or Store()
     updater = updater if updater is not None else CatalogUpdates(store)
 
@@ -367,11 +387,20 @@ def create_app(store=None, updater=None):
 
     @app.get("/api/health")
     def health():
-        return {
-            "ok": True,
-            "catalog_charts": len(store.catalog),
-            "imported_charts": store.meta("import")["total"],
-        }
+        return {"ok": True, "release_sha": os.environ.get("MAIMAI_RELEASE_SHA", "development")}
+
+    @app.get("/api/ready")
+    def ready():
+        checks = store.readiness()
+        ok = all(checks.values())
+        return JSONResponse(
+            {
+                "ok": ok,
+                "release_sha": os.environ.get("MAIMAI_RELEASE_SHA", "development"),
+                "checks": checks,
+            },
+            status_code=200 if ok else 503,
+        )
 
     @app.get("/api/catalog/update")
     def catalog_update_status():
@@ -616,15 +645,35 @@ def create_app(store=None, updater=None):
             item = store.save_manual(chart_key, value.model_dump())
         except KeyError as exc:
             raise HTTPException(404, "谱面不存在") from exc
+        except ManualConflictError:
+            raise HTTPException(
+                409,
+                {
+                    "code": "manual_conflict",
+                    "message": "记录已在其他页面更新，请重新载入后再保存。",
+                    "chart": public(store.chart(chart_key)),
+                },
+            ) from None
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         return {"chart": public(item), "warnings": item["warnings"]}
 
     @app.delete("/api/charts/{chart_key}/manual")
-    def clear_manual(chart_key: str):
+    def clear_manual(chart_key: str, expected_revision: int = Query(ge=0)):
         if chart_key not in store.catalog:
             raise HTTPException(404, "谱面不存在")
-        return {"chart": public(store.clear_manual(chart_key))}
+        try:
+            item = store.clear_manual(chart_key, expected_revision)
+        except ManualConflictError:
+            raise HTTPException(
+                409,
+                {
+                    "code": "manual_conflict",
+                    "message": "记录已在其他页面更新，请重新载入后再保存。",
+                    "chart": public(store.chart(chart_key)),
+                },
+            ) from None
+        return {"chart": public(item)}
 
     @app.get("/api/venues")
     def venues():
@@ -653,7 +702,23 @@ def create_app(store=None, updater=None):
 
     @app.post("/api/sync/divingfish")
     def sync():
-        token, _ = store.token()
+        try:
+            with store.sync_lease() as (token, generation):
+                return sync_provider(token, generation)
+        except SyncBusyError:
+            raise HTTPException(
+                409, {"code": "sync_busy", "message": "水鱼同步正在进行，请等待完成。"}
+            ) from None
+        except SyncTokenChangedError:
+            raise HTTPException(
+                409,
+                {
+                    "code": "token_changed",
+                    "message": "同步期间 Token 已更改，请重新同步。本地记录已保留。",
+                },
+            ) from None
+
+    def sync_provider(token, generation):
         if not token:
             raise HTTPException(
                 409,
@@ -677,7 +742,7 @@ def create_app(store=None, updater=None):
                         "message": f"水鱼返回 HTTP {response.status_code}，请检查 Token 或稍后重试。本地记录已保留。",
                     },
                 )
-            result = store.import_provider(response.json())
+            result = store.publish_sync(response.json(), generation)
         except httpx.RequestError as exc:
             raise HTTPException(
                 502, {"code": "network_error", "message": "暂时无法访问水鱼，本地记录已保留。"}
@@ -706,11 +771,7 @@ def create_app(store=None, updater=None):
                 )
         raise HTTPException(404, "曲绘不存在")
 
-    app.mount("/cover-assets", StaticFiles(directory=ROOT / "data/assets"), name="cover-assets")
-    frontend = ROOT / "frontend/dist"
+    app.mount("/cover-assets", StaticFiles(directory=assets), name="cover-assets")
     if frontend.is_dir():
         app.mount("/", StaticFiles(directory=frontend, html=True), name="frontend")
     return app
-
-
-app = create_app()

@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CompletionChart, CompletionTableData } from './types';
 import { messageOf } from './api';
 import { COMPLETION_BADGES, completionBadgeKey } from './completionBadges';
-import { exportCompletionTable } from './completionExport';
+import { discardCompletionExport, exportCompletionTable } from './completionExport';
+import { ImageSaveActions } from './ImageSaveActions';
+import { downloadImage, needsSaveGesture, prepareImage } from './imageSave';
+import type { PreparedImage } from './imageSave';
 
 const batchSize = 120;
 const chartName = (chart: CompletionChart) => chart.display_title || chart.title || '（空白曲名）';
@@ -94,6 +97,22 @@ export function CompletionTable({
   const [visibleCount, setVisibleCount] = useState(batchSize);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
+  const [readyImage, setReadyImage] = useState<PreparedImage | null>(null);
+  const exportController = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setReadyImage(null);
+    setExporting(false);
+    return () => {
+      exportController.current?.abort();
+      exportController.current = null;
+    };
+  }, [data, description, sort]);
+  useEffect(
+    () => () => {
+      if (readyImage) URL.revokeObjectURL(readyImage.url);
+    },
+    [readyImage],
+  );
   const sentinel = useRef<HTMLDivElement>(null);
   const grouped = sort === 'constant_desc' || sort === 'constant_asc';
   useEffect(() => setVisibleCount(batchSize), [data]);
@@ -129,37 +148,57 @@ export function CompletionTable({
     () => new Map(data.summary.constants.map((group) => [group.constant.toFixed(1), group])),
     [data],
   );
+  function cancelExport() {
+    exportController.current?.abort();
+    setExporting(false);
+    setExportProgress('');
+  }
   async function download() {
     if (exporting) return;
+    const controller = new AbortController();
+    exportController.current?.abort();
+    exportController.current = controller;
+    setReadyImage(null);
     setExporting(true);
     setExportProgress('准备图片…');
+    let artifactId: string | undefined;
     try {
-      const { url, name } = await exportCompletionTable(data.items, {
+      const { url, name, id } = await exportCompletionTable(data.items, {
         grouped,
         description,
-        onProgress: setExportProgress,
+        signal: controller.signal,
+        onProgress: (value) => {
+          if (!controller.signal.aborted) setExportProgress(value);
+        },
       });
+      artifactId = id;
       setExportProgress('准备下载…');
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
       if (!response.ok) throw new Error('下载图片失败，请重试');
-      const downloadUrl = URL.createObjectURL(await response.blob());
-      const anchor = document.createElement('a');
-      anchor.href = downloadUrl;
-      anchor.download = name;
-      document.body.append(anchor);
-      anchor.click();
-      window.setTimeout(() => {
-        anchor.remove();
-        URL.revokeObjectURL(downloadUrl);
-      }, 60_000);
-      notify('已开始下载 PNG');
+      const blob = await response.blob();
+      if (controller.signal.aborted) return;
+      const image = prepareImage(blob, name);
+      setReadyImage(image);
+      if (needsSaveGesture()) notify('整张图片已生成，请选择分享或保存');
+      else {
+        downloadImage(image);
+        notify('已开始下载 PNG');
+      }
     } catch (error) {
-      notify(messageOf(error));
+      if (!controller.signal.aborted) notify(messageOf(error));
     } finally {
-      setExporting(false);
-      setExportProgress('');
+      if (exportController.current === controller) {
+        exportController.current = null;
+        setExporting(false);
+        setExportProgress('');
+      }
+      if (artifactId)
+        await discardCompletionExport(artifactId).catch(() => {
+          // Successful PNG bytes are already local; the server also expires abandoned jobs.
+        });
     }
   }
+
   return (
     <div className="completion-board" data-grouped={grouped}>
       <div className="completion-toolbar">
@@ -175,15 +214,24 @@ export function CompletionTable({
             已完成
           </span>
         </div>
-        <button
-          type="button"
-          className="btn"
-          disabled={exporting || !data.items.length}
-          onClick={() => void download()}
-        >
-          {exporting ? exportProgress : '导出图片'}
-        </button>
+        <div className="completion-export-actions">
+          <button
+            type="button"
+            className="btn"
+            disabled={exporting || !data.items.length}
+            onClick={() => void download()}
+          >
+            {exporting ? exportProgress : '导出图片'}
+          </button>
+          {exporting && (
+            <button type="button" className="btn quiet" onClick={cancelExport}>
+              取消导出
+            </button>
+          )}
+        </div>
       </div>
+      {readyImage && <ImageSaveActions image={readyImage} key={readyImage.url} />}
+
       {groups.map((group) => {
         const count = counts.get(group.key);
         return (

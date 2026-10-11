@@ -728,6 +728,95 @@ try {
     }
   }, moduleUrl);
   assert.equal(error, '导出服务测试错误', 'backend errors propagate to caller');
+  for (const mode of [
+    'cancel-create',
+    'fail-upload',
+    'cancel-upload',
+    'fail-finish',
+    'cancel-finish',
+  ]) {
+    const result = await page.evaluate(
+      async ({ moduleUrl, mode }) => {
+        const { exportCompletionTable } = await import(moduleUrl);
+        const controller = new AbortController(),
+          calls = [];
+        const original = window.fetch;
+        const json = (body, status = 200) =>
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        window.fetch = async (url, init = {}) => {
+          const pathname = String(url);
+          calls.push({
+            path: pathname,
+            method: init.method,
+            aborted: init.signal?.aborted || false,
+          });
+          if (pathname === '/api/completion-exports') {
+            if (mode === 'cancel-create') controller.abort();
+            return json({ id: 'cancel-fixture' });
+          }
+          if (init.method === 'DELETE') return json({ ok: true });
+          if (pathname.includes('/parts/')) {
+            if (mode === 'cancel-upload') {
+              controller.abort();
+              throw new DOMException('cancel', 'AbortError');
+            }
+            return mode === 'fail-upload'
+              ? json({ detail: 'upload failed' }, 503)
+              : json({ ok: true });
+          }
+          if (pathname.endsWith('/finish')) {
+            if (mode === 'cancel-finish') {
+              controller.abort();
+              throw new DOMException('cancel', 'AbortError');
+            }
+            return json({ detail: 'finish failed' }, 503);
+          }
+          return original(url, init);
+        };
+        let error;
+        try {
+          await exportCompletionTable(
+            [
+              {
+                id: 1,
+                title: 'Cancel fixture',
+                type: 'standard',
+                difficulty: 3,
+                constant: 13,
+                is_complete: false,
+                is_ap: false,
+                status: 'incomplete',
+                jacket_url: '/jacket.svg',
+              },
+            ],
+            { grouped: true, description: '', signal: controller.signal },
+          );
+        } catch (reason) {
+          error = { name: reason.name, message: reason.message };
+        } finally {
+          window.fetch = original;
+        }
+        return { calls, error };
+      },
+      { moduleUrl, mode },
+    );
+    assert(result.error, `${mode}: the failed/cancelled export must reject`);
+    const deleted = result.calls.filter((call) => call.method === 'DELETE');
+    assert.equal(deleted.length, 1, `${mode}: abandoned job must be deleted exactly once`);
+    assert.equal(deleted[0].aborted, false, `${mode}: cleanup uses a fresh non-aborted signal`);
+    assert.equal(deleted[0].path, '/api/completion-exports/cancel-fixture');
+    if (mode === 'cancel-create')
+      assert.equal(result.calls.length, 2, 'Cancellation after creation never uploads a strip');
+    if (mode.includes('upload'))
+      assert(
+        !result.calls.some((call) => call.path.endsWith('/finish')),
+        'Failed uploads never finish a job',
+      );
+  }
+
   assert.deepEqual(errors, []);
   assert.deepEqual(downloads, [], 'caller owns browser delivery of the returned attachment URL');
 } finally {

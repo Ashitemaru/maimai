@@ -956,6 +956,32 @@ textarea {
   gap: var(--space-3);
   margin-bottom: var(--space-4);
 }
+.completion-export-actions,
+.image-save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.completion-export-actions {
+  justify-content: flex-end;
+}
+.image-save-panel {
+  display: grid;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface-muted);
+}
+.image-save-panel p {
+  margin: 0;
+  font-size: var(--font-control);
+}
+.image-save-help {
+  color: var(--text-secondary);
+}
 .completion-legend,
 .completion-legend > span {
   display: inline-flex;
@@ -2523,7 +2549,8 @@ textarea {
   .main {
     width: 100%;
     margin-left: 0;
-    padding: var(--space-3) var(--page-padding) calc(84px + env(safe-area-inset-bottom));
+    padding: calc(var(--space-3) + env(safe-area-inset-top)) var(--page-padding)
+      calc(84px + env(safe-area-inset-bottom));
   }
   .topbar {
     margin-bottom: var(--space-4);
@@ -2778,5 +2805,12 @@ textarea {
   }
   .spinner {
     animation-duration: 1.6s;
+  }
+}
+@media (hover: none) and (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: var(--font-body);
   }
 }

@@ -108,6 +108,7 @@ function chart(version, constant, difficulty, complete, title) {
     in_original_table: true,
     legacy_complete: complete && id % 2 === 0,
     legacy_venue: '',
+    manual_revision: 0,
     manual_ap: null,
     manual_venue: '',
     venue: '',

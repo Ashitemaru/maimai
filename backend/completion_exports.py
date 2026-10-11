@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 import zlib
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 import anyio
@@ -34,6 +34,8 @@ MAX_JOBS = 8
 MAX_COMPLETED_JOBS = 8
 MAX_STORAGE_BYTES = 8 * 1024 * 1024 * 1024
 TTL_SECONDS = 24 * 60 * 60
+IDLE_TTL_SECONDS = 15 * 60
+CLEANUP_INTERVAL_SECONDS = 60
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 JOB_ID = re.compile(r"[0-9a-f]{32}\Z")
 
@@ -156,7 +158,7 @@ def _filtered_rows(source, width, height):
         raise ValueError("PNG 分片扫描行数不一致")
 
 
-def assemble_png(paths, destination, width, height):
+def assemble_png(paths, destination, width, height, check_cancelled=None):
     """Join lossless filtered scanlines into one bounded, continuous zlib stream."""
     compressor = zlib.compressobj(level=6)
     pending = bytearray()
@@ -172,8 +174,12 @@ def assemble_png(paths, destination, width, height):
                 del pending[:65536]
 
         for path in paths:
+            if check_cancelled:
+                check_cancelled()
             with _rgba_strip(path, width, destination.parent) as (source, first_row, strip_height):
                 for y, row in enumerate(_filtered_rows(source, width, strip_height)):
+                    if check_cancelled and y % 128 == 0:
+                        check_cancelled()
                     # A strip's first filter used an all-zero previous row. Reset
                     # that row so joining it after another strip keeps every pixel.
                     emit(compressor.compress(first_row if y == 0 else row))
@@ -192,6 +198,7 @@ class CompletionExports:
         self.lock = threading.RLock()
         # Busy jobs cannot expire or be modified during upload/finalization.
         self.reserved = {}
+        self.cancelled = set()
 
     def _directory(self, job_id):
         if not JOB_ID.fullmatch(job_id):
@@ -200,11 +207,13 @@ class CompletionExports:
 
     def _load(self, job_id):
         directory = self._directory(job_id)
+        self.check_cancelled(job_id)
         try:
             manifest = json.loads((directory / "manifest.json").read_text())
         except (OSError, ValueError):
             raise HTTPException(404, "导出任务不存在或已过期") from None
-        if time.time() - manifest["touched"] > TTL_SECONDS and job_id not in self.reserved:
+        ttl = TTL_SECONDS if manifest["complete"] else IDLE_TTL_SECONDS
+        if time.time() - manifest["touched"] > ttl and job_id not in self.reserved:
             shutil.rmtree(directory, ignore_errors=True)
             raise HTTPException(404, "导出任务已过期，请重新导出")
         return directory, manifest
@@ -234,6 +243,30 @@ class CompletionExports:
         for _, directory in sorted(completed)[:-MAX_COMPLETED_JOBS]:
             shutil.rmtree(directory, ignore_errors=True)
 
+    def cleanup(self):
+        with self.lock:
+            self._cleanup()
+
+    def check_cancelled(self, job_id):
+        with self.lock:
+            if job_id in self.cancelled:
+                raise HTTPException(409, {"code": "export_cancelled", "message": "导出已取消"})
+
+    def cancel(self, job_id):
+        with self.lock:
+            directory = self._directory(job_id)
+            if job_id in self.reserved:
+                self.cancelled.add(job_id)
+            else:
+                shutil.rmtree(directory, ignore_errors=True)
+            return {"ok": True}
+
+    def _release(self, job_id):
+        self.reserved.pop(job_id, None)
+        if job_id in self.cancelled:
+            shutil.rmtree(self._directory(job_id), ignore_errors=True)
+            self.cancelled.discard(job_id)
+
     def _check_storage(self, additional):
         used = sum(path.stat().st_size for path in self.root.rglob("*") if path.is_file())
         if used + sum(self.reserved.values()) + additional > MAX_STORAGE_BYTES:
@@ -247,7 +280,7 @@ class CompletionExports:
             active = sum(
                 not self._load(p.name)[1]["complete"]
                 for p in self.root.iterdir()
-                if p.is_dir() and JOB_ID.fullmatch(p.name)
+                if p.is_dir() and JOB_ID.fullmatch(p.name) and p.name not in self.cancelled
             )
             if active >= MAX_JOBS:
                 raise HTTPException(429, "导出任务过多，请稍后重试")
@@ -270,6 +303,7 @@ class CompletionExports:
             return directory / f"{index}.upload"
 
     def accept_upload(self, job_id, index, temporary):
+        self.check_cancelled(job_id)
         try:
             with Image.open(temporary) as source:
                 if source.format != "PNG" or getattr(source, "n_frames", 1) != 1:
@@ -304,7 +338,7 @@ class CompletionExports:
     def end_upload(self, job_id, temporary):
         with self.lock:
             temporary.unlink(missing_ok=True)
-            self.reserved.pop(job_id, None)
+            self._release(job_id)
 
     def finish(self, job_id):
         with self.lock:
@@ -331,8 +365,15 @@ class CompletionExports:
         temporary = directory / "image.tmp"
         try:
             paths = [directory / f"{index}.png" for index in range(manifest["parts"])]
-            assemble_png(paths, temporary, manifest["width"], manifest["height"])
+            assemble_png(
+                paths,
+                temporary,
+                manifest["width"],
+                manifest["height"],
+                check_cancelled=lambda: self.check_cancelled(job_id),
+            )
             with self.lock:
+                self.check_cancelled(job_id)
                 temporary.replace(directory / "image.png")
                 manifest["complete"] = True
                 self._save(directory, manifest)
@@ -344,7 +385,7 @@ class CompletionExports:
         finally:
             with self.lock:
                 temporary.unlink(missing_ok=True)
-                self.reserved.pop(job_id, None)
+                self._release(job_id)
 
     def image(self, job_id):
         with self.lock:
@@ -359,11 +400,31 @@ class CompletionExports:
 
 def completion_export_router(root):
     exports = CompletionExports(root)
-    router = APIRouter(prefix="/api/completion-exports")
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async def housekeeping():
+            while True:
+                await anyio.sleep(CLEANUP_INTERVAL_SECONDS)
+                await run_in_threadpool(exports.cleanup)
+
+        await run_in_threadpool(exports.cleanup)
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(housekeeping)
+            try:
+                yield
+            finally:
+                tasks.cancel_scope.cancel()
+
+    router = APIRouter(prefix="/api/completion-exports", lifespan=lifespan)
 
     @router.post("")
     def create_export(value: ExportInput):
         return exports.create(value)
+
+    @router.delete("/{job_id}")
+    def cancel_export(job_id: str):
+        return exports.cancel(job_id)
 
     @router.put("/{job_id}/parts/{index}")
     async def upload_part(job_id: str, index: int, request: Request):
@@ -384,6 +445,7 @@ def completion_export_router(root):
             received = 0
             async with await anyio.open_file(temporary, "wb") as output:
                 async for chunk in request.stream():
+                    exports.check_cancelled(job_id)
                     received += len(chunk)
                     if received > MAX_PART_BYTES:
                         raise HTTPException(413, "PNG 分片超过 64 MiB")
@@ -391,7 +453,8 @@ def completion_export_router(root):
             await run_in_threadpool(exports.accept_upload, job_id, index, temporary)
             return {"ok": True}
         finally:
-            await run_in_threadpool(exports.end_upload, job_id, temporary)
+            with anyio.CancelScope(shield=True):
+                await run_in_threadpool(exports.end_upload, job_id, temporary)
 
     @router.post("/{job_id}/finish")
     def finish_export(job_id: str):

@@ -291,6 +291,7 @@ function Detail({
   venues,
   onClose,
   onSaved,
+  onReload,
   onCover,
   onSync,
   notify,
@@ -299,6 +300,7 @@ function Detail({
   venues: Venue[];
   onClose: () => void;
   onSaved: () => Promise<void>;
+  onReload: () => Promise<void>;
   onCover: (chart: Chart) => void;
   onSync: () => void;
   notify: (message: string) => void;
@@ -309,8 +311,22 @@ function Detail({
   const [note, setNote] = useState(c.note);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [conflicted, setConflicted] = useState(false);
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
+  function showError(error: unknown) {
+    if (!active.current) return;
+    setError(messageOf(error));
+    if (error instanceof ApiError && error.status === 409) setConflicted(true);
+  }
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (busy || conflicted) return;
     if (c.requires_venue && !venue.trim()) {
       setError('请填写 AP 机厅');
       return;
@@ -327,6 +343,7 @@ function Detail({
         {
           method: 'PUT',
           body: JSON.stringify({
+            expected_revision: c.manual_revision,
             ap: true,
             venue: venue.trim(),
             achievement: score ? Number(score) : null,
@@ -336,25 +353,41 @@ function Detail({
         },
       );
       await onSaved();
-      onClose();
+      if (active.current) onClose();
       notify(result.chart.conflict ? 'AP 已保存 · 水鱼待核对' : 'AP 已保存');
     } catch (error) {
-      setError(messageOf(error));
+      showError(error);
     } finally {
-      setBusy(false);
+      if (active.current) setBusy(false);
     }
   }
   async function reset() {
+    if (busy || conflicted) return;
     setBusy(true);
+    setError('');
     try {
-      await api('/charts/' + encodeURIComponent(c.chart_key) + '/manual', { method: 'DELETE' });
+      await api(
+        '/charts/' +
+          encodeURIComponent(c.chart_key) +
+          '/manual?' +
+          new URLSearchParams({ expected_revision: String(c.manual_revision) }),
+        { method: 'DELETE' },
+      );
       await onSaved();
-      onClose();
+      if (active.current) onClose();
       notify('已撤销手工记录');
     } catch (error) {
-      setError(messageOf(error));
+      showError(error);
     } finally {
-      setBusy(false);
+      if (active.current) setBusy(false);
+    }
+  }
+  async function reload() {
+    setBusy(true);
+    try {
+      await onReload();
+    } finally {
+      if (active.current) setBusy(false);
     }
   }
   return (
@@ -431,8 +464,20 @@ function Detail({
           <label htmlFor="manual-note">备注</label>
           <textarea id="manual-note" value={note} onChange={(e) => setNote(e.target.value)} />
         </div>
-        {error && <div className="form-message">{error}</div>}
-        <button type="submit" className="btn primary full" disabled={busy}>
+        {error && (
+          <div className="form-message" role="alert">
+            {error}
+            {conflicted && (
+              <>
+                <p>当前填写已保留。重新载入会替换表单内容。</p>
+                <button type="button" className="btn" disabled={busy} onClick={reload}>
+                  重新载入记录
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        <button type="submit" className="btn primary full" disabled={busy || conflicted}>
           <Icon name="check" />
           保存 AP
         </button>
@@ -443,7 +488,7 @@ function Detail({
           制作封面
         </button>
         {c.manual_ap !== null && (
-          <button className="btn" disabled={busy} onClick={reset}>
+          <button className="btn" disabled={busy || conflicted} onClick={reset}>
             撤销手工记录
           </button>
         )}
@@ -590,6 +635,8 @@ export default function App() {
   const [revision, setRevision] = useState(0);
   const [toast, setToast] = useState('');
   const [detail, setDetail] = useState<Chart | null>(null);
+  const detailRequest = useRef<{ controller: AbortController; sequence: number } | null>(null);
+  const detailSequence = useRef(0);
   const [picker, setPicker] = useState<'record' | 'cover' | null>(null);
   const [cover, setCover] = useState<CoverState>({
     chart: null,
@@ -601,9 +648,13 @@ export default function App() {
   const [catalogRevision, setCatalogRevision] = useState(0);
   const notify = useCallback((value: string) => setToast(value), []);
   const closeModal = useCallback(() => {
+    detailRequest.current?.controller.abort();
+    detailRequest.current = null;
+    detailSequence.current += 1;
     setDetail(null);
     setPicker(null);
   }, []);
+  useEffect(() => () => detailRequest.current?.controller.abort(), []);
   const catalogChanged = useCallback(() => {
     setRevision((value) => value + 1);
     setCatalogRevision((value) => value + 1);
@@ -803,13 +854,31 @@ export default function App() {
     setTotal(0);
     setListBusy(true);
   }
-  async function openDetail(c: Pick<Chart, 'chart_key'>) {
+  async function openDetail(c: Pick<Chart, 'chart_key'>, preserveExisting = false) {
+    detailRequest.current?.controller.abort();
+    const controller = new AbortController();
+    const sequence = ++detailSequence.current;
+    detailRequest.current = { controller, sequence };
+    const requestedPage = location.hash;
+    if (!preserveExisting) setDetail(null);
     try {
-      const fresh = await api<Chart>('/charts/' + encodeURIComponent(c.chart_key));
+      const fresh = await api<Chart>('/charts/' + encodeURIComponent(c.chart_key), {
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      if (
+        controller.signal.aborted ||
+        detailSequence.current !== sequence ||
+        location.hash !== requestedPage
+      )
+        return;
       setPicker(null);
       setDetail(fresh);
     } catch (error) {
-      notify(messageOf(error));
+      if (!controller.signal.aborted && detailSequence.current === sequence)
+        notify(messageOf(error));
+    } finally {
+      if (detailRequest.current?.sequence === sequence) detailRequest.current = null;
     }
   }
   function chooseCover(chart: Chart) {
@@ -817,6 +886,10 @@ export default function App() {
     closeModal();
     location.hash = 'cover';
     setPage('cover');
+  }
+  function openPicker(mode: 'record' | 'cover') {
+    closeModal();
+    setPicker(mode);
   }
   const filter = (setter: (value: string) => void, value: string) => {
     setter(value);
@@ -872,7 +945,7 @@ export default function App() {
     setOffset(0);
   }
   const recordButton = (
-    <button className="btn primary" onClick={() => setPicker('record')}>
+    <button className="btn primary" onClick={() => openPicker('record')}>
       <Icon name="plus" />
       记录 AP
     </button>
@@ -1324,7 +1397,7 @@ export default function App() {
                 <CoverPage
                   value={cover}
                   onChange={setCover}
-                  onPick={() => setPicker('cover')}
+                  onPick={() => openPicker('cover')}
                   notify={notify}
                 />
               )}
@@ -1363,11 +1436,12 @@ export default function App() {
       </div>
       {detail && (
         <Detail
-          key={detail.chart_key}
+          key={`${detail.chart_key}:${detail.manual_revision}`}
           chart={detail}
           venues={venues}
           onClose={closeModal}
           onSaved={refresh}
+          onReload={() => openDetail(detail, true)}
           onCover={chooseCover}
           onSync={sync}
           notify={notify}

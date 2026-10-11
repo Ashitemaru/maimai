@@ -27,3 +27,13 @@ Reports and screenshots are written under `../output/ui-audit`, `../output/compl
 ## Formatting and lint
 
 Run `npm run format` to apply Prettier to frontend sources, scripts, styles, configuration, and documentation. ESLint uses its recommended JavaScript and TypeScript rules, React Hooks dependency/rules checks, and the React Refresh component-export rule; CI treats warnings as failures. UI styling rules remain separately enforced by `check:styles`.
+
+## Online home-screen app and iPhone delivery
+
+The manifest declares a standalone application with generated 192/512px icons and a 180px Apple touch icon. `npm run generate:icons` renders the existing original `public/icon.svg`; no game artwork is bundled. Manifest requests use credentials because production protects the whole origin with Basic Auth.
+
+This first deployment deliberately uses no Service Worker, offline cache, or queued writes. Opening the installed app requires a network connection and the gateway credentials. Private API responses and generated images are not copied into Cache Storage or browser persistence. This avoids stale authenticated content surviving a gateway access change; server/cache headers remain a deployment responsibility.
+
+On iPhone/iPad, image generation and saving are separate actions. The app keeps one complete PNG in memory, then offers a fresh-tap share button, a PNG download link, and a link to open the complete image for long-press saving. A dismissed share sheet leaves the image ready; other share errors retain the fallback links. Desktop browsers also keep these actions after starting the usual download. Leaving the view releases its Blob URL. Completion export cancellation, generation failures, and finished-image fetch failures delete the temporary server job; a successfully fetched PNG also releases its server job. These changes preserve the full image, export dimensions, tile sizes, and cover composition.
+
+`verify:detail-concurrency` checks out-of-order detail responses and revision conflicts using isolated in-memory records. `verify:mobile-export` checks touch viewports, gesture-bound single-file sharing, cancellation/fallback, manifest/icons, and asset recovery with injected browser APIs. Chromium emulation does not establish real iPhone Safari, iOS share-sheet, or Basic Auth installation behavior; device acceptance remains a separate deployment check.

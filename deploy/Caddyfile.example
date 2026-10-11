@@ -1,0 +1,16 @@
+# Ubuntu's Caddy 2.6 uses `basicauth` (renamed `basic_auth` in Caddy 2.8).
+# Replace the hostname and bcrypt hash before validating and reloading.
+maimai.example.com {
+	basicauth {
+		ashitemaru REPLACE_WITH_BCRYPT_HASH
+	}
+	header {
+		Cache-Control "private, no-store"
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		X-Frame-Options DENY
+	}
+	reverse_proxy 127.0.0.1:8766 {
+		header_up -Authorization
+	}
+}

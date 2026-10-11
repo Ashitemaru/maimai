@@ -68,11 +68,15 @@ export function loadBackgroundManifest() {
 export function loadGameUIManifest() {
   return (gameUI ??= fetch(GAME_UI_MANIFEST_URL)
     .then(async (response) => {
-      if (!response.ok) return null;
+      if (!response.ok) throw new Error('游戏素材暂时无法载入');
       const data = (await response.json()) as GameUIManifest;
-      return data.assets ? data : null;
+      if (!data.assets) throw new Error('游戏素材目录格式不完整');
+      return data;
     })
-    .catch(() => null));
+    .catch(() => {
+      gameUI = undefined;
+      return null;
+    }));
 }
 export function assetURL(file: string, manifestURL = BACKGROUND_MANIFEST_URL) {
   return new URL(file, new URL(manifestURL, location.origin)).href;

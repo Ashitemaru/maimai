@@ -11,4 +11,4 @@ if [ ! -d frontend/node_modules ]; then
   npm --prefix frontend ci
 fi
 npm --prefix frontend run build
-exec .venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8766 "$@"
+exec .venv/bin/python -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8766 "$@"

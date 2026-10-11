@@ -38,9 +38,9 @@ jobs:
           python -m pip install -r requirements-dev.txt
           python -m pip check
       - name: Lint
-        run: python -m ruff check backend scripts tests
+        run: python -m ruff check backend scripts tests deploy
       - name: Check formatting
-        run: python -m ruff format --check backend scripts tests
+        run: python -m ruff format --check backend scripts tests deploy
       - name: Run isolated tests
         run: python scripts/test_python.py
 
@@ -110,3 +110,25 @@ jobs:
         with:
           python-version: "3.14"
       - run: python scripts/check_repository.py
+
+  release:
+    name: Publish deployable release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [python, frontend, dependencies, repository]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: frontend-${{ github.sha }}
+          path: frontend/dist/
+      - name: Publish immutable commit release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/package_release.py --publish "$GH_REPO"
