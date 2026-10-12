@@ -1,16 +1,113 @@
 import hashlib
+import io
 import json
 import subprocess
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from deploy.deploy_release import CORE_SCRIPTS as DEPLOY_SCRIPTS
 from deploy.deploy_release import extract_archive
-from scripts.package_release import CORE_SCRIPTS, package, publish_release
+from scripts.package_release import CORE_SCRIPTS, main, package, publish_release, run_gh
 
 SHA = "a" * 40
+
+
+class ReleaseDiagnosticTest(unittest.TestCase):
+    def test_cli_failure_reports_phase_exit_code_and_cause(self):
+        result = subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="private stdout",
+            stderr="HTTP 403: Resource not accessible by integration",
+        )
+        with patch("scripts.package_release.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"gh release create failed \(exit 1\): HTTP 403: Resource not accessible by integration",
+            ) as raised:
+                run_gh("release", "create", "private-argument")
+        self.assertNotIn("private-argument", str(raised.exception))
+        self.assertNotIn("private stdout", str(raised.exception))
+
+    def test_missing_release_still_allows_creation(self):
+        result = subprocess.CompletedProcess([], 1, stdout="", stderr="gh: Not Found (HTTP 404)")
+        with patch("scripts.package_release.subprocess.run", return_value=result):
+            self.assertIsNone(run_gh("api", "fixture", allow_missing=True))
+            with self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+                run_gh("api", "fixture")
+
+    def test_cli_diagnostic_redacts_credentials_and_full_urls(self):
+        diagnostic = (
+            "HTTP 403: denied\n"
+            "opaque-fixture-token ghp_fixturetoken github_pat_fixturetoken\n"
+            "Authorization: Bearer secret-header\n"
+            "Proxy-Authorization=Basic secret-proxy\n"
+            "download https://user:password@example.com/asset?sig=private-signature failed\n"
+            "\x1b[31mretry later\x1b[0m"
+        )
+        result = subprocess.CompletedProcess([], 1, stdout="", stderr=diagnostic)
+        with (
+            patch.dict("os.environ", {"GH_TOKEN": "opaque-fixture-token"}),
+            patch("scripts.package_release.subprocess.run", return_value=result),
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            run_gh("release", "download", "fixture")
+        message = str(raised.exception)
+        self.assertIn("HTTP 403: denied", message)
+        self.assertIn("retry later", message)
+        for secret in (
+            "opaque-fixture-token",
+            "ghp_fixturetoken",
+            "github_pat_fixturetoken",
+            "secret-header",
+            "secret-proxy",
+            "example.com",
+            "private-signature",
+            "\x1b",
+        ):
+            self.assertNotIn(secret, message)
+
+    def test_main_emits_one_escaped_annotation_for_publish_failure(self):
+        output = io.StringIO()
+        with (
+            patch("scripts.package_release.subprocess.check_output", return_value=SHA.encode()),
+            patch("scripts.package_release.package", return_value=Path("release/fixture.tar.gz")),
+            patch(
+                "scripts.package_release.publish_release",
+                side_effect=RuntimeError("HTTP 403: denied 50%\r\n::warning::injected"),
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(main(["--publish", "fixture/repository"]), 1)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(
+            lines[1],
+            "::error title=Release failed::Publish or verify release: RuntimeError: "
+            "HTTP 403: denied 50%25%0D%0A::warning::injected",
+        )
+
+    def test_main_reports_packaging_failure_and_does_not_publish(self):
+        output = io.StringIO()
+        with (
+            patch("scripts.package_release.subprocess.check_output", return_value=SHA.encode()),
+            patch(
+                "scripts.package_release.package",
+                side_effect=ValueError("Required release file missing: frontend/dist/index.html"),
+            ),
+            patch("scripts.package_release.publish_release") as publish,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(main(["--publish", "fixture/repository"]), 1)
+        publish.assert_not_called()
+        self.assertIn(
+            "::error title=Release failed::Package release: ValueError: Required release file missing",
+            output.getvalue(),
+        )
 
 
 class FakeReleaseService:

@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import tarfile
@@ -91,8 +92,28 @@ def run_gh(*args: str, allow_missing: bool = False) -> str | None:
     if result.returncode:
         if allow_missing and "HTTP 404" in result.stderr:
             return None
-        raise RuntimeError("GitHub release command failed; existing assets were not overwritten")
+        phase = "api" if args[:1] == ("api",) else "release"
+        if args[:2] in {("release", "create"), ("release", "download")}:
+            phase = " ".join(args[:2])
+        diagnostic = safe_diagnostic(result.stderr) or "No diagnostic was returned"
+        raise RuntimeError(f"gh {phase} failed (exit {result.returncode}): {diagnostic}")
     return result.stdout
+
+
+def safe_diagnostic(message: str) -> str:
+    """Keep CLI error causes, without credentials or signed download URLs."""
+    for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+        token = os.environ.get(name)
+        if token:
+            message = message.replace(token, "[redacted]")
+    message = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", message)
+    message = re.sub(r"(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+", "[redacted]", message)
+    message = re.sub(
+        r"(?im)\b(?:proxy-)?authorization\s*[:=][^\r\n]*", "Authorization: [redacted]", message
+    )
+    message = re.sub(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\"']+", "[URL omitted]", message)
+    message = "".join(char for char in message if char.isprintable() or char in "\n\r\t")
+    return message.strip()[:1500]
 
 
 def publish_release(destination: Path, sha: str, repository: str, *, gh=run_gh) -> None:
@@ -155,13 +176,27 @@ def publish_release(destination: Path, sha: str, repository: str, *, gh=run_gh) 
                 raise RuntimeError(f"Existing release asset differs: {name}; it was not changed")
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--publish", metavar="OWNER/REPO", help="Publish or verify the exact release"
     )
-    args = parser.parse_args()
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
-    print(package(ROOT, ROOT / "release", commit))
-    if args.publish:
-        publish_release(ROOT / "release", commit, args.publish)
+    args = parser.parse_args(argv)
+    phase = "Resolve source commit"
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
+        phase = "Package release"
+        print(package(ROOT, ROOT / "release", commit))
+        if args.publish:
+            phase = "Publish or verify release"
+            publish_release(ROOT / "release", commit, args.publish)
+    except Exception as error:
+        message = safe_diagnostic(f"{phase}: {type(error).__name__}: {error}")
+        escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=Release failed::{escaped}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
