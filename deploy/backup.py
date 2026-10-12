@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 if __package__:
     from .backup_data import capture, verify
@@ -318,7 +319,9 @@ def main():
                 if not (backup.repository / "config").exists():
                     backup.restic("init")
         elif args.action == "backup":
-            backup.backup(full_check=args.full_check or datetime.now(UTC).day == 1)
+            backup.backup(
+                full_check=args.full_check or datetime.now(ZoneInfo("Asia/Shanghai")).day == 1
+            )
         elif args.action == "resume":
             backup.resume()
         elif args.action == "check":

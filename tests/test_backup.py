@@ -356,6 +356,27 @@ class BackupTests(unittest.TestCase):
 
 
 class BackupCommandTests(unittest.TestCase):
+    def test_monthly_full_check_uses_shanghai_calendar(self):
+        from datetime import datetime
+
+        for utc, expected in (
+            ("2026-10-31T20:15:00+00:00", True),
+            ("2026-11-01T20:15:00+00:00", False),
+        ):
+            now = datetime.fromisoformat(utc)
+            with (
+                self.subTest(utc=utc),
+                patch("sys.argv", ["backup.py", "backup"]),
+                patch("deploy.backup.os.umask"),
+                patch("deploy.backup.signal.signal"),
+                patch("deploy.backup.datetime") as clock,
+                patch("deploy.backup.Backups") as cls,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                clock.now.side_effect = lambda timezone, at=now: at.astimezone(timezone)
+                self.assertEqual(main(), 0)
+                cls.return_value.backup.assert_called_once_with(full_check=expected)
+
     def test_subprocess_errors_do_not_include_output_or_password(self):
         cases = (
             subprocess.CompletedProcess(["restic"], 1, SECRET, SECRET),
