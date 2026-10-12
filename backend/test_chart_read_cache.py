@@ -21,6 +21,8 @@ class ChartReadCacheTests(unittest.TestCase):
         test_chart_store.ChartStoreTests.tearDown(self)
 
     def save(self, *, revision=0, request_id="fixture", venue="测试机厅"):
+        with self.store.db() as conn:
+            conn.execute("INSERT OR IGNORE INTO venues VALUES(?,?,?)", (venue, "fixture", ""))
         return self.store.save_ap_record(
             self.key,
             {

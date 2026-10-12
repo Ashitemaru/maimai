@@ -19,7 +19,12 @@ class APRecordTests(unittest.TestCase):
     tearDown = test_chart_store.ChartStoreTests.tearDown
     key = "10001:3"
 
+    def add_venue(self, venue):
+        with self.store.db() as conn:
+            conn.execute("INSERT OR IGNORE INTO venues VALUES(?,?,?)", (venue, "fixture", ""))
+
     def save(self, *, venue="【测试市】测试机厅", request_id="request-1", revision=0):
+        self.add_venue(venue.strip())
         return self.store.save_ap_record(
             self.key,
             {
@@ -57,6 +62,22 @@ class APRecordTests(unittest.TestCase):
         self.assertEqual(restarted.chart(self.key)["pending_record"], chart["pending_record"])
         self.assertEqual(restarted.ap_records()["count"], 1)
         self.assertEqual(restarted.venue_list()["items"][0]["name"], "【测试市】测试机厅")
+
+    def test_selected_venue_preserves_interior_spaces_and_idempotent_identity(self):
+        venue = "【测试市】测试  机厅"
+        self.add_venue(venue)
+        data = {"venue": venue, "request_id": "exact-name", "expected_revision": 0}
+        first = self.store.save_ap_record(self.key, data)
+        repeated = self.store.save_ap_record(self.key, {**data, "venue": f"  {venue}  "})
+        self.assertEqual(first["pending_record"]["venue"], venue)
+        self.assertEqual(repeated["pending_record"], first["pending_record"])
+        self.assertEqual(repeated["record_revision"], first["record_revision"])
+        with self.store.db() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM ap_pending").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM venues").fetchone()[0], 1)
+            self.assertEqual(
+                conn.execute("SELECT venue FROM ap_record_requests").fetchone()[0], venue
+            )
 
     def test_idempotency_cannot_resurrect_cancelled_or_confirmed_claim(self):
         chart = self.save()
@@ -191,16 +212,82 @@ class APRecordTests(unittest.TestCase):
         self.assertTrue(chart["conflict"])
         self.assertEqual(chart["status"], "app")
 
-    def test_venue_correction_retains_confirmed_venue_until_fresh_sync(self):
+    def test_confirmed_venue_cannot_be_edited_or_queued_again(self):
         self.save()
         self.sync()
         chart = self.store.chart(self.key)
-        self.save(venue="新机厅", request_id="correction", revision=chart["record_revision"])
-        self.assertEqual(self.store.chart(self.key)["venue"], "【测试市】测试机厅")
-        self.sync("fc")
-        self.assertEqual(self.store.chart(self.key)["venue"], "【测试市】测试机厅")
+        for venue in ("新机厅", chart["venue"]):
+            with self.assertRaisesRegex(ValueError, "已记录机厅"):
+                self.save(venue=venue, request_id="correction", revision=chart["record_revision"])
+        self.assertEqual(self.store.chart(self.key), chart)
+        self.assertEqual(self.store.ap_records()["count"], 0)
+
+    def test_legacy_recorded_venue_is_also_locked(self):
+        with self.store.db() as conn:
+            conn.execute(
+                "INSERT INTO legacy VALUES(?,?,?,?,?,?,?,?,?)",
+                (self.key, "high", 13.3, 1, "原机厅", "Example", "fixture", 1, 1),
+            )
+        with self.assertRaisesRegex(ValueError, "已记录机厅"):
+            self.save()
+        self.assertEqual(self.store.chart(self.key)["venue"], "原机厅")
+        self.assertEqual(self.store.ap_records()["count"], 0)
+
+    def test_uncompleted_legacy_venue_does_not_lock_new_registration(self):
+        with self.store.db() as conn:
+            conn.execute(
+                "INSERT INTO legacy VALUES(?,?,?,?,?,?,?,?,?)",
+                (self.key, "high", 13.3, 0, "原机厅", "Example", "fixture", 1, 1),
+            )
+        self.assertFalse(self.store.chart(self.key)["is_complete"])
+        chart = self.save()
+        self.assertEqual(chart["pending_record"]["venue"], "【测试市】测试机厅")
+
+    def test_unknown_venue_is_rejected_without_creating_a_record_or_venue(self):
+        with TestClient(create_app(self.store, updater=FakeUpdater())) as client:
+            response = client.put(
+                f"/api/charts/{self.key}/ap-record",
+                json={"venue": "未知机厅", "request_id": "unknown", "expected_revision": 0},
+            )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("请选择已有机厅", response.json()["detail"])
+        self.assertEqual(self.store.ap_records()["count"], 0)
+        self.assertEqual(self.store.venue_list()["items"], [])
+        self.assertEqual(self.store.chart(self.key)["record_revision"], 0)
+
+    def test_existing_legacy_venue_can_be_selected_for_another_chart(self):
+        with self.store.db() as conn:
+            conn.execute(
+                "INSERT INTO legacy VALUES(?,?,?,?,?,?,?,?,?)",
+                ("10002:3", "high", 13.3, 1, "原机厅", "Other", "fixture", 1, 1),
+            )
+        chart = self.store.save_ap_record(
+            self.key, {"venue": "原机厅", "request_id": "legacy", "expected_revision": 0}
+        )
+        self.assertEqual(chart["pending_record"]["venue"], "原机厅")
+
+    def test_sync_cannot_promote_an_old_pending_correction_over_a_saved_venue(self):
+        self.save()
+        with self.store.db() as conn:
+            conn.execute(
+                "INSERT INTO legacy VALUES(?,?,?,?,?,?,?,?,?)",
+                (self.key, "high", 13.3, 1, "原机厅", "Example", "fixture", 1, 1),
+            )
+        receipt = self.sync()
+        chart = self.store.chart(self.key)
+        self.assertEqual((receipt["confirmed"], receipt["pending"]), (0, 1))
+        self.assertEqual(chart["venue"], "原机厅")
+        self.assertEqual(chart["pending_record"]["reason"], "已有机厅记录，待核记录未生效")
+
+    def test_confirmation_between_read_and_write_cannot_be_overwritten(self):
+        self.save()
+        stale = self.store.chart(self.key)
         self.sync()
-        self.assertEqual(self.store.chart(self.key)["venue"], "新机厅")
+        with patch.object(self.store, "chart", return_value=stale):
+            with self.assertRaisesRegex(ValueError, "已记录机厅"):
+                self.save(venue="新机厅", request_id="racing", revision=stale["record_revision"])
+        self.assertEqual(self.store.chart(self.key)["venue"], "【测试市】测试机厅")
+        self.assertEqual(self.store.ap_records()["count"], 0)
 
     def test_sync_start_snapshot_does_not_promote_new_edited_or_cancelled_claim(self):
         empty = self.store.pending_snapshot()
@@ -278,6 +365,7 @@ class APRecordTests(unittest.TestCase):
             path = f"/api/charts/{self.key}/ap-record"
             self.assertEqual(client.put(path, json={"venue": "机厅"}).status_code, 422)
             body = {"venue": "机厅", "request_id": "api-1", "expected_revision": 0}
+            self.add_venue("机厅")
             self.assertEqual(client.put(path, json=body).status_code, 200)
             self.assertEqual(client.get("/api/ap-records").json()["count"], 1)
             self.assertEqual(

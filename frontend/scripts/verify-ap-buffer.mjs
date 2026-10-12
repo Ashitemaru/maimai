@@ -274,7 +274,11 @@ try {
       '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
       '/api/catalog/update': catalog,
       '/api/venues': {
-        items: [{ name: '【上海】最近机厅', count: 2, last_used_at: '2026-10-12T18:00:00+08:00' }],
+        items: ['【上海】最近机厅', '【广州】已有机厅', '【潮州】第二机厅'].map((name) => ({
+          name,
+          count: 2,
+          last_used_at: '2026-10-12T18:00:00+08:00',
+        })),
       },
       '/api/ap-records': queue(),
       '/api/summary': counts(),
@@ -299,25 +303,6 @@ try {
   const beta = page.locator('.completion-tile[data-chart-key="9101:3"]');
   const save = () => drawer.getByRole('button', { name: '保存待核记录', exact: true }).click();
   const close = () => drawer.getByRole('button', { name: '关闭', exact: true }).click();
-  const cancelNewVenueLocation = async (name, chart) => {
-    const editor = page.getByRole('dialog', { name: '编辑机厅位置' });
-    await editor.waitFor();
-    assert.equal(await editor.getByLabel('机厅名称', { exact: true }).inputValue(), name);
-    const recordBeforeCancel = structuredClone(chart);
-    const mutationsBeforeCancel = mutations.length;
-    await editor.getByRole('button', { name: '取消', exact: true }).click();
-    await editor.waitFor({ state: 'detached' });
-    assert.deepEqual(
-      chart,
-      recordBeforeCancel,
-      'Cancelling location editing must preserve AP and buffer facts',
-    );
-    assert.equal(
-      mutations.length,
-      mutationsBeforeCancel,
-      'Cancelling location editing must not write an AP record',
-    );
-  };
   const settle = async () => {
     await page.waitForLoadState('networkidle');
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
@@ -325,16 +310,19 @@ try {
   await page.goto(origin + '/?view=completion#ap');
   await alpha.click();
   await drawer.waitFor();
-  assert.equal(await drawer.locator('input').count(), 1);
+  assert.equal(await drawer.locator('input').count(), 0);
+  assert.equal(await drawer.getByRole('combobox', { name: 'AP 机厅', exact: true }).count(), 1);
   assert.equal(await drawer.locator('textarea').count(), 0);
-  assert.equal(
-    await drawer.getByLabel('AP 机厅', { exact: true }).inputValue(),
-    '【上海】最近机厅',
-  );
-  await drawer.getByLabel('AP 机厅', { exact: true }).fill('【广州】新机厅');
+  assert.equal(await drawer.getByLabel('AP 机厅', { exact: true }).inputValue(), '');
+  assert(await drawer.getByRole('button', { name: '保存待核记录', exact: true }).isDisabled());
+  assert.equal(mutations.length, 0, 'The empty venue selection must not submit');
+  await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('【广州】已有机厅');
   await save();
   await drawer.getByRole('alert').waitFor();
-  assert.equal(await drawer.getByLabel('AP 机厅', { exact: true }).inputValue(), '【广州】新机厅');
+  assert.equal(
+    await drawer.getByLabel('AP 机厅', { exact: true }).inputValue(),
+    '【广州】已有机厅',
+  );
   await save();
   await drawer.waitFor({ state: 'detached' });
   assert.equal(mutations[0].request_id, mutations[1].request_id);
@@ -342,17 +330,17 @@ try {
   assert.equal(await alpha.getAttribute('data-complete'), 'false');
   assert.equal(await alpha.locator('.completion-result').count(), 0);
   await alpha.getByLabel('待核实', { exact: true }).waitFor();
-  await cancelNewVenueLocation('【广州】新机厅', charts[0]);
+  assert.equal(await page.locator('.venue-editor').count(), 0);
   checks.push(
-    'Mobile venue-only form uses recent venue; a lost response retries idempotently; new-venue location editing can be cancelled without claiming AP or removing the buffer record',
+    'Mobile venue selection defaults empty and allows only existing venues; a lost response retries idempotently without claiming AP',
   );
   await page.reload();
   await alpha.getByLabel('待核实', { exact: true }).waitFor();
   await page.getByRole('link', { name: /待核记录/ }).click();
-  await page.getByText('【广州】新机厅', { exact: true }).waitFor();
+  await page.getByText('【广州】已有机厅', { exact: true }).waitFor();
   await page.getByRole('button', { name: '修改登记', exact: true }).click();
-  await drawer.getByLabel('AP 机厅', { exact: true }).fill('');
-  await drawer.getByRole('button', { name: '【上海】最近机厅', exact: true }).click();
+  await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('');
+  await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('【上海】最近机厅');
   await save();
   await drawer.waitFor({ state: 'detached' });
   assert.equal(charts[0].pending_record.venue, '【上海】最近机厅');
@@ -369,10 +357,10 @@ try {
   );
   await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
   await alpha.click();
-  await drawer.getByLabel('AP 机厅', { exact: true }).fill('【广州】新机厅');
+  await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('【广州】已有机厅');
   await save();
   await drawer.waitFor({ state: 'detached' });
-  await cancelNewVenueLocation('【广州】新机厅', charts[0]);
+  assert.equal(await page.locator('.venue-editor').count(), 0);
   await page.getByRole('link', { name: /待核记录/ }).click();
   await page.getByRole('button', { name: '同步水鱼', exact: true }).click();
   await page.getByText('水鱼暂未显示 AP', { exact: true }).waitFor();
@@ -385,27 +373,31 @@ try {
   syncStage = 1;
   await page.getByRole('button', { name: '同步水鱼', exact: true }).click();
   await page.getByText('暂无待核记录', { exact: true }).waitFor();
-  assert.equal(charts[0].venue, '【广州】新机厅');
+  assert.equal(charts[0].venue, '【广州】已有机厅');
   await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
   await alpha.locator('.completion-result').waitFor();
   assert.equal(await alpha.getAttribute('data-complete'), 'true');
   await alpha.click();
-  await drawer.getByText('水鱼成绩', { exact: true }).click();
+  assert.equal(await drawer.locator('details').count(), 0);
   await drawer.getByText('100.9876%', { exact: true }).waitFor();
-  await drawer.getByText('2450', { exact: true }).waitFor();
+  assert.equal(await drawer.getByText('2450', { exact: true }).count(), 0);
+  assert.equal(await drawer.getByText('290', { exact: true }).count(), 0);
   await drawer.getByText('FDX+', { exact: true }).waitFor();
+  assert.equal(await drawer.getByRole('combobox', { name: 'AP 机厅', exact: true }).count(), 0);
+  assert.equal(await drawer.getByRole('button', { name: '保存待核记录', exact: true }).count(), 0);
+  assert.equal(await drawer.getByRole('button', { name: '制作封面', exact: true }).count(), 0);
   await close();
   checks.push(
-    'Confirmed sync commits venue and AP mask; provider achievement and other score fields remain readonly',
+    'Confirmed sync commits venue and AP mask; achievement/FC/FS are immediately visible, and confirmed venue has no editing or cover controls',
   );
   await beta.click();
-  await drawer.getByText('机厅待补', { exact: true }).waitFor();
-  await drawer.getByLabel('AP 机厅', { exact: true }).fill('【潮州】第二机厅');
+  await drawer.getByRole('combobox', { name: 'AP 机厅', exact: true }).waitFor();
+  await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('【潮州】第二机厅');
   await save();
   await drawer.waitFor({ state: 'detached' });
   await beta.locator('.completion-result').waitFor();
   await beta.getByLabel('待核实', { exact: true }).waitFor();
-  await cancelNewVenueLocation('【潮州】第二机厅', charts[1]);
+  assert.equal(await page.locator('.venue-editor').count(), 0);
   await beta.click();
   await drawer.getByRole('button', { name: '取消登记', exact: true }).click();
   await drawer.waitFor({ state: 'detached' });
@@ -417,13 +409,13 @@ try {
   delaySync = delay;
   await page.getByRole('button', { name: '同步水鱼', exact: true }).click();
   await delay.started.promise;
-  await alpha.click();
-  await drawer.getByLabel('AP 机厅', { exact: true }).fill('Do not lose this draft');
+  await beta.click();
+  await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('【潮州】第二机厅');
   delay.release.resolve();
   await settle();
   assert.equal(
     await drawer.getByLabel('AP 机厅', { exact: true }).inputValue(),
-    'Do not lose this draft',
+    '【潮州】第二机厅',
   );
   await page.screenshot({ path: path.join(output, 'mobile-record.png') });
   await close();

@@ -51,6 +51,9 @@ function RemyStatus({ control }: { control: CatalogUpdateControl }) {
 export function CatalogUpdatePanel({ control }: { control: CatalogUpdateControl }) {
   const { state, error, mainBusy, remyBusy, action } = control;
   const diff = state?.main.diff;
+  const hasChanges = Boolean(
+    diff && (diff.songs_added > 0 || diff.charts_added > 0 || diff.constants_changed > 0),
+  );
   const warnings = state?.main.warnings || [];
   const canRetryRemy = (state?.remy.pending_count ?? 0) > 0 && !remyBusy;
   return (
@@ -94,16 +97,15 @@ export function CatalogUpdatePanel({ control }: { control: CatalogUpdateControl 
           <div className="form-message">{error || state?.main.error}</div>
         )}
         {warnings.length > 0 && (
-          <details className="catalog-warnings">
-            <summary>{warnings.length} 项更新提示</summary>
+          <div className="catalog-warnings" role="note" aria-label="更新提示">
             <ul>
               {warnings.map((warning, index) => (
                 <li key={index}>{warning}</li>
               ))}
             </ul>
-          </details>
+          </div>
         )}
-        {state && <CatalogChanges revision={state.revision} />}
+        {state && hasChanges && <CatalogChanges revision={state.revision} />}
         <div className="catalog-verification">
           <div>
             <strong>Re:MASTER 版本</strong>

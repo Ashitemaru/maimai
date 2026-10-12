@@ -182,7 +182,7 @@ const status = {
     stage: '',
     message: '曲库已更新',
     diff: { songs_added: 2, charts_added: 8, constants_changed: 1 },
-    warnings: [],
+    warnings: ['合成更新提示'],
   },
   remy: {
     status: 'complete',
@@ -879,7 +879,11 @@ async function sortControls(page, label) {
     const tr = page
       .locator('.chart-table tbody tr')
       .filter({ has: page.locator('.song-title', { hasText: chart.title }) });
-    const venue = await tr.locator('td').nth(4).textContent();
+    const venueColumn = (await page.locator('.chart-table thead th').allTextContents()).findIndex(
+      (value) => value.trim() === 'AP 机厅',
+    );
+    assert(venueColumn >= 0);
+    const venue = await tr.locator('td').nth(venueColumn).textContent();
     assert.equal(
       venue.trim(),
       chart.requires_venue ? chart.venue || '—' : chart.is_complete ? '不记录' : '—',
@@ -1775,6 +1779,27 @@ try {
         (await page.locator('.stats').getAttribute('aria-busy')) === 'false',
       'clear initial preference range',
     );
+    assert.deepEqual(
+      (await page.locator('.chart-table thead th').allTextContents()).map((value) => value.trim()),
+      ['曲目', '难度', '定数', '达成率', '状态', 'AP 机厅'],
+    );
+    assert.equal(
+      await page.locator('.chart-table').getByRole('button', { name: /封面/ }).count(),
+      0,
+    );
+    const scoreColumn = 3;
+    assert.equal(
+      (
+        await page
+          .locator('.chart-table tbody tr')
+          .first()
+          .locator('td')
+          .nth(scoreColumn)
+          .textContent()
+      ).trim(),
+      '100.9876%',
+    );
+    assert.equal(await page.getByRole('button', { name: '记录 AP', exact: true }).count(), 1);
     await badges(page.locator('.chart-table'), `${name}-AP list`);
     await sortControls(page, name);
     await regionalVersionControls(page, name);
@@ -1832,6 +1857,7 @@ try {
     assert.equal(await page.getByRole('dialog').count(), 0);
     await page.goto(origin + '/#cover', { waitUntil: 'networkidle' });
     await page.getByRole('heading', { name: '封面工坊' }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '记录 AP', exact: true }).count(), 0);
     await page.getByRole('button', { name: '选择谱面', exact: true }).click();
     await page.locator('.pick-song').first().click();
     await page.locator('#cover-score').fill('100.9876');
@@ -1878,9 +1904,15 @@ try {
     await page.goto(origin + '/#venues', { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: '汇总表', exact: true }).click();
     await page.locator('.venue-summary-entry').first().waitFor();
+    assert.equal(await page.getByRole('button', { name: '记录 AP', exact: true }).count(), 0);
     await audit(page, `${name}-venues`);
     await page.goto(origin + '/#settings', { waitUntil: 'networkidle' });
     await page.locator('.record-review-entry').first().waitFor();
+    assert.equal(await page.getByRole('button', { name: '记录 AP', exact: true }).count(), 0);
+    await page
+      .getByRole('note', { name: '更新提示' })
+      .getByText('合成更新提示', { exact: true })
+      .waitFor();
     await badges(page.locator('.record-review-list'), `${name}-pending review`);
     if (name === 'desktop') await retryControls(page);
     await audit(page, `${name}-settings`);
@@ -1914,7 +1946,8 @@ try {
       'static',
       'confirmation bar must remain in document flow',
     );
-    await page.getByText('查看变化', { exact: true }).click();
+    assert.equal(await page.locator('.catalog-settings details').count(), 0);
+    assert.equal(await page.getByText('查看变化', { exact: true }).count(), 0);
     await page.locator('.catalog-change-group').first().waitFor();
     await badges(page.locator('.catalog-change-group'), `${name}-catalog changes`);
     await audit(page, `${name}-settings-expanded`);

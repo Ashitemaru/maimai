@@ -1,12 +1,7 @@
 export interface VenueLocation {
-  place_name: string;
-  address: string;
   latitude: number | null;
   longitude: number | null;
   coordinate_system: 'WGS84';
-  accuracy: 'exact' | 'building' | 'approximate' | 'unknown';
-  closed_status: 'unknown' | 'open' | 'closed' | 'probably_closed';
-  source?: string;
   updated_at?: string;
 }
 

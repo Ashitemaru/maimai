@@ -39,6 +39,7 @@ const origin = 'http://127.0.0.1:' + server.address().port;
 const browser = await launchBrowser();
 const page = await browser.newPage({ viewport: { width: 1450, height: 1100 } });
 const errors = [],
+  reportRequests = [],
   posts = [],
   checks = [];
 page.on('pageerror', (error) => errors.push(error.message));
@@ -123,6 +124,11 @@ await page.route('**/api/**', async (route) => {
   }
   const request = route.request(),
     pathname = new URL(request.url()).pathname;
+  if (pathname === '/api/catalog/update/report') {
+    reportRequests.push(pathname);
+    await route.fulfill({ json: { diff: {}, issues: [], sources: {} } });
+    return;
+  }
   if (pathname === '/api/catalog/update') {
     await route.fulfill({ json: status });
     return;
@@ -285,6 +291,9 @@ const checkSummary = async () => {
 };
 try {
   await page.goto(origin + '/#settings', { waitUntil: 'networkidle' });
+  assert.equal(reportRequests.length, 0, 'No catalog changes must not fetch the detailed report');
+  assert.equal(await page.locator('.catalog-changes').count(), 0);
+  checks.push('An unchanged catalog does not mount or fetch an empty changes section');
   await page.getByRole('heading', { name: '曲库差异', exact: true }).waitFor();
   assert.equal(await globalConfirm().count(), 1);
   assert.equal(await globalConfirm().isDisabled(), true);

@@ -18,7 +18,6 @@ import { PendingRecords } from './PendingRecords';
 import { CompletionTable } from './CompletionTable';
 import { CompletionMatrix } from './CompletionMatrix';
 import { VenuesPage } from './VenuesPage';
-import { VenueLocationEditor } from './VenueLocationEditor';
 import { PreferencesPanel, PreferencesStatus } from './Preferences';
 import { CoverPage } from './CoverWorkshop';
 import type { CoverState } from './CoverWorkshop';
@@ -304,9 +303,7 @@ function Detail({
   onClose,
   onSaved,
   onReload,
-  onCover,
   onSync,
-  onNewVenue,
   notify,
 }: {
   chart: Chart;
@@ -314,21 +311,20 @@ function Detail({
   onClose: () => void;
   onSaved: () => Promise<void>;
   onReload: () => Promise<void>;
-  onCover: (chart: Chart) => void;
   onSync: () => void;
-  onNewVenue: (name: string) => void;
   notify: (message: string) => void;
 }) {
-  const [venue, setVenue] = useState(
-    c.pending_record?.venue || c.venue || venues.find((item) => item.last_used_at)?.name || '',
-  );
+  const [venue, setVenue] = useState(c.pending_record?.venue || '');
+  const venueRecorded = c.is_complete && !!c.venue;
   const request = useRef<{ venue: string; id: string } | null>(null);
-  const recentVenues = [...venues].sort((a, b) =>
-    (b.last_used_at || '').localeCompare(a.last_used_at || ''),
-  );
-  const venueChoices = recentVenues
-    .filter((item) => !venue || item.name.includes(venue.trim()))
-    .slice(0, 6);
+  const venueChoices = [...venues].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  const achievement = c.provider_achievement ?? c.achievement;
+  const combo = ({ ap: 'AP', app: 'AP+', fc: 'FC', fcp: 'FC+' } as Record<string, string>)[
+    c.provider_fc || ''
+  ];
+  const syncStatus = (
+    { sync: 'SYNC', fs: 'FS', fsp: 'FS+', fsd: 'FDX', fsdp: 'FDX+' } as Record<string, string>
+  )[c.provider_fs || ''];
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [conflicted, setConflicted] = useState(false);
@@ -346,9 +342,9 @@ function Detail({
   }
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (busy || conflicted) return;
-    if (c.requires_venue && !venue.trim()) {
-      setError('请填写 AP 机厅');
+    if (busy || conflicted || venueRecorded) return;
+    if (c.requires_venue && !venues.some((item) => item.name === venue)) {
+      setError('请选择 AP 机厅');
       return;
     }
     const submittedVenue = c.requires_venue ? venue.trim() : '';
@@ -368,8 +364,6 @@ function Detail({
       await onSaved();
       if (active.current) onClose();
       notify('已加入待核记录');
-      if (active.current && submittedVenue && !venues.some((item) => item.name === submittedVenue))
-        onNewVenue(submittedVenue);
     } catch (error) {
       showError(error);
     } finally {
@@ -423,122 +417,87 @@ function Detail({
           <p>{c.artist}</p>
         </div>
       </div>
-      {c.conflict && <div className="form-message">水鱼待核对 · 个人记录已保留</div>}
       <div className="record-status">
-        <div>
-          <Badge chart={c} />
-          {c.venue_pending && <span>机厅待补</span>}
-          {c.pending_record && c.is_ap && <span>机厅待核实</span>}
+        <div className="provider-results">
+          <strong>{achievement != null ? `${achievement.toFixed(4)}%` : '—'}</strong>
+          {combo && <span>{combo}</span>}
+          {syncStatus && <span>{syncStatus}</span>}
         </div>
         <button className="btn quiet" onClick={onSync}>
           <Icon name="sync" />
           同步
         </button>
       </div>
-      {c.pending_record && (
-        <div className="detail-rule">
-          <strong>{c.pending_record.venue || '机厅不记录'}</strong>
-          <span>{c.pending_record.reason}</span>
+      {!combo && (
+        <div className="record-status">
+          <Badge chart={c} />
         </div>
       )}
-      <form onSubmit={save}>
-        {c.requires_venue && (
-          <div className="field">
-            <label htmlFor="venue-input">AP 机厅</label>
-            <input
-              id="venue-input"
-              required
-              value={venue}
-              onChange={(e) => setVenue(e.target.value)}
-              placeholder="机厅名称"
-              autoComplete="off"
-            />
-            <div className="venue-suggestions" aria-label="已有机厅">
-              {venueChoices.map((item) => (
-                <button
-                  type="button"
-                  className="btn"
-                  key={item.name}
-                  onClick={() => setVenue(item.name)}
-                >
-                  {item.name}
-                </button>
-              ))}
+      {c.conflict && <div className="form-message">水鱼待核对 · 个人记录已保留</div>}
+      {venueRecorded ? (
+        <div className="detail-rule">
+          <strong>{c.venue}</strong>
+        </div>
+      ) : (
+        <>
+          {c.pending_record && (
+            <div className="detail-rule">
+              <strong>{c.pending_record.venue || '机厅不记录'}</strong>
+              <span>{c.pending_record.reason}</span>
             </div>
-          </div>
-        )}
-        {error && (
-          <div className="form-message" role="alert">
-            {error}
-            {conflicted && (
-              <>
-                <p>当前填写已保留。重新载入会替换表单内容。</p>
-                <button type="button" className="btn" disabled={busy} onClick={reload}>
-                  重新载入记录
-                </button>
-              </>
-            )}
-          </div>
-        )}
-        <button type="submit" className="btn primary full" disabled={busy || conflicted}>
-          <Icon name="check" />
-          保存待核记录
-        </button>
-      </form>
-      <div className="drawer-actions">
-        <button className="btn" onClick={() => onCover(c)}>
-          <Icon name="image" />
-          制作封面
-        </button>
-        {c.pending_record && (
-          <button className="btn" disabled={busy || conflicted} onClick={reset}>
-            取消登记
-          </button>
-        )}
-      </div>
-      <details className="provider-details">
-        <summary>水鱼成绩</summary>
-        <dl className="provider-scores">
-          <div>
-            <dt>达成率</dt>
-            <dd>
-              {c.provider_achievement != null ? `${c.provider_achievement.toFixed(4)}%` : '—'}
-            </dd>
-          </div>
-          <div>
-            <dt>评级</dt>
-            <dd>{c.provider_rate?.replace(/p$/, '+').toUpperCase() || '—'}</dd>
-          </div>
-          <div>
-            <dt>连击</dt>
-            <dd>
-              {({ ap: 'AP', app: 'AP+', fc: 'FC', fcp: 'FC+' } as Record<string, string>)[
-                c.provider_fc || ''
-              ] || '—'}
-            </dd>
-          </div>
-          <div>
-            <dt>同步</dt>
-            <dd>
-              {(
-                { sync: 'SYNC', fs: 'FS', fsp: 'FS+', fsd: 'FDX', fsdp: 'FDX+' } as Record<
-                  string,
-                  string
+          )}
+          <form onSubmit={save}>
+            {c.requires_venue && (
+              <div className="field">
+                <label htmlFor="venue-input">AP 机厅</label>
+                <select
+                  id="venue-input"
+                  required
+                  value={venue}
+                  disabled={busy || conflicted}
+                  onChange={(event) => setVenue(event.target.value)}
                 >
-              )[c.provider_fs || ''] || '—'}
-            </dd>
-          </div>
-          <div>
-            <dt>DX 分数</dt>
-            <dd>{c.provider_dx_score ?? '—'}</dd>
-          </div>
-          <div>
-            <dt>单谱 Rating</dt>
-            <dd>{c.provider_ra ?? '—'}</dd>
-          </div>
-        </dl>
-        <p className="provider-time">{formatTimestamp(c.provider_synced_at, '尚未同步')}</p>
-      </details>
+                  <option value="">选择机厅</option>
+                  {venueChoices.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+                {!venueChoices.length && <small>请先在“我的机厅”新增机厅。</small>}
+              </div>
+            )}
+            {error && (
+              <div className="form-message" role="alert">
+                {error}
+                {conflicted && (
+                  <>
+                    <p>当前选择已保留。重新载入会替换表单内容。</p>
+                    <button type="button" className="btn" disabled={busy} onClick={reload}>
+                      重新载入记录
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+            <button
+              type="submit"
+              className="btn primary full"
+              disabled={busy || conflicted || (c.requires_venue && !venue)}
+            >
+              <Icon name="check" />
+              保存待核记录
+            </button>
+          </form>
+          {c.pending_record && (
+            <div className="drawer-actions">
+              <button className="btn" disabled={busy || conflicted} onClick={reset}>
+                取消登记
+              </button>
+            </div>
+          )}
+        </>
+      )}
     </Drawer>
   );
 }
@@ -684,7 +643,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const [revision, setRevision] = useState(0);
   const [toast, setToast] = useState('');
   const [detail, setDetail] = useState<Chart | null>(null);
-  const [newVenueLocation, setNewVenueLocation] = useState<string | null>(null);
   const detailRequest = useRef<{ controller: AbortController; sequence: number } | null>(null);
   const detailSequence = useRef(0);
   const [picker, setPicker] = useState<'record' | 'cover' | null>(null);
@@ -1339,9 +1297,9 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                                     <th>曲目</th>
                                     <th>难度</th>
                                     <th>定数</th>
+                                    <th>达成率</th>
                                     <th>状态</th>
                                     <th>AP 机厅</th>
-                                    <th />
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -1398,6 +1356,13 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                                         </span>
                                       </td>
                                       <td>
+                                        <span className="achievement">
+                                          {c.provider_achievement != null
+                                            ? `${c.provider_achievement.toFixed(4)}%`
+                                            : '—'}
+                                        </span>
+                                      </td>
+                                      <td>
                                         <Badge chart={c} />
                                         {c.conflict && <span className="venue-source">待核对</span>}
                                         {c.is_ap && c.pending_record && (
@@ -1417,18 +1382,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                                               ? '不记录'
                                               : '—'}
                                         </span>
-                                      </td>
-                                      <td>
-                                        <button
-                                          className="row-cover"
-                                          aria-label={`为 ${chartName(c)} 制作封面`}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            chooseCover(c);
-                                          }}
-                                        >
-                                          <Icon name="image" />
-                                        </button>
                                       </td>
                                     </tr>
                                   ))}
@@ -1486,7 +1439,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                         <button className="btn sync-button" disabled={busy} onClick={sync}>
                           {busy ? <span className="spinner" /> : <Icon name="sync" />}同步水鱼
                         </button>
-                        {recordButton}
                       </>
                     }
                   />
@@ -1536,7 +1488,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               )}
               {page === 'venues' && (
                 <>
-                  <Heading eyebrow="PLACES & PERFECTS" title="我的机厅" actions={recordButton} />
+                  <Heading eyebrow="PLACES & PERFECTS" title="我的机厅" />
                   <VenuesPage
                     revision={revision}
                     onChanged={refresh}
@@ -1570,23 +1522,10 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
           onClose={closeModal}
           onSaved={refresh}
           onReload={() => openDetail(detail, true)}
-          onCover={chooseCover}
           onSync={sync}
-          onNewVenue={setNewVenueLocation}
           notify={notify}
         />
       )}{' '}
-      {newVenueLocation && (
-        <VenueLocationEditor
-          venue={{ name: newVenueLocation, location: null }}
-          onClose={() => setNewVenueLocation(null)}
-          onSaved={() => {
-            setNewVenueLocation(null);
-            notify('机厅位置已保存');
-            void refresh().catch((error) => notify(messageOf(error)));
-          }}
-        />
-      )}
       {picker && (
         <ChartPicker
           mode={picker}

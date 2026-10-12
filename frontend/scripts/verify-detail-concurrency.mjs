@@ -214,7 +214,16 @@ try {
       '/api/settings/divingfish': { configured: false, source: null, sync: null },
       '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
       '/api/catalog/update': catalog,
-      '/api/venues': { items: [] },
+      '/api/venues': {
+        items: [
+          'Original venue',
+          'Keep this unsaved draft',
+          'Other device update',
+          'Reviewed update',
+          'Newer before deletion',
+          'Next venue',
+        ].map((name) => ({ name, count: 0 })),
+      },
       '/api/venues/map': { items: [] },
       '/api/venues/summary': {
         levels: ['12+', '13', '13+', '14', '14+/15'].map((value) => ({ value, label: value })),
@@ -290,7 +299,7 @@ try {
   await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
   await beta.click();
   await record.waitFor();
-  await record.getByLabel('AP 机厅', { exact: true }).fill('Keep this unsaved draft');
+  await record.getByLabel('AP 机厅', { exact: true }).selectOption('Keep this unsaved draft');
   Object.assign(charts[1], {
     record_revision: 2,
     pending_record: { ...charts[1].pending_record, venue: 'Other device update' },
@@ -317,26 +326,13 @@ try {
   await page.waitForFunction(
     () => document.querySelector('#venue-input')?.value === 'Other device update',
   );
-  await record.getByLabel('AP 机厅', { exact: true }).fill('Reviewed update');
+  await record.getByLabel('AP 机厅', { exact: true }).selectOption('Reviewed update');
   await record.getByRole('button', { name: '保存待核记录', exact: true }).click();
   await record.waitFor({ state: 'detached' });
   assert.equal(charts[1].pending_record.venue, 'Reviewed update');
   assert.equal(mutations.at(-1).expected_revision, 2);
   checks.push('Explicit reload restores the latest form and uses its revision for the next save');
-  const locationEditor = page.getByRole('dialog', { name: '编辑机厅位置' });
-  await locationEditor.waitFor();
-  assert.equal(
-    await locationEditor.getByLabel('机厅名称', { exact: true }).inputValue(),
-    'Reviewed update',
-  );
-  const mutationsBeforeLocationCancel = mutations.length;
-  await locationEditor.getByRole('button', { name: '取消', exact: true }).click();
-  await locationEditor.waitFor({ state: 'detached' });
-  assert.equal(mutations.length, mutationsBeforeLocationCancel);
-  assert.equal(charts[1].pending_record.venue, 'Reviewed update');
-  checks.push(
-    'A new venue opens location editing after the AP buffer save; cancelling it preserves that saved AP record',
-  );
+  assert.equal(await page.locator('.venue-editor').count(), 0);
 
   await beta.click();
   await record.waitFor();
@@ -362,7 +358,7 @@ try {
 
   await beta.click();
   await record.waitFor();
-  await record.getByLabel('AP 机厅', { exact: true }).fill('Next venue');
+  await record.getByLabel('AP 机厅', { exact: true }).selectOption('Next venue');
   const write = { started: deferred(), release: deferred() };
   delayedWrite = write;
   await record.getByRole('button', { name: '保存待核记录', exact: true }).click();

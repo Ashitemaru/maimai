@@ -24,13 +24,9 @@ const chart = {
   status: 'ap',
 };
 const location = {
-  place_name: '历史游乐城',
-  address: '上海测试路1号',
   latitude: 31.22,
   longitude: 121.46,
   coordinate_system: 'WGS84',
-  accuracy: 'building',
-  closed_status: 'closed',
 };
 let venues = [
   {
@@ -157,14 +153,16 @@ try {
   await marker.click();
   await page.getByRole('region', { name: '机厅详情' }).waitFor();
   await page.getByText('Fixture AP', { exact: true }).waitFor();
-  assert(await page.getByText('已闭店 · 历史位置').isVisible());
+  assert.equal(await page.getByText('已闭店 · 历史位置').count(), 0);
   assert(requests.some((item) => item.path === '/api/venues/charts'));
-  checks.push('Mouse click on SVG jacket opens paginated AP album and historical location');
+  checks.push('Mouse click on SVG jacket opens paginated AP album without operating status');
   await page.getByRole('button', { name: '编辑位置', exact: true }).click();
   const editor = page.getByRole('dialog');
   await editor.waitFor();
-  assert.equal(await editor.getByLabel('机厅名称', { exact: true }).getAttribute('readonly'), '');
-  await editor.getByLabel('地址', { exact: true }).fill('修改后取消');
+  assert.equal(await editor.getByLabel('显示名称', { exact: true }).getAttribute('readonly'), '');
+  await editor.getByLabel('搜索地点', { exact: true }).fill('修改后取消');
+  assert.equal(await editor.locator('input').count(), 2);
+  assert.equal(await editor.locator('details, select, input[type=number]').count(), 0);
   await editor.getByRole('button', { name: '取消', exact: true }).click();
   assert.equal(writes.length, 0);
   checks.push('Cancel does not write location');
@@ -174,39 +172,50 @@ try {
   await editor.getByRole('button', { name: '搜索', exact: true }).click();
   await editor.getByRole('button', { name: /搜索结果广场/ }).click();
   failSave = true;
-  await editor.getByRole('button', { name: '保存位置', exact: true }).click();
+  await editor.getByRole('button', { name: '保存', exact: true }).click();
   await editor.getByRole('alert').filter({ hasText: '保存暂时失败' }).waitFor();
-  assert.equal(await editor.getByLabel('地址', { exact: true }).inputValue(), '搜索结果路8号');
-  await editor.getByRole('button', { name: '保存位置', exact: true }).click();
+  assert.equal(await editor.getByLabel('搜索地点', { exact: true }).inputValue(), '搜索结果广场');
+  await editor.getByRole('button', { name: '保存', exact: true }).click();
   await editor.waitFor({ state: 'hidden' });
   assert.equal(writes.at(-1).name, '【上海】测试机厅');
   assert.equal(writes.at(-1).latitude, 31.24);
-  assert.equal(writes.at(-1).closed_status, 'closed');
+  assert.deepEqual(Object.keys(writes.at(-1)).sort(), ['latitude', 'longitude', 'name']);
   checks.push('Search is explicit; failed save preserves form; retry persists WGS84 point');
   await page.reload();
   await page
     .getByRole('button', { name: /【上海】测试机厅.*2 AP/ })
     .last()
     .click();
-  await page.getByText('搜索结果路8号', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '编辑位置', exact: true }).click();
+  await editor.locator('.venue-map-picked').waitFor();
+  await editor.getByRole('button', { name: '取消', exact: true }).click();
   checks.push('Saved location survives reload');
   await page.getByRole('button', { name: '新增机厅', exact: true }).click();
-  await editor.getByLabel('机厅名称', { exact: true }).fill('【测试】新门店');
-  await editor.getByLabel('地址', { exact: true }).fill('新址9号');
-  await editor.getByRole('button', { name: '保存位置', exact: true }).click();
+  await editor.getByLabel('显示名称', { exact: true }).fill('【测试】新门店');
+  assert(await editor.getByRole('button', { name: '保存', exact: true }).isDisabled());
+  await editor.getByLabel('搜索地点', { exact: true }).fill('测试广场');
+  await editor.getByRole('button', { name: '搜索', exact: true }).click();
+  await editor.getByRole('button', { name: /搜索结果广场/ }).click();
+  await editor.getByRole('button', { name: '保存', exact: true }).click();
   await editor.waitFor({ state: 'hidden' });
-  assert.equal(writes.at(-1).latitude, null);
-  assert.equal(writes.at(-1).longitude, null);
+  assert.equal(writes.at(-1).latitude, 31.24);
+  assert.equal(writes.at(-1).longitude, 121.49);
+  assert.equal(writes.at(-1).name, '【测试】新门店');
   await page.getByText('4 家机厅 · 3 AP', { exact: true }).waitFor();
-  checks.push('Address-only new venue is available without inventing AP records');
+  checks.push('New venue uses a search result plus display name without inventing AP records');
   await page.screenshot({ path: path.join(output, 'desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.getByRole('button', { name: '新增机厅', exact: true }).click();
+  assert.equal(await editor.locator('.venue-map-svg').count(), 0);
+  await editor.getByLabel('搜索地点', { exact: true }).fill('测试广场');
+  await editor.getByRole('button', { name: '搜索', exact: true }).click();
+  await editor.getByRole('button', { name: /搜索结果广场/ }).click();
   const svg = editor.locator('.venue-map-svg');
   const box = await svg.boundingBox();
   await page.mouse.click(box.x + box.width * 0.6, box.y + box.height * 0.5);
-  assert(await editor.getByRole('button', { name: '清除点位', exact: true }).isVisible());
+  assert(await editor.locator('.venue-map-picked').isVisible());
+  assert.equal(await editor.getByLabel('显示名称', { exact: true }).inputValue(), '搜索结果广场');
   assert(
     await page.evaluate(
       () =>

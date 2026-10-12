@@ -70,7 +70,7 @@ class AuthenticationTests(unittest.TestCase):
         return (client or self.client).post("/api/auth/login", json={"master_key": key}, **kwargs)
 
     def test_venue_location_save_requires_session_and_same_origin(self):
-        payload = {"name": "synthetic venue", "address": "synthetic address"}
+        payload = {"name": "synthetic venue", "latitude": 39.9, "longitude": 116.4}
         self.assertEqual(self.client.put("/api/venues/location", json=payload).status_code, 401)
         self.assertEqual(self.login().status_code, 200)
         response = self.client.put(

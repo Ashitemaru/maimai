@@ -112,7 +112,12 @@ const server = http.createServer(async (request, response) => {
           data = { configured: true, source: 'local', sync: null };
           delay = 500;
         } else if (pathname === '/api/venues') {
-          data = { items: [] };
+          data = {
+            items: [
+              { name: '【上海】修改后机厅', count: 0 },
+              { name: '【广州】另一台手机', count: 0 },
+            ],
+          };
           delay = 500;
         } else if (pathname === '/api/ap-records') {
           data = queue();
@@ -282,7 +287,7 @@ try {
   checks.push('Focus and visibility bursts coalesce once and show another device’s pending change');
   await first.click();
   const drawer = page.getByRole('dialog', { name: '谱面记录', exact: true });
-  await drawer.getByLabel('AP 机厅', { exact: true }).fill('【上海】修改后机厅');
+  await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('【上海】修改后机厅');
   const writeStart = requests.length;
   await drawer.getByRole('button', { name: '保存待核记录', exact: true }).click();
   await drawer.waitFor({ state: 'detached' });

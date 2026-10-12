@@ -127,14 +127,58 @@ class APRecords:
         )
         return revision
 
+    @staticmethod
+    def _recorded_venue(conn, key):
+        from .store import canonical_chart_key
+
+        keys = (key, canonical_chart_key(key), key)
+        # Match is_complete + venue in the chart projection, including old keys.
+        for table, completed in (
+            ("ap_confirmations", "1"),
+            ("manual", "ap"),
+            ("legacy", "complete"),
+        ):
+            row = conn.execute(
+                f"SELECT venue,{completed} AS completed FROM {table} WHERE chart_key IN (?,?) "
+                "ORDER BY CASE WHEN chart_key=? THEN 0 ELSE 1 END LIMIT 1",
+                keys,
+            ).fetchone()
+            if row is None:
+                continue
+            if row["completed"]:
+                return row["venue"]
+            if table == "legacy":
+                ap = conn.execute(
+                    "SELECT 1 FROM ap_evidence WHERE chart_key IN (?,?) "
+                    "UNION ALL SELECT 1 FROM provider WHERE chart_key IN (?,?) "
+                    "AND fc IN ('ap','app') LIMIT 1",
+                    (*keys[:2], *keys[:2]),
+                ).fetchone()
+                return row["venue"] if ap else ""
+            return ""
+        return ""
+
+    @staticmethod
+    def _known_venue(conn, venue):
+        return (
+            conn.execute(
+                "SELECT 1 FROM venues WHERE name=? "
+                "UNION ALL SELECT 1 FROM legacy WHERE venue=? "
+                "UNION ALL SELECT 1 FROM manual WHERE venue=? "
+                "UNION ALL SELECT 1 FROM ap_confirmations WHERE venue=? LIMIT 1",
+                (venue, venue, venue, venue),
+            ).fetchone()
+            is not None
+        )
+
     def save_ap_record(self, key, data):
         chart = self.chart(key)
         if chart is None:
             raise KeyError(key)
         key = chart["chart_key"]
-        venue = " ".join(data["venue"].split()) if chart["requires_venue"] else ""
+        venue = data["venue"].strip() if chart["requires_venue"] else ""
         if chart["requires_venue"] and not venue:
-            raise ValueError("请选择或填写机厅。")
+            raise ValueError("请选择已有机厅。")
         chart_json = json.dumps(
             {
                 field: chart.get(field)
@@ -161,8 +205,12 @@ class APRecords:
                 if (request["chart_key"], request["venue"]) != (key, venue):
                     raise ValueError("请求编号已使用，请重新提交。")
             else:
+                if self._recorded_venue(conn, key):
+                    raise ValueError("此谱面已记录机厅，不能修改或新增待核记录。")
                 if self._record_revision(conn, key) != data["expected_revision"]:
                     raise RecordConflictError()
+                if venue and not self._known_venue(conn, venue):
+                    raise ValueError("请选择已有机厅；新机厅请先在我的机厅中添加。")
                 previous = conn.execute(
                     "SELECT * FROM ap_pending WHERE chart_key=?", (key,)
                 ).fetchone()
@@ -363,6 +411,12 @@ class APRecords:
             for row in conn.execute("SELECT * FROM ap_pending").fetchall():
                 key = row["chart_key"]
                 if eligible_records.get(key) != (row["id"], row["revision"]):
+                    continue
+                if self._recorded_venue(conn, key):
+                    conn.execute(
+                        "UPDATE ap_pending SET reason=? WHERE chart_key=?",
+                        ("已有机厅记录，待核记录未生效", key),
+                    )
                     continue
                 score = scores.get(key)
                 if score and score[2] in ("ap", "app") and key in catalog:

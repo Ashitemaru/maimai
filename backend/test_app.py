@@ -92,7 +92,8 @@ class AppTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_venue_summary_is_a_personal_no_store_read(self):
-        saved = self.put_record("22:standard:4", json={"venue": "【测试】新机厅"})
+        self.add_venue("【测试】新机厅")
+        saved = self.put_record("131:standard:3", json={"venue": "【测试】新机厅"})
         self.assertEqual(saved.status_code, 200)
         charts = [
             {"venue": "【测试】机厅", "is_ap": True, "level": "13+"},
@@ -109,7 +110,8 @@ class AppTests(unittest.TestCase):
         self.assertEqual(result["pending_count"], 1)
 
     def test_venue_summary_keeps_pending_when_chart_leaves_catalog(self):
-        saved = self.put_record("22:standard:4", json={"venue": "【测试】待核准机厅"})
+        self.add_venue("【测试】待核准机厅")
+        saved = self.put_record("131:standard:3", json={"venue": "【测试】待核准机厅"})
         self.assertEqual(saved.status_code, 200)
         with patch.object(self.store, "all_charts", return_value=[]):
             result = self.client.get("/api/venues/summary").json()
@@ -120,6 +122,10 @@ class AppTests(unittest.TestCase):
         rows = {item["name"]: item for item in result["items"]}
         self.assertEqual(rows["【测试】待核准机厅"]["pending_count"], 1)
         self.assertEqual(rows["【测试】待核准机厅"]["total"], 0)
+
+    def add_venue(self, name):
+        with self.store.db() as conn:
+            conn.execute("INSERT INTO venues VALUES(?,?,?)", (name, "fixture", ""))
 
     def put_record(self, key, *, json=None, **kwargs):
         chart = self.store.chart(key)
@@ -1105,7 +1111,8 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/charts/{key}").json(), before)
 
     def test_venue_policy_is_exposed_and_low_claim_needs_no_venue(self):
-        high, low = "22:standard:4", "30:standard:0"
+        high, low = "131:standard:3", "30:standard:0"
+        self.add_venue("测试机厅")
         saved = self.put_record(high, json={"venue": "  测试机厅  "}).json()["chart"]
         self.assertTrue(saved["requires_venue"])
         self.assertEqual(saved["pending_record"]["venue"], "测试机厅")

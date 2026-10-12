@@ -160,6 +160,9 @@ class JacketPreviewTests(unittest.TestCase):
             self.assertEqual((item["thumbnail_url"], item["jacket_url"]), (url, "/jackets/22.png"))
         detail = self.client.get("/api/charts/22:standard:4").json()
         self.assertEqual(detail["thumbnail_url"], url)
+        with self.store.db() as conn:
+            conn.execute("DELETE FROM legacy WHERE chart_key='22:standard:4'")
+            conn.execute("INSERT INTO venues VALUES(?,?,?)", ("Fixture venue", "fixture", ""))
         body = {"venue": "Fixture venue", "request_id": "thumbnail-test", "expected_revision": 0}
         self.assertEqual(
             self.client.put("/api/charts/22:standard:4/ap-record", json=body).status_code, 200

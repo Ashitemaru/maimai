@@ -3,7 +3,7 @@ import { api, messageOf } from './api';
 import { VenueMap, type VenueMapPoint } from './VenueMap';
 import { venuePoint, type VenueLocation, type VenuePlace } from './venueTypes';
 
-type SearchPlace = Pick<VenueLocation, 'place_name' | 'address'> & VenueMapPoint;
+type SearchPlace = VenueMapPoint & { place_name: string; address: string };
 
 export function VenueLocationEditor({
   venue,
@@ -18,17 +18,9 @@ export function VenueLocationEditor({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [name, setName] = useState(venue.name);
-  const [placeName, setPlaceName] = useState(venue.location?.place_name || '');
-  const [address, setAddress] = useState(venue.location?.address || '');
   const [point, setPoint] = useState(venuePoint(venue.location));
   const [focus, setFocus] = useState<(VenueMapPoint & { zoom?: number }) | undefined>(
     point ? { ...point, zoom: 16 } : undefined,
-  );
-  const [accuracy, setAccuracy] = useState<VenueLocation['accuracy']>(
-    venue.location?.accuracy || 'unknown',
-  );
-  const [closed, setClosed] = useState<VenueLocation['closed_status']>(
-    venue.location?.closed_status || 'unknown',
   );
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchPlace[]>([]);
@@ -71,7 +63,7 @@ export function VenueLocationEditor({
       );
       if (controller.signal.aborted) return;
       setResults(result.items);
-      if (!result.items.length) setSearchMessage('没有找到地点，可以直接在地图上选点。');
+      if (!result.items.length) setSearchMessage('没有找到地点，请加上城市或商场名称再试。');
     } catch (error) {
       if (!controller.signal.aborted) setSearchMessage(messageOf(error));
     } finally {
@@ -79,37 +71,11 @@ export function VenueLocationEditor({
     }
   }
 
-  function pick(next: VenueMapPoint) {
-    setPoint(next);
-    setAccuracy('exact');
-  }
-
-  function locate() {
-    if (!navigator.geolocation) {
-      setError('此浏览器不支持定位，请在地图上选点。');
-      return;
-    }
-    setError('');
-    navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        if (!active.current) return;
-        const next = { latitude: coords.latitude, longitude: coords.longitude };
-        setPoint(next);
-        setFocus({ ...next, zoom: 17 });
-        setAccuracy('approximate');
-      },
-      () => {
-        if (active.current) setError('无法取得当前位置，请在地图上选点。');
-      },
-      { enableHighAccuracy: true, timeout: 10000 },
-    );
-  }
-
   async function save(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
-    if (!point && !address.trim()) {
-      setError('请在地图上选点，或填写地址。');
+    if (!point) {
+      setError('请先搜索并选择地点。');
       return;
     }
     setBusy(true);
@@ -119,12 +85,8 @@ export function VenueLocationEditor({
         method: 'PUT',
         body: JSON.stringify({
           name: name.trim(),
-          place_name: placeName.trim(),
-          address: address.trim(),
-          latitude: point?.latitude ?? null,
-          longitude: point?.longitude ?? null,
-          accuracy: point ? accuracy : 'unknown',
-          closed_status: closed,
+          latitude: point.latitude,
+          longitude: point.longitude,
         }),
       });
       if (active.current) onSaved(name.trim());
@@ -159,16 +121,13 @@ export function VenueLocationEditor({
           <input
             id="venue-place-query"
             type="search"
-            placeholder="搜索城市、商场或地址"
+            placeholder="搜索机厅、商场或地点名称"
             value={query}
             maxLength={200}
             onChange={(event) => setQuery(event.target.value)}
           />
           <button className="btn" disabled={searchBusy || !query.trim()}>
             {searchBusy ? '搜索中…' : '搜索'}
-          </button>
-          <button className="btn" type="button" onClick={locate}>
-            当前位置
           </button>
         </form>
         {searchMessage && (
@@ -183,11 +142,10 @@ export function VenueLocationEditor({
                 type="button"
                 key={index}
                 onClick={() => {
-                  setPlaceName(result.place_name);
-                  setAddress(result.address);
+                  setQuery(result.place_name);
+                  if (!name.trim()) setName(result.place_name);
                   setPoint({ latitude: result.latitude, longitude: result.longitude });
                   setFocus({ latitude: result.latitude, longitude: result.longitude, zoom: 17 });
-                  setAccuracy('approximate');
                   setResults([]);
                 }}
               >
@@ -200,27 +158,17 @@ export function VenueLocationEditor({
             </a>
           </div>
         )}
-        <VenueMap
-          venues={venues.map((item) => ({ ...item, location: venuePoint(item.location) }))}
-          point={point}
-          onPick={pick}
-          focusPoint={focus}
-        />
-        <div className="venue-editor-point">
-          <span>
-            {point
-              ? `${point.latitude.toFixed(6)}, ${point.longitude.toFixed(6)}`
-              : '点击地图选择位置'}
-          </span>
-          {point && (
-            <button type="button" className="btn quiet" onClick={() => setPoint(null)}>
-              清除点位
-            </button>
-          )}
-        </div>
+        {point && (
+          <VenueMap
+            venues={venues.map((item) => ({ ...item, location: venuePoint(item.location) }))}
+            point={point}
+            onPick={setPoint}
+            focusPoint={focus}
+          />
+        )}
         <form onSubmit={save} className="venue-editor-form">
           <label className="field">
-            机厅名称
+            显示名称
             <input
               required
               maxLength={120}
@@ -230,72 +178,8 @@ export function VenueLocationEditor({
               onChange={(event) => setName(event.target.value)}
             />
           </label>
-          <label className="field">
-            实际门店
-            <input
-              value={placeName}
-              maxLength={200}
-              onChange={(event) => setPlaceName(event.target.value)}
-            />
-          </label>
-          <label className="field venue-editor-address">
-            地址
-            <input
-              value={address}
-              maxLength={500}
-              onChange={(event) => setAddress(event.target.value)}
-            />
-          </label>
-          <label className="field">
-            营业状态
-            <select
-              value={closed}
-              onChange={(event) => setClosed(event.target.value as VenueLocation['closed_status'])}
-            >
-              <option value="unknown">未记录</option>
-              <option value="open">营业中</option>
-              <option value="closed">已闭店</option>
-              <option value="probably_closed">可能已闭店</option>
-            </select>
-          </label>
-          <details className="venue-editor-coordinates">
-            <summary>经纬度（WGS84）</summary>
-            <label>
-              纬度
-              <input
-                aria-label="纬度"
-                type="number"
-                step="any"
-                min={-85}
-                max={85}
-                value={point?.latitude ?? ''}
-                onChange={(event) => {
-                  if (event.target.value !== '')
-                    pick({
-                      latitude: Number(event.target.value),
-                      longitude: point?.longitude ?? 0,
-                    });
-                }}
-              />
-            </label>
-            <label>
-              经度
-              <input
-                aria-label="经度"
-                type="number"
-                step="any"
-                min={-180}
-                max={180}
-                value={point?.longitude ?? ''}
-                onChange={(event) => {
-                  if (event.target.value !== '')
-                    pick({ longitude: Number(event.target.value), latitude: point?.latitude ?? 0 });
-                }}
-              />
-            </label>
-          </details>
           {error && (
-            <div className="error-box venue-editor-address" role="alert">
+            <div className="error-box" role="alert">
               {error}
             </div>
           )}
@@ -303,8 +187,8 @@ export function VenueLocationEditor({
             <button type="button" className="btn" disabled={busy} onClick={onClose}>
               取消
             </button>
-            <button className="btn primary" disabled={busy}>
-              {busy ? '保存中…' : '保存位置'}
+            <button className="btn primary" disabled={busy || !point || !name.trim()}>
+              {busy ? '保存中…' : '保存'}
             </button>
           </footer>
         </form>

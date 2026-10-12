@@ -19,7 +19,7 @@ from backend.venue_locations import (
     initialize_locations,
     save_location,
 )
-from tests.fixtures.catalog import write_catalog
+from tests.fixtures.catalog import write_catalog, write_imports
 from tests.support import create_app
 
 
@@ -64,7 +64,11 @@ class VenueLocationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.catalog = write_catalog(self.root / "catalog")
-        self.store = Store(runtime=self.root / "runtime", catalog_dir=self.catalog)
+        self.store = Store(
+            runtime=self.root / "runtime",
+            import_dir=write_imports(self.root / "imports"),
+            catalog_dir=self.catalog,
+        )
         self.app = create_app(self.store, updater=FakeUpdater())
         self.client = TestClient(self.app)
         self.geocoder = patch.dict(
@@ -79,7 +83,8 @@ class VenueLocationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_location_edit_is_persistent_and_does_not_rename_or_reassign_ap(self):
-        chart = self.store.chart("22:standard:4")
+        chart = self.store.chart("2000:standard:3")
+        save_location(self.store, {"name": "【测试】原机厅", "latitude": 39.9, "longitude": 116.4})
         self.store.save_ap_record(
             chart["chart_key"],
             {
@@ -96,18 +101,17 @@ class VenueLocationTests(unittest.TestCase):
             events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         payload = {
             "name": "【测试】原机厅",
-            "place_name": "历史门店",
-            "address": "旧址一号",
             "latitude": 39.9,
             "longitude": 116.4,
-            "accuracy": "building",
-            "closed_status": "closed",
         }
         saved = self.client.put("/api/venues/location", json=payload)
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(saved.json()["location"]["coordinate_system"], "WGS84")
-        self.assertEqual(saved.json()["location"]["source"], "user")
-        payload.update(latitude=39.8, address="更正旧址")
+        self.assertEqual(
+            set(saved.json()["location"]),
+            {"latitude", "longitude", "coordinate_system", "updated_at"},
+        )
+        payload.update(latitude=39.8)
         self.assertEqual(self.client.put("/api/venues/location", json=payload).status_code, 200)
         self.assertEqual(self.store.chart(chart["chart_key"]), before)
         with self.store.db() as conn:
@@ -122,34 +126,114 @@ class VenueLocationTests(unittest.TestCase):
             with reopened.db() as conn:
                 value = conn.execute("SELECT * FROM venue_locations").fetchone()
             self.assertEqual(value["latitude"], 39.8)
-            self.assertEqual(value["closed_status"], "closed")
-            self.assertEqual(value["address"], "更正旧址")
+            self.assertEqual(set(value.keys()), {"name", "latitude", "longitude", "updated_at"})
         finally:
             reopened.close()
 
-    def test_new_venue_can_save_address_only_and_import_tracks_provenance(self):
+    def test_new_venue_saves_only_display_name_and_location(self):
         saved = save_location(
             self.store,
-            {"name": "【测试】新机厅", "address": "历史地址", "closed_status": "probably_closed"},
-            source="private-import:synthetic",
+            {"name": "【测试】新机厅", "latitude": 39.9, "longitude": 116.4},
         )
-        self.assertIsNone(saved["location"]["latitude"])
-        self.assertEqual(saved["location"]["source"], "private-import:synthetic")
+        self.assertEqual(saved["location"]["latitude"], 39.9)
+        self.assertEqual(
+            set(saved["location"]), {"latitude", "longitude", "coordinate_system", "updated_at"}
+        )
         with patch.object(self.store, "all_charts", return_value=[]):
             response = self.client.get("/api/venues/map")
         row = next(item for item in response.json()["items"] if item["name"] == "【测试】新机厅")
         self.assertEqual(row["total"], 0)
         self.assertEqual(row["jackets"], [])
         self.assertEqual(row["city"], "测试")
-        self.assertEqual(row["location"]["closed_status"], "probably_closed")
         self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_old_schema_migration_preserves_names_coordinates_and_ap_data(self):
+        with self.store.db() as conn:
+            conn.execute("DROP TABLE venue_locations")
+            conn.execute(
+                "CREATE TABLE venue_locations(name TEXT PRIMARY KEY, place_name TEXT, address TEXT, "
+                "latitude REAL, longitude REAL, coordinate_system TEXT, accuracy TEXT, "
+                "closed_status TEXT, source TEXT, updated_at TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO venue_locations VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        "【测试】历史机厅",
+                        "旧门店",
+                        "旧地址",
+                        39.9,
+                        116.4,
+                        "WGS84",
+                        "exact",
+                        "closed",
+                        "old",
+                        "then",
+                    ),
+                    (
+                        "【测试】未定位",
+                        "未知门店",
+                        "旧地址",
+                        None,
+                        None,
+                        "WGS84",
+                        "unknown",
+                        "unknown",
+                        "old",
+                        "before",
+                    ),
+                ],
+            )
+            conn.execute(
+                "INSERT INTO legacy VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    "2000:standard:3",
+                    "high",
+                    13.3,
+                    1,
+                    "【测试】历史机厅",
+                    "Example",
+                    "fixture",
+                    1,
+                    1,
+                ),
+            )
+            before = {
+                table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")]
+                for table in (
+                    "legacy",
+                    "manual",
+                    "ap_pending",
+                    "ap_confirmations",
+                    "venues",
+                    "events",
+                )
+            }
+        initialize_locations(self.store)
+        initialize_locations(self.store)
+        with self.store.db() as conn:
+            self.assertEqual(
+                {row[1] for row in conn.execute("PRAGMA table_info(venue_locations)")},
+                {"name", "latitude", "longitude", "updated_at"},
+            )
+            self.assertEqual(
+                [tuple(row) for row in conn.execute("SELECT * FROM venue_locations ORDER BY name")],
+                [
+                    ("【测试】历史机厅", 39.9, 116.4, "then"),
+                    ("【测试】未定位", None, None, "before"),
+                ],
+            )
+            for table, rows in before.items():
+                self.assertEqual(
+                    [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")], rows
+                )
 
     def test_invalid_coordinates_and_names_do_not_write_partial_venues(self):
         cases = [
             {"latitude": 90.1, "longitude": 0},
             {"latitude": 0, "longitude": -180.1},
-            {"latitude": 39.9},
-            {"longitude": 116.4},
+            {"latitude": None},
+            {"longitude": None},
             {"latitude": True, "longitude": 0},
             {"latitude": "39.9", "longitude": 116.4},
             {"latitude": float("nan"), "longitude": 0},
@@ -159,13 +243,18 @@ class VenueLocationTests(unittest.TestCase):
             {"name": "bad\nname"},
             {"coordinate_system": "GCJ-02"},
             {"source": "forged"},
-            {"closed_status": "invalid"},
+            {"closed_status": "closed"},
+            {"address": "unused address"},
+            {"place_name": "unused place"},
+            {"accuracy": "exact"},
         ]
         for extra in cases:
             with self.subTest(extra=extra):
                 response = self.client.put(
                     "/api/venues/location",
-                    content=json.dumps({"name": "【测试】无效", "address": "地址", **extra}),
+                    content=json.dumps(
+                        {"name": "【测试】无效", "latitude": 39.9, "longitude": 116.4, **extra}
+                    ),
                     headers={"Content-Type": "application/json"},
                 )
                 self.assertEqual(response.status_code, 422)
@@ -177,7 +266,8 @@ class VenueLocationTests(unittest.TestCase):
             )
 
     def test_map_limits_jackets_and_counts_pending_separately_from_confirmed(self):
-        chart = self.store.chart("22:standard:4")
+        chart = self.store.chart("2000:standard:3")
+        save_location(self.store, {"name": "【测试】待核准", "latitude": 39.9, "longitude": 116.4})
         self.store.save_ap_record(
             chart["chart_key"],
             {

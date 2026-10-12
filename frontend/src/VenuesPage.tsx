@@ -146,12 +146,9 @@ export function VenuesPage({
     return () => controller.abort();
   }, [revision, reload]);
   const rows = venues.filter((venue) =>
-    `${venue.name} ${venue.location?.place_name || ''} ${venue.location?.address || ''}`
-      .toLocaleLowerCase()
-      .includes(search.trim().toLocaleLowerCase()),
+    venue.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
   );
   const selected = venues.find((venue) => venue.name === selection);
-  const point = selected ? venuePoint(selected.location) : null;
   const [focus, setFocus] = useState<
     { latitude: number; longitude: number; zoom?: number } | undefined
   >();
@@ -264,23 +261,9 @@ export function VenuesPage({
                   <header className="venue-selected-heading">
                     <div>
                       <h2>{selected.name}</h2>
-                      <p>{selected.location?.place_name || '尚未设置位置'}</p>
-                      {selected.location?.address && <p>{selected.location.address}</p>}
                       <div className="venue-selected-meta">
                         <span>{selected.total} AP</span>
                         {!!selected.pending_count && <span>{selected.pending_count} 待核</span>}
-                        {selected.location?.closed_status === 'closed' && (
-                          <span>已闭店 · 历史位置</span>
-                        )}
-                        {selected.location?.closed_status === 'probably_closed' && (
-                          <span>可能已闭店</span>
-                        )}
-                        {point && selected.location?.accuracy === 'building' && (
-                          <span>定位到建筑</span>
-                        )}
-                        {point && selected.location?.accuracy === 'approximate' && (
-                          <span>大致位置</span>
-                        )}
                       </div>
                     </div>
                     <button className="btn" onClick={() => setEditing(selected)}>

@@ -152,7 +152,9 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(self.client.post("/api/sync/divingfish").status_code, 200)
 
     def test_stale_claim_put_and_delete_cannot_overwrite_newer_record(self):
-        key = "22:standard:4"
+        with self.store.db() as conn:
+            conn.execute("INSERT INTO venues VALUES(?,?,?)", ("newer", "fixture", ""))
+        key = "131:standard:3"
         path = f"/api/charts/{key}/ap-record"
         first = self.client.put(
             path, json={"expected_revision": 0, "request_id": "first", "venue": "newer"}
@@ -181,7 +183,12 @@ class DeploymentTests(unittest.TestCase):
         )
 
     def test_parallel_claims_commit_exactly_one_revision_and_event(self):
-        key = "22:standard:4"
+        with self.store.db() as conn:
+            conn.executemany(
+                "INSERT INTO venues VALUES(?,?,?)",
+                [(name, "fixture", "") for name in ("first", "second")],
+            )
+        key = "131:standard:3"
         path = f"/api/charts/{key}/ap-record"
         barrier = threading.Barrier(2)
 

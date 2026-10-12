@@ -7,11 +7,10 @@ import json
 import math
 import os
 import time
-from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from .store import now
 from .venue_summary import summarize_venues
@@ -37,12 +36,8 @@ MAP_CHART_FIELDS = (
 class VenueLocationInput(BaseModel):
     model_config = {"extra": "forbid", "str_strip_whitespace": True}
     name: str = Field(min_length=1, max_length=200)
-    place_name: str = Field(default="", max_length=300)
-    address: str = Field(default="", max_length=1000)
-    latitude: float | None = Field(default=None, ge=-90, le=90, allow_inf_nan=False)
-    longitude: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
-    accuracy: Literal["exact", "building", "approximate", "unknown"] = "unknown"
-    closed_status: Literal["unknown", "open", "closed", "probably_closed"] = "unknown"
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
 
     @field_validator("latitude", "longitude", mode="before")
     @classmethod
@@ -51,63 +46,66 @@ class VenueLocationInput(BaseModel):
             raise ValueError("坐标须为数值")
         return value
 
-    @field_validator("name", "place_name", "address")
+    @field_validator("name")
     @classmethod
     def plain_text(cls, value):
         if any(ord(character) < 32 for character in value):
             raise ValueError("地点文字不可包含控制字符")
         return value
 
-    @model_validator(mode="after")
-    def coordinate_pair(self):
-        if (self.latitude is None) != (self.longitude is None):
-            raise ValueError("经纬度须同时填写或同时留空")
-        if self.latitude is None and not self.address and not self.place_name:
-            raise ValueError("请选择地点或填写地址")
-        return self
+
+LOCATION_TABLE_SQL = """
+    CREATE TABLE venue_locations(
+        name TEXT PRIMARY KEY REFERENCES venues(name),
+        latitude REAL, longitude REAL, updated_at TEXT NOT NULL,
+        CHECK((latitude IS NULL AND longitude IS NULL) OR
+              (latitude IS NOT NULL AND longitude IS NOT NULL AND
+               latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180))
+    )
+"""
 
 
 def initialize_locations(store):
     with store.db() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS venue_locations(
-                name TEXT PRIMARY KEY REFERENCES venues(name),
-                place_name TEXT NOT NULL, address TEXT NOT NULL,
-                latitude REAL, longitude REAL,
-                coordinate_system TEXT NOT NULL CHECK(coordinate_system='WGS84'),
-                accuracy TEXT NOT NULL, closed_status TEXT NOT NULL,
-                source TEXT NOT NULL, updated_at TEXT NOT NULL,
-                CHECK((latitude IS NULL AND longitude IS NULL) OR
-                      (latitude IS NOT NULL AND longitude IS NOT NULL AND
-                       latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180))
-            );
-            CREATE TABLE IF NOT EXISTS venue_geocoder_cache(
-                cache_key TEXT PRIMARY KEY, result_json TEXT NOT NULL,
-                created_at REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS venue_geocoder_rate_limit(
-                id INTEGER PRIMARY KEY CHECK(id=1), last_attempt REAL NOT NULL
-            );
-        """)
+        # Table replacement and row copying form one transaction. Startup either
+        # keeps the old schema intact or preserves every name and map coordinate.
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(venue_locations)")}
+        if not columns:
+            conn.execute(LOCATION_TABLE_SQL)
+        elif columns != {"name", "latitude", "longitude", "updated_at"}:
+            conn.execute("ALTER TABLE venue_locations RENAME TO venue_locations_previous")
+            conn.execute(LOCATION_TABLE_SQL)
+            conn.execute(
+                "INSERT INTO venue_locations(name,latitude,longitude,updated_at) "
+                "SELECT name,latitude,longitude,updated_at FROM venue_locations_previous"
+            )
+            conn.execute("DROP TABLE venue_locations_previous")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS venue_geocoder_cache("
+            "cache_key TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS venue_geocoder_rate_limit("
+            "id INTEGER PRIMARY KEY CHECK(id=1), last_attempt REAL NOT NULL)"
+        )
 
 
 def location_from_row(row):
     if row is None:
         return None
-    return {key: row[key] for key in row.keys() if key != "name"}
+    return {
+        "latitude": row["latitude"],
+        "longitude": row["longitude"],
+        "coordinate_system": "WGS84",
+        "updated_at": row["updated_at"],
+    }
 
 
-def save_location(store, value, *, source="user"):
-    """Save a WGS84 location without renaming the venue or touching AP records.
-
-    Private import scripts may supply source provenance. They must explicitly convert
-    coordinates before calling this function; it never guesses a coordinate system.
-    """
+def save_location(store, value):
+    """Save a display name and WGS84 point without changing AP ownership."""
     if not isinstance(value, VenueLocationInput):
         value = VenueLocationInput.model_validate(value)
-    if not isinstance(source, str) or not source.strip() or len(source) > 1000:
-        raise ValueError("地点来源无效")
-    data = value.model_dump()
     stamp = now()
     with store.db() as conn:
         conn.execute("PRAGMA foreign_keys=ON")
@@ -115,27 +113,13 @@ def save_location(store, value, *, source="user"):
         conn.execute(
             "INSERT INTO venues(name,created_at,last_used_at) VALUES(?,?,?) "
             "ON CONFLICT(name) DO NOTHING",
-            (value.name, stamp, stamp),
+            (value.name, stamp, ""),
         )
         conn.execute(
-            "INSERT INTO venue_locations(name,place_name,address,latitude,longitude,"
-            "coordinate_system,accuracy,closed_status,source,updated_at) "
-            "VALUES(?,?,?,?,?,'WGS84',?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
-            "place_name=excluded.place_name,address=excluded.address,"
-            "latitude=excluded.latitude,longitude=excluded.longitude,"
-            "accuracy=excluded.accuracy,closed_status=excluded.closed_status,"
-            "source=excluded.source,updated_at=excluded.updated_at",
-            (
-                data["name"],
-                data["place_name"],
-                data["address"],
-                data["latitude"],
-                data["longitude"],
-                data["accuracy"],
-                data["closed_status"],
-                source.strip(),
-                stamp,
-            ),
+            "INSERT INTO venue_locations(name,latitude,longitude,updated_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET latitude=excluded.latitude,"
+            "longitude=excluded.longitude,updated_at=excluded.updated_at",
+            (value.name, value.latitude, value.longitude, stamp),
         )
         row = conn.execute("SELECT * FROM venue_locations WHERE name=?", (value.name,)).fetchone()
     return {"name": value.name, "location": location_from_row(row)}
@@ -234,7 +218,6 @@ def normalize_search_result(payload):
                 "latitude": latitude,
                 "longitude": longitude,
                 "coordinate_system": "WGS84",
-                "accuracy": "approximate",
             }
         )
     return {
@@ -255,20 +238,18 @@ def search_places(store, query, city=""):
     """
     endpoint = os.environ.get("MAIMAI_GEOCODER_URL", DEFAULT_GEOCODER_URL).strip()
     if not endpoint:
-        raise PlaceSearchError(
-            503, "search_disabled", "地点搜索暂未配置，可直接在地图选点或填写地址。"
-        )
+        raise PlaceSearchError(503, "search_disabled", "地点搜索暂不可用，请稍后重试。")
     try:
         parsed = urlsplit(endpoint)
         valid_url = parsed.scheme in ("http", "https") and parsed.hostname and not parsed.fragment
     except ValueError:
         valid_url = False
     if not valid_url:
-        raise PlaceSearchError(503, "search_unavailable", "地点搜索暂不可用，可直接在地图选点。")
+        raise PlaceSearchError(503, "search_unavailable", "地点搜索暂不可用，请稍后重试。")
     query = " ".join(query.split())
     city = " ".join(city.split())
     if not query:
-        raise PlaceSearchError(422, "empty_query", "请输入地点或地址。")
+        raise PlaceSearchError(422, "empty_query", "请输入地点名称。")
     search_query = f"{city} {query}" if city and city not in query else query
     cache_key = hashlib.sha256(f"{endpoint}\n{search_query}".encode()).hexdigest()
     stamp = time.time()
@@ -304,7 +285,7 @@ def search_places(store, query, city=""):
         result = normalize_search_result(response.json())
     except (httpx.HTTPError, ValueError, TypeError):
         raise PlaceSearchError(
-            502, "search_unavailable", "地点搜索暂不可用，请稍后再试，也可以直接在地图选点。"
+            502, "search_unavailable", "地点搜索暂不可用，请稍后重试。"
         ) from None
     with store.db() as conn:
         conn.execute(
