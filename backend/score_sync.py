@@ -11,6 +11,7 @@ from uuid import uuid4
 import httpx
 
 from .ap_records import ScoreAccountError, ScoreSourceError, timestamp
+from .maintenance import maintenance_status, utc_now
 from .store import SyncBusyError, SyncTokenChangedError
 
 DIVINGFISH_ROOT = "https://www.diving-fish.com/api/maimaidxprober"
@@ -20,11 +21,24 @@ SHUTDOWN_GRACE_SECONDS = 190
 
 
 class ScoreSyncError(Exception):
-    def __init__(self, status, code, message):
+    def __init__(self, status, code, message, *, retry_at=None, retry_after_seconds=None):
         self.status = status
         self.code = code
         self.message = message
+        self.retry_at = retry_at
+        self.retry_after_seconds = retry_after_seconds
         super().__init__(message)
+
+    def detail(self):
+        result = {"code": self.code, "message": self.message}
+        if self.retry_at is not None:
+            result.update(retry_at=self.retry_at, retry_after_seconds=self.retry_after_seconds)
+        return result
+
+    def headers(self):
+        if self.retry_after_seconds is not None:
+            return {"Retry-After": str(self.retry_after_seconds)}
+        return None
 
 
 def wahlap_available():
@@ -120,8 +134,9 @@ def upload_records(records, music_data):
 
 
 class ScoreSync:
-    def __init__(self, store):
+    def __init__(self, store, *, clock=None):
         self.store = store
+        self._clock = clock or utc_now
         self._lock = threading.Lock()
         self._thread = None
         self._closed = False
@@ -135,7 +150,12 @@ class ScoreSync:
             )
 
     def status(self):
-        capability = wahlap_available()
+        maintenance = maintenance_status(self._clock())
+        capability = (
+            {"available": False, "reason": maintenance["message"]}
+            if maintenance["active"]
+            else wahlap_available()
+        )
         last_sync = self.store.meta("last_wahlap_sync")
         with self._lock:
             job = copy.deepcopy(self._job)
@@ -146,6 +166,7 @@ class ScoreSync:
                 "verified": bool(last_sync and last_sync.get("logout_confirmed")),
                 "last_sync": last_sync,
                 "has_snapshot": bool(last_sync),
+                "maintenance": maintenance,
             },
             "job": job,
             "divingfish": {
@@ -155,6 +176,7 @@ class ScoreSync:
         }
 
     def start_wahlap(self, qr_text):
+        self._assert_start_allowed()
         # Keep the raw credential out of model/HTTP errors, jobs, SQLite and logs.
         from .wahlap import WahlapError, validate_sgid
 
@@ -168,6 +190,17 @@ class ScoreSync:
         if capability.get("available") is not True:
             raise ScoreSyncError(503, "wahlap_unavailable", "华立直连尚不可用，请稍后再试。")
         return self._start("wahlap", qr_text)
+
+    def _assert_start_allowed(self):
+        maintenance = maintenance_status(self._clock())
+        if maintenance["active"]:
+            raise ScoreSyncError(
+                503,
+                "maintenance",
+                maintenance["message"],
+                retry_at=maintenance["retry_at"],
+                retry_after_seconds=maintenance["retry_after_seconds"],
+            )
 
     def start_upload(self):
         if not self.store.meta("last_wahlap_sync"):
@@ -229,6 +262,9 @@ class ScoreSync:
     def _run(self, kind, credential, token, generation, eligible, lease):
         try:
             if kind == "wahlap":
+                # A request accepted before 04:00 may reach its worker after 04:00.
+                # Once fetch starts, allow it to finish, including session logout.
+                self._assert_start_allowed()
                 self._update(stage="fetching", message="正在读取华立成绩")
                 payload = fetch_wahlap_scores(credential)
                 credential = None
@@ -251,7 +287,7 @@ class ScoreSync:
                 state="failed",
                 stage="failed",
                 message=exc.message,
-                error={"code": exc.code, "message": exc.message},
+                error=exc.detail(),
             )
         except ScoreAccountError:
             message = "二维码对应其他账号或账号信息无效，未修改本地记录。"

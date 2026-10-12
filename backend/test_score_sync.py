@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 import httpx
@@ -24,6 +25,8 @@ from tests.support import create_app
 TEST_QR = "SGWCMAID123456789012TESTONLYTOKEN"
 TEST_TOKEN = "test-token-for-isolated-fixtures-only"
 AVAILABLE = {"available": True, "reason": None}
+OUTSIDE_MAINTENANCE = datetime.fromisoformat("2026-10-13T12:00:00+08:00")
+DURING_MAINTENANCE = datetime.fromisoformat("2026-10-13T05:30:00+08:00")
 
 
 def score(**overrides):
@@ -57,9 +60,14 @@ def response(data):
 
 
 class ScoreSyncTests(unittest.TestCase):
-    setUp = test_chart_store.ChartStoreTests.setUp
     tearDown = test_chart_store.ChartStoreTests.tearDown
     key = "10001:3"
+
+    def setUp(self):
+        test_chart_store.ChartStoreTests.setUp(self)
+        clock = patch("backend.score_sync.utc_now", return_value=OUTSIDE_MAINTENANCE)
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def import_game(self, records=None, account_id="123456"):
         return self.store.import_provider(
@@ -95,8 +103,8 @@ class ScoreSyncTests(unittest.TestCase):
                 )
             }
 
-    def job(self):
-        jobs = ScoreSync(self.store)
+    def job(self, *, clock=None):
+        jobs = ScoreSync(self.store, clock=clock)
         self.addCleanup(jobs.close)
         self.addCleanup(patch.stopall)
         patch("backend.score_sync.wahlap_available", return_value=AVAILABLE).start()
@@ -416,6 +424,127 @@ class ScoreSyncTests(unittest.TestCase):
                     self.assertEqual(status.json()["job"]["state"], "succeeded")
                     self.assertTrue(status.json()["wahlap"]["verified"])
                     self.assertNotIn(TEST_QR, status.text)
+
+    def test_maintenance_rejects_new_session_without_probe_or_state_change(self):
+        self.save_claim()
+        jobs = self.job(clock=lambda: DURING_MAINTENANCE)
+        before = self.state()
+        with (
+            patch("backend.score_sync.wahlap_available") as probe,
+            patch("backend.score_sync.fetch_wahlap_scores") as fetch,
+        ):
+            with self.assertRaises(ScoreSyncError) as failure:
+                jobs.start_wahlap(TEST_QR)
+            status = jobs.status()
+        self.assertEqual(failure.exception.status, 503)
+        self.assertEqual(failure.exception.code, "maintenance")
+        self.assertEqual(failure.exception.retry_at, "2026-10-13T07:00:00+08:00")
+        self.assertEqual(failure.exception.headers(), {"Retry-After": "5400"})
+        self.assertTrue(status["wahlap"]["maintenance"]["active"])
+        self.assertFalse(status["wahlap"]["available"])
+        self.assertIsNone(status["job"])
+        self.assertEqual(self.state(), before)
+        self.assertNotIn(TEST_QR, json.dumps(status) + str(failure.exception.detail()))
+        probe.assert_not_called()
+        fetch.assert_not_called()
+        with self.store.sync_lease():
+            pass
+
+    def test_worker_rechecks_schedule_after_request_before_fetch(self):
+        clock = Mock(
+            side_effect=[
+                datetime.fromisoformat("2026-10-13T03:59:59+08:00"),
+                datetime.fromisoformat("2026-10-13T04:00:00+08:00"),
+                DURING_MAINTENANCE,
+            ]
+        )
+        jobs = self.job(clock=clock)
+        before = self.state()
+        with patch("backend.score_sync.fetch_wahlap_scores") as fetch:
+            jobs.start_wahlap(TEST_QR)
+            result = self.finish(jobs)
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["error"]["code"], "maintenance")
+        self.assertEqual(result["error"]["retry_after_seconds"], 10800)
+        self.assertEqual(result["error"]["retry_at"], "2026-10-13T07:00:00+08:00")
+        self.assertEqual(self.state(), before)
+        fetch.assert_not_called()
+        with self.store.sync_lease():
+            pass
+
+    def test_inflight_session_can_finish_and_confirm_during_maintenance(self):
+        self.save_claim()
+        current = [datetime.fromisoformat("2026-10-13T03:59:59+08:00")]
+        jobs = self.job(clock=lambda: current[0])
+        started, release = threading.Event(), threading.Event()
+
+        def fetch(_):
+            started.set()
+            self.assertTrue(release.wait(3))
+            return payload()
+
+        with patch("backend.score_sync.fetch_wahlap_scores", side_effect=fetch):
+            jobs.start_wahlap(TEST_QR)
+            self.assertTrue(started.wait(2))
+            current[0] = DURING_MAINTENANCE
+            with patch("backend.score_sync.wahlap_available") as probe:
+                self.assertEqual(jobs.status()["job"]["state"], "running")
+                with self.assertRaises(ScoreSyncError) as failure:
+                    jobs.start_wahlap(TEST_QR)
+                self.assertEqual(failure.exception.code, "maintenance")
+                release.set()
+                result = self.finish(jobs)
+            probe.assert_not_called()
+        self.assertEqual(result["state"], "succeeded")
+        self.assertTrue(result["result"]["logout_confirmed"])
+        self.assertEqual(result["result"]["confirmed"], 1)
+        self.assertEqual(self.store.chart(self.key)["venue"], "测试机厅")
+
+    def test_maintenance_does_not_block_explicit_divingfish_upload(self):
+        self.import_game()
+        self.store.save_token(TEST_TOKEN)
+        jobs = self.job(clock=lambda: DURING_MAINTENANCE)
+        with (
+            patch("backend.score_sync.wahlap_available") as probe,
+            patch("backend.score_sync.httpx.get", return_value=response(music_data())),
+            patch(
+                "backend.score_sync.httpx.post",
+                return_value=response({"message": "更新成功", "updates": 1, "creates": 0}),
+            ) as upload,
+        ):
+            jobs.start_upload()
+            result = self.finish(jobs)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["result"]["uploaded_count"], 1)
+        upload.assert_called_once()
+        probe.assert_not_called()
+
+    def test_maintenance_api_error_headers_and_other_local_actions_remain_available(self):
+        with self.store.db() as conn:
+            conn.execute("INSERT INTO venues VALUES(?,?,?)", ("测试机厅", "fixture", ""))
+        with (
+            patch("backend.score_sync.utc_now", return_value=DURING_MAINTENANCE),
+            patch("backend.score_sync.wahlap_available") as probe,
+            patch("backend.score_sync.fetch_wahlap_scores") as fetch,
+            TestClient(create_app(self.store, updater=FakeUpdater())) as client,
+        ):
+            status = client.get("/api/sync/status")
+            rejected = client.post("/api/sync/wahlap", json={"qr_text": TEST_QR})
+            self.assertEqual(rejected.status_code, 503)
+            self.assertEqual(rejected.headers["Retry-After"], "5400")
+            self.assertEqual(rejected.json()["detail"]["code"], "maintenance")
+            self.assertEqual(rejected.json()["detail"]["retry_at"], "2026-10-13T07:00:00+08:00")
+            self.assertTrue(status.json()["wahlap"]["maintenance"]["active"])
+            self.assertEqual(client.get("/api/charts").status_code, 200)
+            saved = client.put(
+                f"/api/charts/{self.key}/ap-record",
+                json={"venue": "测试机厅", "request_id": "maintenance", "expected_revision": 0},
+            )
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(saved.json()["chart"]["pending_record"]["venue"], "测试机厅")
+            self.assertNotIn(TEST_QR, status.text + rejected.text)
+        probe.assert_not_called()
+        fetch.assert_not_called()
 
     def test_upload_requires_explicit_token_and_successful_game_snapshot(self):
         jobs = self.job()

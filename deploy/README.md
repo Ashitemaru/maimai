@@ -98,8 +98,8 @@ missing. A failed initial deployment has no previous release and remains stopped
 Backups live in `backups/<UTC timestamp>-<random>/` with a receipt and SQLite
 integrity checks. An absent adjudications database is recorded as absent; an
 absent personal database prevents activation. These are local recovery backups,
-not an off-host backup policy. Bootstrap operators must arrange retention and
-encrypted off-host copies. Do not delete current, the previous release referenced
+not an off-host backup policy. The separate [encrypted backup service](backup.md)
+adds daily consistent snapshots, retention and a Mac offsite copy. Do not delete current, the previous release referenced
 by `deployment-pending.json`, or backups needed for recovery. Code rollback assumes
 schema-compatible releases; destructive migrations need a separate reviewed plan.
 

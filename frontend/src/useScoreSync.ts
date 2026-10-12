@@ -113,22 +113,37 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
   const run = useCallback(
     async (kind: ScoreSyncJob['kind'], qrText?: string) => {
       if (writing.current || current.current?.job?.state === 'running') return false;
-      const status = current.current;
-      let prerequisite = '';
-      if (!status) prerequisite = '同步状态尚未取得，请重试';
-      else if (kind === 'wahlap') {
-        if (!status.wahlap.available) prerequisite = status.wahlap.reason || '华立同步暂不可用';
-        else if (!qrText?.trim()) prerequisite = '请选择二维码截图或粘贴二维码内容';
-      } else if (!status.divingfish.configured) prerequisite = '请先保存水鱼 Token';
-      else if (!status.wahlap.has_snapshot) prerequisite = '请先完成一次华立同步';
-      if (prerequisite) {
-        notify(prerequisite);
-        return false;
-      }
       writing.current = true;
       setAction(kind);
       generation.current += 1;
+      let submitted = false;
       try {
+        let status = current.current;
+        if (kind === 'wahlap') {
+          // The server's current window wins over a tab left open overnight.
+          status = await api<ScoreSyncStatus>('/sync/status', { cache: 'no-store' });
+          if (!active.current) return false;
+          lastLoadError.current = '';
+          setLoadError('');
+          accept(status);
+          if (status.job?.state === 'running') return false;
+        }
+        let prerequisite = '';
+        if (!status) prerequisite = '同步状态尚未取得，请重试';
+        else if (kind === 'wahlap') {
+          if (status.wahlap.maintenance?.active)
+            prerequisite =
+              status.wahlap.maintenance.message || '华立每日04:00–07:00维护，请07:00后重试';
+          else if (!status.wahlap.available)
+            prerequisite = status.wahlap.reason || '华立同步暂不可用';
+          else if (!qrText?.trim()) prerequisite = '请选择二维码截图或粘贴二维码内容';
+        } else if (!status.divingfish.configured) prerequisite = '请先保存水鱼 Token';
+        else if (!status.wahlap.has_snapshot) prerequisite = '请先完成一次华立同步';
+        if (prerequisite) {
+          notify(prerequisite);
+          return false;
+        }
+        submitted = true;
         const job = await api<ScoreSyncJob>(
           kind === 'wahlap' ? '/sync/wahlap' : '/sync/divingfish/upload',
           {
@@ -145,7 +160,7 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
           notify(messageOf(error));
         }
         // A lost response does not imply that the server stopped the job.
-        await reload();
+        if (submitted) await reload();
         return false;
       } finally {
         writing.current = false;

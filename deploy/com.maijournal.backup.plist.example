@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Replace every placeholder with an absolute path, XML-escaped or using plistlib.
+LaunchAgent arguments do not expand ~ or environment variables.
+Install as ~/Library/LaunchAgents/com.maijournal.backup.plist after running the
+same Python command once with the init flag. Keep that flag out of this recurring job.
+
+__CONFIG_DIR__ must be mode 0700; password, source-password, ssh_config, and
+known_hosts inside it must be mode 0600 and belong to the current user. Use a
+different generated password for the local repository. Install a verified server
+host key in this dedicated known_hosts file before the first run.
+
+Example ssh_config (quote paths containing spaces):
+Host mai-journal-backup
+    HostName 47.93.125.83
+    User root
+    IdentityFile "/absolute/path/to/private-key"
+    UserKnownHostsFile "__CONFIG_DIR__/known_hosts"
+    GlobalKnownHostsFile /dev/null
+    StrictHostKeyChecking yes
+    BatchMode yes
+    IdentitiesOnly yes
+    ConnectTimeout 15
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+
+The job runs at login and hourly while the Mac is awake. status.json in the
+configuration directory records the last result; backup.log contains only short
+status summaries. The script locks concurrent runs and never logs restic output.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.maijournal.backup</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__SCRIPT__</string>
+        <string>--config</string>
+        <string>__CONFIG_DIR__</string>
+        <string>--repository</string>
+        <string>__REPOSITORY__</string>
+        <string>--restic</string>
+        <string>__RESTIC__</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>StandardOutPath</key>
+    <string>__CONFIG_DIR__/backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>__CONFIG_DIR__/backup.log</string>
+</dict>
+</plist>

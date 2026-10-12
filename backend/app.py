@@ -911,7 +911,7 @@ def create_app(store=None, updater=None):
         try:
             return score_sync.start_wahlap(value.qr_text)
         except ScoreSyncError as exc:
-            raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
+            raise HTTPException(exc.status, exc.detail(), headers=exc.headers()) from None
 
     @app.post("/api/sync/divingfish/upload", status_code=202)
     def start_divingfish_upload():

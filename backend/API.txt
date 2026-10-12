@@ -94,17 +94,33 @@ GET /api/settings/divingfish -> {configured,source:"environment"|"local"|null,sy
 PUT /api/settings/divingfish {token:"Import-Token"} -> same public settings.
   Empty token clears local saved token. Token is never returned or logged.
 GET /api/sync/status -> {wahlap,job,divingfish}
-  wahlap={available,reason,verified,last_sync,has_snapshot}. available only describes
-  whether the configured adapter/runtime can be invoked; it is not proof of a live
-  protocol check. last_sync is the latest successful Wahlap receipt or null.
+  wahlap={available,reason,verified,last_sync,has_snapshot,maintenance}. available
+  describes whether the adapter/runtime can currently be invoked; it is not proof
+  of a live protocol check. During maintenance it is false, reason is the maintenance
+  message, and no adapter/runtime probe is issued. last_sync is the latest successful
+  Wahlap receipt or null.
+  maintenance={active,timezone:"Asia/Shanghai",start_time:"04:00",end_time:"07:00",
+  retry_at,retry_after_seconds,message}. The daily window includes 04:00 and excludes
+  07:00. retry_at is that day's 07:00 ISO timestamp with +08:00 offset when active;
+  otherwise it is null, retry_after_seconds=0 and message=null. The server clock is
+  authoritative, independent of the browser or host's display timezone.
   verified requires that receipt to confirm logout; has_snapshot is true whenever
   a complete score snapshot was successfully validated and committed.
   divingfish={configured,last_upload}. last_upload is the latest explicit upload
   attempt receipt (including failed attempts) or null. No token/player ID is exposed.
   job=null or {id,kind,state,stage,message,error,result}, where kind is wahlap or
   divingfish_upload; state is running, succeeded or failed; stage is starting,
-  fetching, validating, uploading, completed or failed. error is null or {code,message}.
+  fetching, validating, uploading, completed or failed. error is null or {code,message},
+  with retry_at and retry_after_seconds also present for maintenance rejection.
 POST /api/sync/wahlap {qr_text} -> HTTP 202, job object
+  New jobs during daily maintenance are rejected with HTTP 503 and Retry-After in
+  seconds. detail={code:"maintenance",message,retry_at,retry_after_seconds}.
+  The worker checks again immediately before starting its game request, so a job
+  accepted just before 04:00 may finish as failed/maintenance without contacting
+  the game server. An already running game request is allowed to finish, save its
+  valid scores and perform session logout. No scheduling, automatic retry or stored
+  QR credential is introduced. Site reads, AP claims and DivingFish uploads remain
+  available throughout maintenance.
   Requires the decoded SGWCMAID login QR text, not an image or URL. The request body
   is limited to 8192 bytes; validation errors never echo the credential. QR text is
   held in a bounded worker's memory only, never written to job state, logs or SQLite.

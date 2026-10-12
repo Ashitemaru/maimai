@@ -38,11 +38,24 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 let syncStatus = structuredClone(idleScoreSync);
 let configured = false,
   postError = '',
+  statusError = '',
   tokenError = '',
   failJob = false,
   pollReady = false,
   jobSequence = 0;
 let pendingCount = 1;
+const maintenanceMessage = '华立每日04:00–07:00维护，请07:00后重试';
+const setMaintenance = (active) => {
+  syncStatus.wahlap.available = !active;
+  syncStatus.wahlap.reason = active ? maintenanceMessage : null;
+  syncStatus.wahlap.maintenance = {
+    ...idleScoreSync.wahlap.maintenance,
+    active,
+    message: active ? maintenanceMessage : null,
+    retry_at: active ? '2026-10-13T07:00:00+08:00' : null,
+    retry_after_seconds: active ? 7200 : 0,
+  };
+};
 const receipt = {
   ok: true,
   source: 'wahlap',
@@ -85,9 +98,9 @@ try {
       assert.deepEqual(Object.keys(data), ['qr_text']);
       assert(data.qr_text.length <= 4096);
       if (postError) {
-        const message = postError;
+        const detail = postError;
         postError = '';
-        return send({ detail: message }, 422);
+        return send({ detail }, typeof detail === 'string' ? 422 : 503);
       }
       syncStatus.job = {
         id: `sync-${++jobSequence}`,
@@ -127,6 +140,11 @@ try {
     }
     assert.equal(request.method(), 'GET');
     if (pathname === '/api/sync/status') {
+      if (statusError) {
+        const message = statusError;
+        statusError = '';
+        return send({ detail: message }, 503);
+      }
       if (syncStatus.job?.state === 'running' && pollReady) {
         if (failJob) {
           syncStatus.job = {
@@ -237,6 +255,18 @@ try {
   checks.push(
     'Prerequisite messages appear only after an action; missing QR, Token, and unavailable service send no POST',
   );
+  // Entering maintenance after the tab was opened must be caught before any QR POST.
+  setMaintenance(true);
+  await panel.getByLabel('或粘贴二维码内容').fill('fixture-maintenance-cleared');
+  await submit().click();
+  await showToast(maintenanceMessage);
+  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
+  assert.equal(requests.filter((item) => item.method === 'POST').length, 0);
+  await noInlinePrompts();
+  assert.equal(await panel.getByText(maintenanceMessage, { exact: true }).count(), 0);
+  assert(await submit().isEnabled());
+  // A click after 07:00 rechecks the server even when this tab still holds the closed state.
+  setMaintenance(false);
   await panel
     .getByLabel('二维码截图', { exact: true })
     .setInputFiles(path.join(import.meta.dirname, 'fixtures/maimai-sync-qr.png'));
@@ -258,6 +288,7 @@ try {
   assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
   assert.equal(await panel.getByLabel('二维码截图').inputValue(), '');
   assert(await panel.getByRole('button', { name: '正在同步…', exact: true }).isDisabled());
+  setMaintenance(true);
   const refreshBefore = requests.filter((item) => item.path === '/api/ap-records').length;
   await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
   pollReady = true;
@@ -268,6 +299,9 @@ try {
   await page.getByText('0 条待核记录', { exact: true }).waitFor();
   checks.push(
     'Screenshot decodes without BarcodeDetector, sends only QR text, clears input, and sync completes after leaving settings',
+  );
+  checks.push(
+    'Fresh server status blocks a maintenance-window QR POST with one toast; after 07:00 a stale tab recovers on click and an already-running job continues',
   );
   await page.getByRole('link', { name: '数据与同步', exact: true }).click();
   assert.equal(await panel.getByText(receipt.notice, { exact: true }).count(), 0);
@@ -295,7 +329,45 @@ try {
   assert.equal(requests.filter((item) => item.path === '/api/sync/divingfish/upload').length, 1);
   await page.screenshot({ path: path.join(output, 'mobile-complete.png'), fullPage: true });
   checks.push(
-    'Upload is explicit, requires Token and snapshot, reports skipped rows, and no exit confirmation is invented',
+    'Upload remains available during Wahlap maintenance, is explicit, requires Token and snapshot, reports skipped rows, and no exit confirmation is invented',
+  );
+  setMaintenance(false);
+  const beforeStatusError = requests.filter((item) => item.path === '/api/sync/wahlap').length;
+  statusError = '暂时无法获取同步状态';
+  await panel.getByLabel('或粘贴二维码内容').fill('fixture-status-failure');
+  await submit().click();
+  await showToast('暂时无法获取同步状态');
+  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
+  assert.equal(
+    requests.filter((item) => item.path === '/api/sync/wahlap').length,
+    beforeStatusError,
+  );
+  postError = {
+    code: 'maintenance',
+    message: maintenanceMessage,
+    retry_at: '2026-10-13T07:00:00+08:00',
+    retry_after_seconds: 10800,
+  };
+  await panel.getByLabel('或粘贴二维码内容').fill('fixture-crossed-maintenance-boundary');
+  await submit().click();
+  await showToast(maintenanceMessage);
+  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
+  const rejectedPosts = requests.filter((item) => item.path === '/api/sync/wahlap').length;
+  assert.equal(rejectedPosts, beforeStatusError + 1);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForTimeout(2200);
+  assert.equal(requests.filter((item) => item.path === '/api/sync/wahlap').length, rejectedPosts);
+  assert(
+    await page.evaluate(() =>
+      [localStorage, sessionStorage].every((storage) =>
+        Object.values(storage).every(
+          (value) => !/fixture-maintenance|fixture-crossed|fixture-status/.test(value),
+        ),
+      ),
+    ),
+  );
+  checks.push(
+    'Failed status refresh sends no QR POST; a server-side boundary rejection shows a toast, clears QR, and never automatically retries or persists the code',
   );
   postError = '二维码已过期，请重新获取';
   await panel.getByLabel('或粘贴二维码内容').fill('fixture-expired');

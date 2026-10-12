@@ -34,6 +34,15 @@ export interface ScoreSyncStatus {
     verified: boolean;
     last_sync: WahlapSyncResult | null;
     has_snapshot: boolean;
+    maintenance: {
+      active: boolean;
+      timezone: 'Asia/Shanghai';
+      start_time: string;
+      end_time: string;
+      retry_at: string | null;
+      retry_after_seconds: number;
+      message: string | null;
+    };
   };
   job: ScoreSyncJob | null;
   divingfish: {
