@@ -1,4 +1,8 @@
-Maimai personal app API (all requests same origin, http://127.0.0.1:8766)
+Maimai personal app API (all requests same origin)
+
+Production uses HTTPS and one Master Key. POST /api/auth/login {master_key} creates
+a Secure, HttpOnly session cookie; GET /api/auth/session reports authentication;
+POST /api/auth/logout revokes the session. Personal APIs require authentication.
 
 GET /api/health -> {ok, catalog_charts, imported_charts}
 GET /api/catalog/update -> catalog updater status, current snapshot and last result
@@ -41,20 +45,34 @@ GET /api/charts?q=&group=all|low|high|catalog&difficulty=0..4&type=standard|dx
   Persisted field choices survive future source changes until explicitly revoked.
   PLUS versions remain distinct. Set constant_min=constant_max for an exact constant.
 GET /api/charts/{chart_key} -> Chart
-PUT /api/charts/{chart_key}/manual {ap:true,venue:"",achievement:null,note:"",date:null}
-  -> {chart:Chart,warnings:[string]}. Conflict with provider NEVER blocks saving.
-  ap:true requires a nonblank trimmed venue when Chart.requires_venue is true;
-  otherwise returns HTTP 422 without changing the record. Missing chart -> HTTP 404.
-  ap:false explicitly corrects local completion/AP claim, without erasing provider facts.
-DELETE /api/charts/{chart_key}/manual -> {chart:Chart}; removes override, reveals original.
-GET /api/venues -> {items:[{name,count}]}
+GET /api/ap-records -> {items:[{chart_key,title,type,difficulty_name,constant,
+  jacket_url,record_revision,pending_record}],count}
+PUT /api/charts/{chart_key}/ap-record {venue,request_id,expected_revision}
+  -> {chart:Chart}. Saves a pending venue claim, never marks a chart AP by itself.
+  request_id is a client-generated idempotency key. Replaying the same request
+  does not recreate a subsequently cancelled/confirmed claim. A different payload
+  cannot reuse its key. Stale revisions return 409 without overwriting newer work.
+DELETE /api/charts/{chart_key}/ap-record?expected_revision=N -> {chart}
+  Cancels only the pending claim; previous AP evidence and confirmed venue survive.
+PUT/DELETE /api/charts/{chart_key}/manual -> 410; obsolete immediate-AP writes.
+GET /api/venues -> {items:[{name,count,last_used_at}]}
+  Includes recent pending venue choices; count includes only completed charts.
 GET /api/settings/divingfish -> {configured,source:"environment"|"local"|null,sync}
 PUT /api/settings/divingfish {token:"Import-Token"} -> same public settings.
   Empty token clears local saved token. Token is never returned or logged.
-POST /api/sync/divingfish (no body) -> {ok,records,matched,unmatched,conflicts,synced_at}
+POST /api/sync/divingfish (no body)
+  -> {ok,records,matched,unmatched,conflicts,synced_at,sync_id,confirmed,pending,venue_pending}
   Reads full records from official /player/records endpoint, Import-Token header.
   No credentials configured -> HTTP 409, detail {code:"not_configured",message:...}.
   Never uploads/modifies game or waterfish records. Sync preserves local records.
+  The eligible pending IDs/revisions are captured before the network request.
+  Only an unchanged eligible claim whose latest full response has fc=ap/app is
+  confirmed. Scores, venue confirmations, evidence and sync receipt commit together.
+  Missing/non-AP records stay pending with a reason. A malformed/network response
+  leaves all existing personal data untouched. Overlapping syncs return 409.
+  Full raw records are retained in sync history, including unmatched Utage records;
+  Utage scores can exceed 101 and are not added to the ordinary chart statistics.
+  Scores can confirm chart-level AP, not a particular play's venue or date.
 
 Chart fields:
 id, difficulty, chart_key (id:difficulty), lxns_song_id, song_id (alias of id),
@@ -65,16 +83,22 @@ group(low/high/catalog), in_original_table, requires_venue, legacy_complete, leg
 manual_ap(null/true/false), manual_venue, venue, note, manual_date,
 achievement(null or number, explicit manual score preferred),
 provider_achievement, provider_fc, provider_synced_at,
+provider_fs, provider_dx_score, provider_rate, provider_ra,
+pending_record(null or {id,venue,created_at,updated_at,revision,reason}),
+record_revision, venue_pending, ap_confirmed_at, venue_confirmed_at,
 is_ap, is_complete, status(app/ap/legacy/incomplete), conflict, warnings.
 Legacy completion is distinct from verified AP because original table includes deletion exemptions.
 Low/high are imported directly from original TSV source. Catalog-only charts remain a separate group.
 requires_venue is true for imported high charts, false for imported low charts;
 catalog-only charts use constant >= 12.6. Clients use this flag for the venue field
 without presenting the source groups as separate AP libraries. Existing imported
-records are preserved, and ap:false does not require a venue.
+records are preserved.
 Provider AP requires fc=ap/app; 100+ achievement alone never means AP.
-Manual AP accepts user's claim without waiting for provider. Provider missing/not AP only warns.
-High venues and notes are always local, never overwritten by provider.
+New pending claims never contribute to completed counts, AP masks or exports.
+Provider-confirmed AP counts even if a required venue is missing (venue_pending).
+Confirmed AP evidence survives later missing/reduced scores; an actual non-AP
+response is surfaced for review. A venue correction keeps the previous confirmed
+venue until the new claim is confirmed. Venues come only from the user's records.
 Provider exact achievement is not auto-confirmed for covers (account score masks may apply).
 
 GET /jackets/{song_id}.png -> active snapshot image, falling back to base catalog cache
@@ -91,9 +115,9 @@ publishes them together. reload_catalog() follows current. Personal data stays s
 Environment overrides: MAIMAI_RUNTIME_DIR, DIVINGFISH_IMPORT_TOKEN.
 Tests use isolated temp DBs and mocked provider responses, never personal remote records.
 Import source path defaults ~/Downloads; override MAIMAI_IMPORT_DIR before first startup.
-This build binds loopback only. Add authentication and HTTPS before public deployment.
+The backend binds loopback behind the authenticated HTTPS deployment; see deploy/README.md.
 
-Catalog adjudication (independent of personal /charts/{key}/manual):
+Catalog adjudication (independent of personal AP records):
 GET /api/catalog/data -> schema_version=2, charts[] (no songs[]), counts={total,admitted,pending,...}.
   Canonical ID = LXNS ID for STD/UTAGE, LXNS ID + 10000 for DX.
   Primary key = (id,difficulty). Pending chart entries are not returned here.

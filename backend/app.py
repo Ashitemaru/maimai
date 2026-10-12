@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .ap_records import RecordConflictError
 from .auth import (
     AuthConfig,
     AuthStore,
@@ -31,7 +32,6 @@ from .catalog_updates import BusyError, CatalogUpdates
 from .completion_exports import completion_export_router
 from .store import (
     ROOT,
-    ManualConflictError,
     Store,
     SyncBusyError,
     SyncTokenChangedError,
@@ -98,6 +98,9 @@ COMPLETION_FIELDS = (
     "conflict",
     "achievement",
     "provider_achievement",
+    "pending_record",
+    "record_revision",
+    "venue_pending",
 )
 
 
@@ -175,23 +178,6 @@ def chart_filters(
     }
 
 
-class ManualInput(BaseModel):
-    expected_revision: int = Field(ge=0, strict=True)
-    ap: bool = True
-    venue: str = Field(default="", max_length=200)
-    achievement: float | None = Field(default=None, ge=0, le=101, allow_inf_nan=False)
-    note: str = Field(default="", max_length=2000)
-    date: str | None = None
-
-    @field_validator("date")
-    @classmethod
-    def date_valid(cls, value):
-        if not value:
-            return None
-        date.fromisoformat(value)
-        return value
-
-
 class TokenInput(BaseModel):
     token: str = Field(max_length=2048)
 
@@ -201,6 +187,13 @@ class TokenInput(BaseModel):
         if any(c in value for c in "\r\n\x00"):
             raise ValueError("Token 不应包含换行")
         return value
+
+
+class APRecordInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    venue: str = Field(default="", max_length=200)
+    request_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    expected_revision: int = Field(ge=0, strict=True)
 
 
 class PreferencesInput(BaseModel):
@@ -678,47 +671,55 @@ def create_app(store=None, updater=None):
         return public(item)
 
     @app.put("/api/charts/{chart_key}/manual")
-    def manual(chart_key: str, value: ManualInput):
+    @app.delete("/api/charts/{chart_key}/manual")
+    def retired_manual(chart_key: str):
+        raise HTTPException(
+            410,
+            {
+                "code": "manual_retired",
+                "message": "请刷新页面，改用机厅登记。AP 状态由水鱼核准。",
+            },
+        )
+
+    @app.get("/api/ap-records")
+    def ap_records():
+        return store.ap_records()
+
+    def record_conflict(chart_key):
+        return HTTPException(
+            409,
+            {
+                "code": "record_conflict",
+                "message": "记录已在其他页面更新，请重新载入后再保存。",
+                "chart": public(store.chart(chart_key)) if store.chart(chart_key) else None,
+            },
+        )
+
+    @app.put("/api/charts/{chart_key}/ap-record")
+    def save_ap_record(chart_key: str, value: APRecordInput):
         try:
-            item = store.save_manual(chart_key, value.model_dump())
+            item = store.save_ap_record(chart_key, value.model_dump())
         except KeyError as exc:
             raise HTTPException(404, "谱面不存在") from exc
-        except ManualConflictError:
-            raise HTTPException(
-                409,
-                {
-                    "code": "manual_conflict",
-                    "message": "记录已在其他页面更新，请重新载入后再保存。",
-                    "chart": public(store.chart(chart_key)),
-                },
-            ) from None
+        except RecordConflictError:
+            raise record_conflict(chart_key) from None
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        return {"chart": public(item), "warnings": item["warnings"]}
-
-    @app.delete("/api/charts/{chart_key}/manual")
-    def clear_manual(chart_key: str, expected_revision: int = Query(ge=0)):
-        if chart_key not in store.catalog:
-            raise HTTPException(404, "谱面不存在")
-        try:
-            item = store.clear_manual(chart_key, expected_revision)
-        except ManualConflictError:
-            raise HTTPException(
-                409,
-                {
-                    "code": "manual_conflict",
-                    "message": "记录已在其他页面更新，请重新载入后再保存。",
-                    "chart": public(store.chart(chart_key)),
-                },
-            ) from None
         return {"chart": public(item)}
+
+    @app.delete("/api/charts/{chart_key}/ap-record")
+    def cancel_ap_record(chart_key: str, expected_revision: int = Query(ge=0)):
+        try:
+            item = store.cancel_ap_record(chart_key, expected_revision)
+        except KeyError as exc:
+            raise HTTPException(404, "谱面不存在") from exc
+        except RecordConflictError:
+            raise record_conflict(chart_key) from None
+        return {"chart": public(item) if item else None}
 
     @app.get("/api/venues")
     def venues():
-        from collections import Counter
-
-        counts = Counter(c["venue"] for c in store.all_charts() if c["venue"] and c["is_complete"])
-        return {"items": [{"name": name, "count": count} for name, count in counts.most_common()]}
+        return store.venue_list()
 
     @app.get("/api/settings/divingfish")
     def settings():
@@ -765,6 +766,7 @@ def create_app(store=None, updater=None):
                     "message": "请先在设置中填写水鱼 Import-Token，再手动同步。",
                 },
             )
+        eligible_records = store.pending_snapshot()
         try:
             response = httpx.get(
                 "https://www.diving-fish.com/api/maimaidxprober/player/records",
@@ -780,7 +782,7 @@ def create_app(store=None, updater=None):
                         "message": f"水鱼返回 HTTP {response.status_code}，请检查 Token 或稍后重试。本地记录已保留。",
                     },
                 )
-            result = store.publish_sync(response.json(), generation)
+            result = store.publish_sync(response.json(), generation, eligible_records)
         except httpx.RequestError as exc:
             raise HTTPException(
                 502, {"code": "network_error", "message": "暂时无法访问水鱼，本地记录已保留。"}

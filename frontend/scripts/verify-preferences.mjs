@@ -242,6 +242,7 @@ async function mock(context, name) {
       };
     else if (pathname === '/api/settings/divingfish')
       value = { configured: false, source: null, sync: null };
+    else if (pathname === '/api/ap-records') value = { items: [], count: 0 };
     else if (pathname === '/api/venues') value = { items: [] };
     else if (pathname === '/api/catalog/update') value = catalog;
     else if (pathname === '/api/catalog/records/review')

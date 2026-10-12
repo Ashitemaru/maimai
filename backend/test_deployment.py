@@ -151,36 +151,45 @@ class DeploymentTests(unittest.TestCase):
         with patch("backend.app.httpx.get", return_value=self.response()):
             self.assertEqual(self.client.post("/api/sync/divingfish").status_code, 200)
 
-    def test_stale_manual_put_and_delete_cannot_overwrite_newer_record(self):
-        path = "/api/charts/30:standard:0/manual"
-        first = self.client.put(path, json={"expected_revision": 0, "note": "newer"}).json()[
-            "chart"
-        ]
+    def test_stale_claim_put_and_delete_cannot_overwrite_newer_record(self):
+        key = "22:standard:4"
+        path = f"/api/charts/{key}/ap-record"
+        first = self.client.put(
+            path, json={"expected_revision": 0, "request_id": "first", "venue": "newer"}
+        ).json()["chart"]
         for response in (
-            self.client.put(path, json={"expected_revision": 0, "note": "stale"}),
+            self.client.put(
+                path, json={"expected_revision": 0, "request_id": "stale", "venue": "stale"}
+            ),
             self.client.delete(path, params={"expected_revision": 0}),
         ):
             self.assertEqual(response.status_code, 409)
-            self.assertEqual(response.json()["detail"]["code"], "manual_conflict")
-            self.assertEqual(response.json()["detail"]["chart"]["note"], "newer")
-        self.assertGreater(first["manual_revision"], 0)
-        restored = self.client.delete(
-            path, params={"expected_revision": first["manual_revision"]}
+            self.assertEqual(response.json()["detail"]["code"], "record_conflict")
+            self.assertEqual(response.json()["detail"]["chart"]["pending_record"]["venue"], "newer")
+        self.assertGreater(first["record_revision"], 0)
+        cleared = self.client.delete(
+            path, params={"expected_revision": first["record_revision"]}
         ).json()["chart"]
-        self.assertGreater(restored["manual_revision"], first["manual_revision"])
-        self.assertIsNone(restored["manual_ap"])
+        self.assertGreater(cleared["record_revision"], first["record_revision"])
+        self.assertIsNone(cleared["pending_record"])
+        self.assertEqual(self.new_store().chart(key)["record_revision"], cleared["record_revision"])
         self.assertEqual(
-            self.new_store().chart("30:standard:0")["manual_revision"], restored["manual_revision"]
+            self.client.put(
+                path, json={"expected_revision": 0, "request_id": "stale2", "venue": "stale"}
+            ).status_code,
+            409,
         )
-        self.assertEqual(self.client.put(path, json={"expected_revision": 0}).status_code, 409)
 
-    def test_parallel_manual_saves_commit_exactly_one_revision_and_event(self):
-        path = "/api/charts/30:standard:0/manual"
+    def test_parallel_claims_commit_exactly_one_revision_and_event(self):
+        key = "22:standard:4"
+        path = f"/api/charts/{key}/ap-record"
         barrier = threading.Barrier(2)
 
-        def save(note):
+        def save(venue):
             barrier.wait(timeout=5)
-            return self.client.put(path, json={"expected_revision": 0, "note": note})
+            return self.client.put(
+                path, json={"expected_revision": 0, "request_id": venue, "venue": venue}
+            )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(save, ("first", "second")))
@@ -188,21 +197,25 @@ class DeploymentTests(unittest.TestCase):
         winner = next(
             response.json()["chart"] for response in responses if response.status_code == 200
         )
-        self.assertEqual(self.store.chart("30:standard:0")["note"], winner["note"])
+        self.assertEqual(
+            self.store.chart(key)["pending_record"]["venue"], winner["pending_record"]["venue"]
+        )
         with self.store.db() as conn:
             self.assertEqual(
-                conn.execute("SELECT COUNT(*) FROM events WHERE kind='manual'").fetchone()[0], 1
+                conn.execute("SELECT COUNT(*) FROM events WHERE kind='ap_pending'").fetchone()[0], 1
             )
 
-    def test_manual_revision_precondition_is_required_and_strict(self):
-        path = "/api/charts/30:standard:0/manual"
+    def test_claim_revision_precondition_is_required_and_strict(self):
+        path = "/api/charts/30:standard:0/ap-record"
         for payload in (
             {},
             {"expected_revision": -1},
             {"expected_revision": True},
             {"expected_revision": "0"},
         ):
-            self.assertEqual(self.client.put(path, json=payload).status_code, 422)
+            self.assertEqual(
+                self.client.put(path, json={"request_id": "fixture", **payload}).status_code, 422
+            )
         self.assertEqual(self.client.delete(path).status_code, 422)
 
     def test_readiness_detects_missing_databases_while_health_remains_live(self):

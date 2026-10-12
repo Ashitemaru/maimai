@@ -1,4 +1,26 @@
-export type Page = 'ap' | 'statistics' | 'cover' | 'venues' | 'settings';
+export type Page = 'ap' | 'statistics' | 'pending' | 'cover' | 'venues' | 'settings';
+export interface PendingRecord {
+  id: string;
+  venue: string;
+  created_at: string;
+  updated_at: string;
+  revision: number;
+  reason: string;
+}
+export interface APRecordItem {
+  chart_key: string;
+  title: string;
+  type: Chart['type'];
+  difficulty_name: string;
+  constant: number;
+  jacket_url: string;
+  record_revision: number;
+  pending_record: PendingRecord;
+}
+export interface APRecords {
+  items: APRecordItem[];
+  count: number;
+}
 export interface Chart {
   id: number;
   difficulty: number;
@@ -33,6 +55,13 @@ export interface Chart {
   provider_achievement: number | null;
   provider_fc: string | null;
   provider_synced_at: string | null;
+  provider_fs?: string | null;
+  provider_dx_score?: number | null;
+  provider_rate?: string | null;
+  provider_ra?: number | null;
+  pending_record?: PendingRecord | null;
+  record_revision?: number;
+  venue_pending?: boolean;
   is_ap: boolean;
   is_complete: boolean;
   status: 'app' | 'ap' | 'legacy' | 'incomplete';
@@ -54,6 +83,10 @@ export interface SyncResult {
   unmatched: number;
   conflicts: number;
   synced_at: string;
+  confirmed?: number;
+  pending?: number;
+  venue_pending?: number;
+  sync_id?: string;
 }
 export interface Summary extends Counts {
   levels: (Counts & { level: string })[];
@@ -72,6 +105,7 @@ export interface Preferences {
 export interface Venue {
   name: string;
   count: number;
+  last_used_at?: string | null;
 }
 export interface ChartList {
   items: Chart[];
@@ -97,6 +131,9 @@ export type CompletionChart = Pick<
   | 'conflict'
   | 'achievement'
   | 'provider_achievement'
+  | 'pending_record'
+  | 'record_revision'
+  | 'venue_pending'
 >;
 export interface CompletionTableData {
   items: CompletionChart[];

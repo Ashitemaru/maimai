@@ -269,6 +269,7 @@ try {
         '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
         '/api/catalog/update': catalog,
         '/api/venues': { items: [] },
+        '/api/ap-records': { items: [], count: 0 },
         '/api/summary': summary,
         '/api/charts': { items: [chart], total: 1, offset: 0, limit: 12 },
         '/api/charts/9200%3A3': chart,

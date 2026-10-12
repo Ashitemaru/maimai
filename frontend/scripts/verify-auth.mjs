@@ -20,6 +20,7 @@ let unavailable = false;
 let loginDelay = 0;
 const data = {
   '/api/venues': { items: [] },
+  '/api/ap-records': { items: [], count: 0 },
   '/api/settings/divingfish': { configured: false, source: null, sync: null },
   '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
   '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },

@@ -276,6 +276,7 @@ async function mock(context, name) {
           })),
         cn_matrix_versions: versions.filter((version) => version.value !== '__unknown__'),
       };
+    else if (pathname === '/api/ap-records') value = { items: [], count: 0 };
     else if (pathname === '/api/venues') value = { items: [] };
     else if (pathname === '/api/settings/divingfish')
       value = { configured: false, source: null, sync: null };
@@ -591,7 +592,9 @@ try {
     if (navOnly) {
       const navigation = await page.locator('.nav-item').evaluateAll((items) =>
         items.map((element) => {
-          const text = element.querySelector('span'),
+          const text = [...element.querySelectorAll('span')].find(
+              (label) => label.getBoundingClientRect().width > 0,
+            ),
             bounds = element.getBoundingClientRect(),
             label = text.getBoundingClientRect(),
             css = getComputedStyle(text);
@@ -608,7 +611,7 @@ try {
         }),
       );
       measurements.push({ name: `${name}-navigation`, navigation });
-      assert.equal(navigation.length, 5);
+      assert.equal(navigation.length, 6);
       for (const [index, item] of navigation.entries()) {
         assert.equal(item.whiteSpace, 'nowrap', `${name}: ${item.text} uses a single line`);
         assert(item.labelHeight <= item.lineHeight + 1, `${name}: ${item.text} wraps`);
@@ -629,14 +632,18 @@ try {
       await audit(page, `${name}-matrix`);
       await page.screenshot({ path: path.join(output, `${name}-viewport.png`) });
       checks.push(
-        `${name}: all five navigation labels remain single-line within their slots without overlap`,
+        `${name}: all six navigation labels remain single-line within their slots without overlap`,
       );
       await context.close();
       activePage = null;
       continue;
     }
     assert.equal(await page.getByRole('heading', { name: '完成统计', exact: true }).count(), 1);
-    assert.equal(await page.locator('a.nav-item.active').textContent(), '完成统计');
+    assert.equal(await page.locator('a.nav-item.active').getAttribute('aria-label'), '完成统计');
+    assert.equal(
+      await page.locator('a.nav-item.active').innerText(),
+      name === 'mobile' ? '统计' : '完成统计',
+    );
     assert.equal(await page.getByRole('combobox', { name: '难度', exact: true }).inputValue(), '');
     assert.equal(await page.locator('.matrix-table th[title="maimai"]').textContent(), '初');
     assert.equal(await page.locator('.matrix-table th[title="maimai PLUS"]').textContent(), '真');

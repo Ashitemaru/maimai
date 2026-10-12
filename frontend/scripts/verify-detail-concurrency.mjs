@@ -30,12 +30,21 @@ const charts = ['Alpha', 'Beta'].map((title, index) => ({
   jp_release_version: 'PRiSM',
   jp_release_version_candidate: null,
   release_status: 'verified',
-  requires_venue: false,
+  requires_venue: true,
   in_original_table: false,
   legacy_complete: false,
   legacy_venue: '',
   manual_ap: true,
-  manual_revision: 1,
+  manual_revision: 0,
+  record_revision: 1,
+  pending_record: {
+    id: `pending-${index}`,
+    venue: 'Original venue',
+    revision: 1,
+    reason: '待同步核实',
+    created_at: '2026-10-12T01:00:00+08:00',
+    updated_at: '2026-10-12T01:00:00+08:00',
+  },
   manual_venue: '',
   venue: '',
   note: 'Original record',
@@ -134,7 +143,7 @@ try {
     const url = new URL(request.url());
     const pathname = url.pathname;
     const method = request.method();
-    const manual = pathname.match(/^\/api\/charts\/([^/]+)\/manual$/);
+    const manual = pathname.match(/^\/api\/charts\/([^/]+)\/ap-record$/);
     if (manual) {
       const chart = charts.find((item) => item.chart_key === decodeURIComponent(manual[1]));
       assert(chart);
@@ -150,12 +159,12 @@ try {
         delay.started.resolve();
         await delay.release.promise;
       }
-      if (expected !== chart.manual_revision) {
+      if (expected !== chart.record_revision) {
         await route.fulfill({
           status: 409,
           json: {
             detail: {
-              code: 'manual_conflict',
+              code: 'record_conflict',
               message: '记录已在其他页面更新，请重新载入后再保存。',
               chart,
             },
@@ -163,16 +172,19 @@ try {
         });
         return;
       }
-      chart.manual_revision += 1;
+      chart.record_revision += 1;
       if (method === 'PUT') {
-        Object.assign(chart, {
-          note: body.note,
-          manual_ap: body.ap,
+        assert.equal(typeof body.request_id, 'string');
+        assert.deepEqual(Object.keys(body).sort(), ['expected_revision', 'request_id', 'venue']);
+        chart.pending_record = {
+          id: 'pending',
           venue: body.venue,
-          achievement: body.achievement,
-          manual_date: body.date,
-        });
-      } else Object.assign(chart, { manual_ap: null, note: '', manual_date: null });
+          revision: chart.record_revision,
+          reason: '待同步核实',
+          created_at: '2026-10-12T01:00:00+08:00',
+          updated_at: '2026-10-12T01:00:00+08:00',
+        };
+      } else chart.pending_record = null;
       await route.fulfill({ json: method === 'PUT' ? { chart, warnings: [] } : { ok: true } });
       return;
     }
@@ -197,6 +209,7 @@ try {
       '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
       '/api/catalog/update': catalog,
       '/api/venues': { items: [] },
+      '/api/ap-records': { items: [], count: 0 },
       '/api/summary': summary,
       '/api/charts': { items: charts, total: charts.length, offset: 0, limit: 12 },
     };
@@ -261,17 +274,20 @@ try {
   await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
   await beta.click();
   await record.waitFor();
-  await record.getByLabel('备注', { exact: true }).fill('Keep this unsaved draft');
-  Object.assign(charts[1], { manual_revision: 2, note: 'Other device update' });
-  await record.getByRole('button', { name: '保存 AP', exact: true }).click();
+  await record.getByLabel('AP 机厅', { exact: true }).fill('Keep this unsaved draft');
+  Object.assign(charts[1], {
+    record_revision: 2,
+    pending_record: { ...charts[1].pending_record, venue: 'Other device update' },
+  });
+  await record.getByRole('button', { name: '保存待核记录', exact: true }).click();
   await record.getByRole('alert').waitFor();
   assert.equal(
-    await record.getByLabel('备注', { exact: true }).inputValue(),
+    await record.getByLabel('AP 机厅', { exact: true }).inputValue(),
     'Keep this unsaved draft',
   );
-  assert(await record.getByRole('button', { name: '保存 AP', exact: true }).isDisabled());
-  assert(await record.getByRole('button', { name: '撤销手工记录', exact: true }).isDisabled());
-  assert.equal(charts[1].note, 'Other device update');
+  assert(await record.getByRole('button', { name: '保存待核记录', exact: true }).isDisabled());
+  assert(await record.getByRole('button', { name: '取消登记', exact: true }).isDisabled());
+  assert.equal(charts[1].pending_record.venue, 'Other device update');
   assert.equal(mutations.at(-1).expected_revision, 1);
   checks.push('PUT conflict keeps the draft, preserves server changes and blocks stale writes');
   await page.screenshot({ path: path.join(output, 'desktop-conflict.png') });
@@ -283,29 +299,32 @@ try {
   checks.push('Conflict form remains usable at 390px with no document overflow');
   await record.getByRole('button', { name: '重新载入记录', exact: true }).click();
   await page.waitForFunction(
-    () => document.querySelector('#manual-note')?.value === 'Other device update',
+    () => document.querySelector('#venue-input')?.value === 'Other device update',
   );
-  await record.getByLabel('备注', { exact: true }).fill('Reviewed update');
-  await record.getByRole('button', { name: '保存 AP', exact: true }).click();
+  await record.getByLabel('AP 机厅', { exact: true }).fill('Reviewed update');
+  await record.getByRole('button', { name: '保存待核记录', exact: true }).click();
   await record.waitFor({ state: 'detached' });
-  assert.equal(charts[1].note, 'Reviewed update');
+  assert.equal(charts[1].pending_record.venue, 'Reviewed update');
   assert.equal(mutations.at(-1).expected_revision, 2);
   checks.push('Explicit reload restores the latest form and uses its revision for the next save');
 
   await beta.click();
   await record.waitFor();
-  Object.assign(charts[1], { manual_revision: 4, note: 'Newer before deletion' });
-  await record.getByRole('button', { name: '撤销手工记录', exact: true }).click();
+  Object.assign(charts[1], {
+    record_revision: 4,
+    pending_record: { ...charts[1].pending_record, venue: 'Newer before deletion' },
+  });
+  await record.getByRole('button', { name: '取消登记', exact: true }).click();
   await record.getByRole('alert').waitFor();
-  assert.equal(charts[1].note, 'Newer before deletion');
+  assert.equal(charts[1].pending_record.venue, 'Newer before deletion');
   assert.equal(mutations.at(-1).expected_revision, 3);
   await record.getByRole('button', { name: '重新载入记录', exact: true }).click();
   await page.waitForFunction(
-    () => document.querySelector('#manual-note')?.value === 'Newer before deletion',
+    () => document.querySelector('#venue-input')?.value === 'Newer before deletion',
   );
-  await record.getByRole('button', { name: '撤销手工记录', exact: true }).click();
+  await record.getByRole('button', { name: '取消登记', exact: true }).click();
   await record.waitFor({ state: 'detached' });
-  assert.equal(charts[1].manual_ap, null);
+  assert.equal(charts[1].pending_record, null);
   assert.equal(mutations.at(-1).expected_revision, 4);
   checks.push(
     'DELETE rejects a stale revision and succeeds only after an explicit latest-record reload',
@@ -313,9 +332,10 @@ try {
 
   await beta.click();
   await record.waitFor();
+  await record.getByLabel('AP 机厅', { exact: true }).fill('Next venue');
   const write = { started: deferred(), release: deferred() };
   delayedWrite = write;
-  await record.getByRole('button', { name: '保存 AP', exact: true }).click();
+  await record.getByRole('button', { name: '保存待核记录', exact: true }).click();
   await write.started.promise;
   await record.getByRole('button', { name: '关闭', exact: true }).click();
   await alpha.click();

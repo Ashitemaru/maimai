@@ -30,7 +30,7 @@ function CompletionTile({
       : '未标记';
   const badgeKey = completionBadgeKey(chart);
   const badge = badgeKey ? COMPLETION_BADGES[badgeKey] : null;
-  const label = `${chartName(chart)} · ${chart.type === 'standard' ? 'STD' : chart.type.toUpperCase()} · ${chart.difficulty_name} ${chart.constant.toFixed(1)} · ${status}${chart.conflict ? ' · 待核对' : ''}`;
+  const label = `${chartName(chart)} · ${chart.type === 'standard' ? 'STD' : chart.type.toUpperCase()} · ${chart.difficulty_name} ${chart.constant.toFixed(1)} · ${status}${chart.pending_record ? ' · 待核实' : ''}${chart.conflict ? ' · 待核对' : ''}`;
   return (
     <button
       type="button"
@@ -39,6 +39,7 @@ function CompletionTile({
       data-difficulty={chart.difficulty}
       data-status={chart.status}
       data-complete={chart.is_complete}
+      data-pending={Boolean(chart.pending_record)}
       aria-label={`查看 ${label}`}
       title={label}
       onClick={() => onSelect(chart)}
@@ -64,6 +65,11 @@ function CompletionTile({
             >
               <image href={badge.src} width="80" height="80" />
             </svg>
+          </span>
+        )}
+        {chart.pending_record && (
+          <span className="completion-pending" aria-label="待核实">
+            待核
           </span>
         )}
         {chart.conflict && (

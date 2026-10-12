@@ -206,6 +206,7 @@ await page.route('**/api/**', async (route) => {
     '/api/settings/preferences': { default_constant_min: 1, default_constant_max: 15 },
     '/api/settings/divingfish': { configured: false, sync: null },
     '/api/venues': { items: [] },
+    '/api/ap-records': { items: [], count: 0 },
     '/api/chart-filters': { constants: [1, 13.9, 15], versions: [] },
     '/api/summary': {
       total: 5560,
@@ -367,7 +368,14 @@ try {
   status = { ...status, revision: 'r2' };
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await waitFor(
-    async () => (await dialog().count()) === 0 || (await modalConfirm().isDisabled()),
+    () =>
+      dialog().evaluateAll(
+        (elements) =>
+          elements.length === 0 ||
+          [...elements[0].querySelectorAll('button')].some(
+            (button) => button.textContent.trim() === '确认提交' && button.disabled,
+          ),
+      ),
     'catalog revision invalidates open confirmation',
   );
   assert.equal(posts.length, 0);

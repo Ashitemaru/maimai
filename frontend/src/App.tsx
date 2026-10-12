@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { api, ApiError, messageOf } from './api';
 import type {
+  APRecords,
   Chart,
   ChartFilters,
   ChartList,
@@ -13,6 +14,7 @@ import type {
   SyncResult,
   Venue,
 } from './types';
+import { PendingRecords } from './PendingRecords';
 import { CompletionTable } from './CompletionTable';
 import { CompletionMatrix } from './CompletionMatrix';
 import { PreferencesPanel, PreferencesStatus } from './Preferences';
@@ -26,6 +28,7 @@ import type { CatalogUpdateControl } from './useCatalogUpdate';
 import { formatTimestamp } from './dateTime';
 
 const paths: Record<string, string> = {
+  clock: 'M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
   grid: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
   table: 'M3 3h18v18H3zM3 9h18M9 3v18M15 9v12M3 15h18',
   image: 'M4 3h16v18H4zM4 15l5-5 5 5 3-3 3 3M8 7h.01',
@@ -42,14 +45,21 @@ const paths: Record<string, string> = {
 const pageLabels: Record<Page, string> = {
   ap: 'AP 图鉴',
   statistics: '完成统计',
+  pending: '待核记录',
   cover: '封面工坊',
   venues: '我的机厅',
   settings: '数据与同步',
 };
+const mobilePageLabels: Record<Page, string> = {
+  ap: '图鉴',
+  statistics: '统计',
+  pending: '待核',
+  cover: '封面',
+  venues: '机厅',
+  settings: '设置',
+};
 const num = (value = 0) => value.toLocaleString('en-US');
 const chartName = (c: Chart) => c.display_title || c.title || '（空白曲名）';
-const validScore = (value: string) =>
-  /^\d{1,3}(\.\d{1,4})?$/.test(value) && Number(value) >= 0 && Number(value) <= 101;
 const syncDate = (s: Settings | null) => formatTimestamp(s?.sync?.synced_at, '尚未同步');
 function Icon({ name }: { name: string }) {
   return (
@@ -94,7 +104,7 @@ function Badge({ chart }: { chart: Chart }) {
   ) : chart.is_complete ? (
     <span className="badge complete">✦ 已完成</span>
   ) : (
-    <span className="badge pending">未标记</span>
+    <span className="badge pending">{chart.pending_record ? '待核实' : '未标记'}</span>
   );
 }
 function JacketImage({
@@ -305,10 +315,16 @@ function Detail({
   onSync: () => void;
   notify: (message: string) => void;
 }) {
-  const [venue, setVenue] = useState(c.venue);
-  const [score, setScore] = useState(c.achievement?.toFixed(4) || '');
-  const [date, setDate] = useState(c.manual_date || '');
-  const [note, setNote] = useState(c.note);
+  const [venue, setVenue] = useState(
+    c.pending_record?.venue || c.venue || venues.find((item) => item.last_used_at)?.name || '',
+  );
+  const request = useRef<{ venue: string; id: string } | null>(null);
+  const recentVenues = [...venues].sort((a, b) =>
+    (b.last_used_at || '').localeCompare(a.last_used_at || ''),
+  );
+  const venueChoices = recentVenues
+    .filter((item) => !venue || item.name.includes(venue.trim()))
+    .slice(0, 6);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [conflicted, setConflicted] = useState(false);
@@ -331,30 +347,23 @@ function Detail({
       setError('请填写 AP 机厅');
       return;
     }
-    if (score && !validScore(score)) {
-      setError('达成率需为 0–101，最多四位小数');
-      return;
-    }
+    const submittedVenue = c.requires_venue ? venue.trim() : '';
+    if (request.current?.venue !== submittedVenue)
+      request.current = { venue: submittedVenue, id: crypto.randomUUID() };
     setBusy(true);
     setError('');
     try {
-      const result = await api<{ chart: Chart; warnings: string[] }>(
-        '/charts/' + encodeURIComponent(c.chart_key) + '/manual',
-        {
-          method: 'PUT',
-          body: JSON.stringify({
-            expected_revision: c.manual_revision,
-            ap: true,
-            venue: venue.trim(),
-            achievement: score ? Number(score) : null,
-            date: date || null,
-            note: note.trim(),
-          }),
-        },
-      );
+      await api<{ chart: Chart }>('/charts/' + encodeURIComponent(c.chart_key) + '/ap-record', {
+        method: 'PUT',
+        body: JSON.stringify({
+          expected_revision: c.record_revision ?? 0,
+          request_id: request.current.id,
+          venue: submittedVenue,
+        }),
+      });
       await onSaved();
       if (active.current) onClose();
-      notify(result.chart.conflict ? 'AP 已保存 · 水鱼待核对' : 'AP 已保存');
+      notify('已加入待核记录');
     } catch (error) {
       showError(error);
     } finally {
@@ -369,13 +378,13 @@ function Detail({
       await api(
         '/charts/' +
           encodeURIComponent(c.chart_key) +
-          '/manual?' +
-          new URLSearchParams({ expected_revision: String(c.manual_revision) }),
+          '/ap-record?' +
+          new URLSearchParams({ expected_revision: String(c.record_revision ?? 0) }),
         { method: 'DELETE' },
       );
       await onSaved();
       if (active.current) onClose();
-      notify('已撤销手工记录');
+      notify('已取消待核记录');
     } catch (error) {
       showError(error);
     } finally {
@@ -412,13 +421,20 @@ function Detail({
       <div className="record-status">
         <div>
           <Badge chart={c} />
-          <span>水鱼：{c.provider_fc?.toUpperCase() || '暂无成绩'}</span>
+          {c.venue_pending && <span>机厅待补</span>}
+          {c.pending_record && c.is_ap && <span>机厅待核实</span>}
         </div>
         <button className="btn quiet" onClick={onSync}>
           <Icon name="sync" />
           同步
         </button>
       </div>
+      {c.pending_record && (
+        <div className="detail-rule">
+          <strong>{c.pending_record.venue || '机厅不记录'}</strong>
+          <span>{c.pending_record.reason}</span>
+        </div>
+      )}
       <form onSubmit={save}>
         {c.requires_venue && (
           <div className="field">
@@ -428,42 +444,23 @@ function Detail({
               required
               value={venue}
               onChange={(e) => setVenue(e.target.value)}
-              list="venue-options"
               placeholder="机厅名称"
               autoComplete="off"
             />
-            <datalist id="venue-options">
-              {venues.map((v) => (
-                <option key={v.name} value={v.name} />
+            <div className="venue-suggestions" aria-label="已有机厅">
+              {venueChoices.map((item) => (
+                <button
+                  type="button"
+                  className="btn"
+                  key={item.name}
+                  onClick={() => setVenue(item.name)}
+                >
+                  {item.name}
+                </button>
               ))}
-            </datalist>
+            </div>
           </div>
         )}
-        <div className="form-row">
-          <div className="field">
-            <label htmlFor="manual-score">达成率 · 选填</label>
-            <input
-              id="manual-score"
-              value={score}
-              onChange={(e) => setScore(e.target.value)}
-              inputMode="decimal"
-              placeholder="100.9876"
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="manual-date">日期 · 选填</label>
-            <input
-              id="manual-date"
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="field">
-          <label htmlFor="manual-note">备注</label>
-          <textarea id="manual-note" value={note} onChange={(e) => setNote(e.target.value)} />
-        </div>
         {error && (
           <div className="form-message" role="alert">
             {error}
@@ -479,7 +476,7 @@ function Detail({
         )}
         <button type="submit" className="btn primary full" disabled={busy || conflicted}>
           <Icon name="check" />
-          保存 AP
+          保存待核记录
         </button>
       </form>
       <div className="drawer-actions">
@@ -487,12 +484,55 @@ function Detail({
           <Icon name="image" />
           制作封面
         </button>
-        {c.manual_ap !== null && (
+        {c.pending_record && (
           <button className="btn" disabled={busy || conflicted} onClick={reset}>
-            撤销手工记录
+            取消登记
           </button>
         )}
       </div>
+      <details className="provider-details">
+        <summary>水鱼成绩</summary>
+        <dl className="provider-scores">
+          <div>
+            <dt>达成率</dt>
+            <dd>
+              {c.provider_achievement != null ? `${c.provider_achievement.toFixed(4)}%` : '—'}
+            </dd>
+          </div>
+          <div>
+            <dt>评级</dt>
+            <dd>{c.provider_rate?.replace(/p$/, '+').toUpperCase() || '—'}</dd>
+          </div>
+          <div>
+            <dt>连击</dt>
+            <dd>
+              {({ ap: 'AP', app: 'AP+', fc: 'FC', fcp: 'FC+' } as Record<string, string>)[
+                c.provider_fc || ''
+              ] || '—'}
+            </dd>
+          </div>
+          <div>
+            <dt>同步</dt>
+            <dd>
+              {(
+                { sync: 'SYNC', fs: 'FS', fsp: 'FS+', fsd: 'FDX', fsdp: 'FDX+' } as Record<
+                  string,
+                  string
+                >
+              )[c.provider_fs || ''] || '—'}
+            </dd>
+          </div>
+          <div>
+            <dt>DX 分数</dt>
+            <dd>{c.provider_dx_score ?? '—'}</dd>
+          </div>
+          <div>
+            <dt>单谱 Rating</dt>
+            <dd>{c.provider_ra ?? '—'}</dd>
+          </div>
+        </dl>
+        <p className="provider-time">{formatTimestamp(c.provider_synced_at, '尚未同步')}</p>
+      </details>
     </Drawer>
   );
 }
@@ -628,6 +668,8 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [venues, setVenues] = useState<Venue[]>([]);
+  const [records, setRecords] = useState<APRecords>({ items: [], count: 0 });
+  const refreshSequence = useRef(0);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [busy, setBusy] = useState(false);
   const [listBusy, setListBusy] = useState(true);
@@ -691,10 +733,14 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     return () => document.removeEventListener('keydown', key);
   }, []);
   const refresh = useCallback(async () => {
-    const [nextVenues, nextSettings] = await Promise.all([
+    const sequence = ++refreshSequence.current;
+    const [nextVenues, nextSettings, nextRecords] = await Promise.all([
       api<{ items: Venue[] }>('/venues'),
       api<Settings>('/settings/divingfish'),
+      api<APRecords>('/ap-records'),
     ]);
+    if (sequence !== refreshSequence.current) return;
+    setRecords(nextRecords);
     setVenues(nextVenues.items);
     setSettings(nextSettings);
     setRevision((value) => value + 1);
@@ -703,6 +749,18 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   useEffect(() => {
     void refresh().catch((error) => setError(messageOf(error)));
   }, [refresh]);
+  useEffect(() => {
+    const update = () => {
+      if (document.visibilityState === 'visible')
+        void refresh().catch((error) => notify(messageOf(error)));
+    };
+    window.addEventListener('focus', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.removeEventListener('focus', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, [refresh, notify]);
   useEffect(() => {
     const controller = new AbortController();
     setPreferencesError('');
@@ -822,9 +880,8 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     try {
       const result = await api<SyncResult>('/sync/divingfish', { method: 'POST' });
       await refresh();
-      closeModal();
       notify(
-        `已同步 ${num(result.matched)} 条成绩${result.conflicts ? ' · ' + num(result.conflicts) + ' 条待核对' : ''}`,
+        `已同步 ${num(result.matched)} 条成绩 · 核准 ${num(result.confirmed)} 条 · 待核 ${num(result.pending)} 条`,
       );
     } catch (error) {
       notify(messageOf(error));
@@ -968,21 +1025,42 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
             [
               ['ap', 'grid'],
               ['statistics', 'table'],
+              ['pending', 'clock'],
               ['cover', 'image'],
               ['venues', 'pin'],
             ] as const
           ).map(([p, icon]) => (
-            <a key={p} href={'#' + p} className={'nav-item ' + (page === p ? 'active' : '')}>
+            <a
+              key={p}
+              href={'#' + p}
+              className={'nav-item ' + (page === p ? 'active' : '')}
+              aria-label={pageLabels[p]}
+            >
               <Icon name={icon} />
-              <span>{pageLabels[p]}</span>
+              <span className="nav-full-label" aria-hidden="true">
+                {pageLabels[p]}
+              </span>
+              <span className="nav-mobile-label" aria-hidden="true">
+                {mobilePageLabels[p]}
+              </span>
+              {p === 'pending' && records.count > 0 && (
+                <small className="nav-count">{records.count}</small>
+              )}
             </a>
           ))}
           <div className="nav-sep" />
           <div className="nav-label">PREFERENCES</div>
-          <a href="#settings" className={'nav-item ' + (page === 'settings' ? 'active' : '')}>
+          <a
+            href="#settings"
+            className={'nav-item ' + (page === 'settings' ? 'active' : '')}
+            aria-label={pageLabels.settings}
+          >
             <Icon name="settings" />
-            <span>
-              数据<span className="nav-settings-join">与</span>同步
+            <span className="nav-full-label" aria-hidden="true">
+              数据与同步
+            </span>
+            <span className="nav-mobile-label" aria-hidden="true">
+              设置
             </span>
           </a>
           <div className="sidebar-bottom">
@@ -1294,6 +1372,9 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                                       <td>
                                         <Badge chart={c} />
                                         {c.conflict && <span className="venue-source">待核对</span>}
+                                        {c.is_ap && c.pending_record && (
+                                          <span className="venue-source">机厅待核实</span>
+                                        )}
                                       </td>
                                       <td>
                                         <span
@@ -1303,7 +1384,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                                           }
                                         >
                                           {c.requires_venue
-                                            ? c.venue || '—'
+                                            ? c.venue || (c.venue_pending ? '机厅待补' : '—')
                                             : c.is_complete
                                               ? '不记录'
                                               : '—'}
@@ -1398,6 +1479,25 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                   )}
                 </>
               )}
+              {page === 'pending' && (
+                <>
+                  <Heading
+                    eyebrow="WAITING FOR YOUR NEXT SYNC"
+                    title="待核记录"
+                    actions={
+                      <button className="btn primary" disabled={busy} onClick={sync}>
+                        {busy ? <span className="spinner" /> : <Icon name="sync" />}同步水鱼
+                      </button>
+                    }
+                  />
+                  <PendingRecords
+                    records={records}
+                    onSelect={(record) => void openDetail(record)}
+                    onChanged={refresh}
+                    notify={notify}
+                  />
+                </>
+              )}
               {page === 'cover' && (
                 <CoverPage
                   value={cover}
@@ -1441,7 +1541,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
       </div>
       {detail && (
         <Detail
-          key={`${detail.chart_key}:${detail.manual_revision}`}
+          key={`${detail.chart_key}:${detail.record_revision ?? 0}`}
           chart={detail}
           venues={venues}
           onClose={closeModal}

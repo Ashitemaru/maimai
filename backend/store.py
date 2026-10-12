@@ -5,16 +5,17 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import math
 import os
 import re
 import sqlite3
 import tempfile
 import threading
 import unicodedata
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
+
+from .ap_records import APRecords, initialize_records, pending_record, read_record_state
 
 ROOT = Path(__file__).resolve().parents[1]
 DIFFICULTIES = {"BAS": 0, "ADV": 1, "EXP": 2, "MAS": 3, "ReM": 4}
@@ -129,7 +130,7 @@ def requires_venue(chart, legacy):
     return legacy["group_name"] == "high" if legacy else chart["constant"] >= 12.6
 
 
-class Store:
+class Store(APRecords):
     def __init__(self, runtime=None, import_dir=None, catalog_dir=None):
         self.runtime = Path(
             runtime or os.environ.get("MAIMAI_RUNTIME_DIR", ROOT / "backend/runtime")
@@ -372,6 +373,7 @@ class Store:
               id INTEGER PRIMARY KEY AUTOINCREMENT, chart_key TEXT, kind TEXT NOT NULL,
               created_at TEXT NOT NULL, data_json TEXT NOT NULL);
             """)
+            initialize_records(conn)
             if not conn.execute("SELECT 1 FROM metadata WHERE key='import' ").fetchone():
                 self._import(conn)
             if getattr(self.catalog, "schema_version", 1) >= 2:
@@ -486,14 +488,16 @@ class Store:
             )
         return value
 
-    def all_charts(self):
+    def all_charts(self, connection=None):
         catalog = self.catalog
-        with self.db() as conn:
+        with self.db() if connection is None else nullcontext(connection) as conn:
             # Record fields and their revisions must describe one SQLite snapshot.
-            conn.execute("BEGIN")
+            if connection is None:
+                conn.execute("BEGIN")
             legacy = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM legacy")}
             manual = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM manual")}
             provider = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM provider")}
+            record_state = read_record_state(conn)
             revisions = dict(
                 conn.execute(
                     "SELECT chart_key,MAX(id) FROM events WHERE kind IN ('manual','manual_reset') GROUP BY chart_key"
@@ -510,6 +514,11 @@ class Store:
                 return records.get(chart_key, records.get(canonical_chart_key(chart_key)))
 
             old, user, remote = lookup(legacy), lookup(manual), lookup(provider)
+            evidence = lookup(record_state["evidence"])
+            confirmed = lookup(record_state["confirmed"])
+            pending = lookup(record_state["pending"])
+            record_revision = lookup(record_state["revisions"])
+            details = lookup(record_state["details"])
             fields = (
                 "id",
                 "difficulty",
@@ -543,9 +552,22 @@ class Store:
             item["_cn_version_group"] = catalog.cn_version_group(item["cn_version"])
             manual_ap = bool(user["ap"]) if user else None
             provider_ap = bool(remote and remote["fc"] in ("ap", "app"))
-            is_ap = manual_ap if manual_ap is not None else provider_ap
+            is_ap = bool(confirmed or evidence or provider_ap)
+            if user and not confirmed:
+                is_ap = manual_ap
             # Import completion remains observable until explicitly corrected; sync never deletes it.
-            complete = bool(is_ap or (old and old["complete"])) if manual_ap is None else manual_ap
+            complete = bool(is_ap or (old and old["complete"]))
+            if user and not confirmed:
+                complete = manual_ap
+            venue = (
+                confirmed["venue"]
+                if confirmed
+                else user["venue"]
+                if user
+                else old["venue"]
+                if old
+                else ""
+            )
             achievement = user["achievement"] if user and user["achievement"] is not None else None
             warnings = []
             if manual_ap is True and not provider_ap:
@@ -559,6 +581,10 @@ class Store:
                 warnings.append("原表完成标记尚未核实为 AP（原表可能包含删曲豁免）。")
                 if last_sync:
                     warnings.append("水鱼暂未记录 AP；保留原表完成状态，可稍后核对。")
+            if evidence and not remote:
+                warnings.append("本次水鱼未返回这张成绩；保留此前核准记录。")
+            elif evidence and not provider_ap:
+                warnings.append("水鱼当前成绩与此前 AP 证据不一致；保留已核准记录。")
             item.update(
                 {
                     "group": old["group_name"] if old else "catalog",
@@ -568,7 +594,12 @@ class Store:
                     "legacy_venue": old["venue"] if old else "",
                     "manual_ap": manual_ap,
                     "manual_venue": user["venue"] if user else "",
-                    "venue": user["venue"] if user else old["venue"] if old else "",
+                    "venue": venue,
+                    "venue_pending": bool(is_ap and requires_venue(c, old) and not venue),
+                    "pending_record": pending_record(pending) if pending else None,
+                    "record_revision": record_revision["revision"] if record_revision else 0,
+                    "ap_confirmed_at": evidence["confirmed_at"] if evidence else None,
+                    "venue_confirmed_at": confirmed["confirmed_at"] if confirmed else None,
                     "note": user["note"] if user else "",
                     "manual_date": user["achieved_date"] if user else None,
                     "manual_updated_at": user["updated_at"] if user else None,
@@ -579,12 +610,17 @@ class Store:
                     "provider_achievement": remote["achievement"] if remote else None,
                     "provider_fc": remote["fc"] if remote else None,
                     "provider_synced_at": remote["synced_at"] if remote else None,
+                    "provider_fs": details["fs"] if details else None,
+                    "provider_dx_score": details["dx_score"] if details else None,
+                    "provider_rate": details["rate"] if details else None,
+                    "provider_ra": details["ra"] if details else None,
                     "is_ap": is_ap,
                     "is_complete": complete,
                     "status": "app"
                     if is_ap
                     and (
-                        achievement == 101
+                        (manual_ap is True and achievement == 101)
+                        or (evidence and evidence["fc"] == "app")
                         or (manual_ap is None and remote and remote["fc"] == "app")
                     )
                     else "ap"
@@ -596,7 +632,14 @@ class Store:
                         last_sync
                         and (
                             (manual_ap is not None and manual_ap != provider_ap)
-                            or (manual_ap is None and old and old["complete"] and not provider_ap)
+                            or (
+                                manual_ap is None
+                                and old
+                                and old["complete"]
+                                and remote
+                                and not provider_ap
+                            )
+                            or (evidence and remote and not provider_ap)
                         )
                     ),
                     "warnings": warnings,
@@ -709,11 +752,11 @@ class Store:
         finally:
             self._sync_lock.release()
 
-    def publish_sync(self, payload, generation):
+    def publish_sync(self, payload, generation, eligible_records=None):
         with self._token_lock:
             if generation != self._token_generation:
                 raise SyncTokenChangedError()
-            return self.import_provider(payload)
+            return self.import_provider(payload, eligible_records)
 
     def readiness(self):
         checks = {"catalog": False, "personal": False}
@@ -748,67 +791,6 @@ class Store:
             except (OSError, sqlite3.Error, ValueError, KeyError):
                 checks[name] = False
         return checks
-
-    def import_provider(self, payload):
-        if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
-            raise ValueError("水鱼返回的数据不含完整 records 列表。")
-        catalog, waterfish_map = self._catalog_snapshot
-        known = getattr(catalog, "source_charts", catalog)
-        at, incoming, unmatched = now(), [], []
-        for record in payload["records"]:
-            try:
-                ext = waterfish_map.get(str(record["song_id"]))
-                key = (
-                    (
-                        f"{ext['song_id']}:{int(record['level_index'])}"
-                        if getattr(catalog, "schema_version", 1) >= 2
-                        else f"{ext['song_id']}:{ext['type']}:{int(record['level_index'])}"
-                    )
-                    if ext
-                    else None
-                )
-                if key not in known:
-                    unmatched.append(
-                        {"song_id": record.get("song_id"), "level_index": record.get("level_index")}
-                    )
-                    continue
-                if record.get("type") and record["type"].upper() != (
-                    "DX" if ext["type"] == "dx" else "SD"
-                ):
-                    raise ValueError("chart type disagrees with song id")
-                fc = str(record.get("fc", "")).lower()
-                if fc not in ("", "fc", "fcp", "ap", "app"):
-                    raise ValueError("unknown fc")
-                value = record.get("achievements")
-                value = float(value) if value is not None else None
-                if value is not None and (not math.isfinite(value) or not 0 <= value <= 101):
-                    raise ValueError("invalid achievement")
-                incoming.append((key, value, fc, at, json.dumps(record, ensure_ascii=False)))
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError("水鱼成绩格式异常，未修改本地记录。") from exc
-        if len({r[0] for r in incoming}) != len(incoming):
-            raise ValueError("水鱼返回重复谱面，未修改本地记录。")
-        receipt = {
-            "ok": True,
-            "records": len(payload["records"]),
-            "matched": len(incoming),
-            "unmatched": len(unmatched),
-            "synced_at": at,
-        }
-        with self.db() as conn:
-            # Full response is a snapshot; absent remote charts stay absent, local/legacy survives.
-            conn.execute("DELETE FROM provider")
-            conn.executemany("INSERT INTO provider VALUES(?,?,?,?,?)", incoming)
-            conn.execute(
-                "INSERT INTO metadata VALUES('last_sync',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (json.dumps(receipt),),
-            )
-            conn.execute(
-                "INSERT INTO events(kind,created_at,data_json) VALUES(?,?,?)",
-                ("sync", at, json.dumps(receipt)),
-            )
-        receipt["conflicts"] = sum(c["conflict"] for c in self.all_charts())
-        return receipt
 
 
 def summarize(charts):

@@ -377,6 +377,7 @@ async function mock(context, { completionItems } = {}) {
       value = { constants: [1, 5, 10, 13.9, 15], cn_versions: cnVersions, versions: jpVersions };
     else if (pathname === '/api/settings/preferences')
       value = { default_constant_min: 1, default_constant_max: 15 };
+    else if (pathname === '/api/ap-records') value = { items: [], count: 0 };
     else if (pathname === '/api/venues')
       value = {
         items: [

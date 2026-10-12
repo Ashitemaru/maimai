@@ -8,6 +8,7 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -90,17 +91,14 @@ class AppTests(unittest.TestCase):
         self.client.close()
         self.tmp.cleanup()
 
-    def put_manual(self, path, *, json, **kwargs):
-        key = path.removeprefix("/api/charts/").removesuffix("/manual")
+    def put_record(self, key, *, json=None, **kwargs):
         chart = self.store.chart(key)
-        payload = {"expected_revision": chart["manual_revision"] if chart else 0, **json}
-        return self.client.put(path, json=payload, **kwargs)
-
-    def delete_manual(self, path):
-        key = path.removeprefix("/api/charts/").removesuffix("/manual")
-        return self.client.delete(
-            path, params={"expected_revision": self.store.chart(key)["manual_revision"]}
-        )
+        payload = {
+            "expected_revision": chart["record_revision"] if chart else 0,
+            "request_id": str(uuid4()),
+            **(json or {}),
+        }
+        return self.client.put(f"/api/charts/{key}/ap-record", json=payload, **kwargs)
 
     def fixture_chart(self, song_id, **changes):
         chart = {
@@ -331,6 +329,9 @@ class AppTests(unittest.TestCase):
             "conflict",
             "achievement",
             "provider_achievement",
+            "pending_record",
+            "record_revision",
+            "venue_pending",
         }
         with patch.object(self.store, "all_charts", return_value=fixtures):
             for sort in (
@@ -913,7 +914,9 @@ class AppTests(unittest.TestCase):
         shutil.copy2(ROOT / "data/catalog/catalog.sqlite", base / "catalog.sqlite")
         self.store.catalog_root = base
         self.store.reload_catalog()
-        self.put_manual("/api/charts/30:standard:0/manual", json={"ap": True, "note": "keep"})
+        self.store.save_manual(
+            "30:standard:0", {"ap": True, "venue": "", "note": "keep", "expected_revision": 0}
+        )
         self.store.import_provider(
             {"records": [{"song_id": 10030, "level_index": 0, "fc": "ap", "achievements": 100.5}]}
         )
@@ -1044,67 +1047,52 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.json(), expected)
         self.assertEqual(response.headers["cache-control"], "no-store")
 
-    def test_manual_claim_survives_delayed_sync_and_conflict(self):
+    def test_legacy_manual_records_are_readable_but_http_writes_are_retired(self):
         key = "22:standard:4"
-        body = {"ap": True, "venue": "测试机厅", "achievement": 100.9876, "note": "未传分"}
-        result = self.put_manual(f"/api/charts/{key}/manual", json=body)
-        self.assertEqual(result.status_code, 200)
-        self.assertTrue(result.json()["chart"]["is_ap"])
+        self.store.save_manual(
+            key,
+            {
+                "ap": True,
+                "venue": "测试机厅",
+                "achievement": 100.9876,
+                "note": "历史记录",
+                "expected_revision": 0,
+            },
+        )
         self.store.import_provider(
             {"records": [{"song_id": 22, "level_index": 4, "fc": "fc", "achievements": 100.2}]}
         )
-        after = self.client.get(f"/api/charts/{key}").json()
-        self.assertTrue(after["conflict"])
-        self.assertEqual(
-            (after["venue"], after["achievement"], after["note"]), ("测试机厅", 100.9876, "未传分")
-        )
-        self.assertTrue(after["is_complete"])
-        self.assertEqual(self.put_manual(f"/api/charts/{key}/manual", json=body).status_code, 200)
-        self.store.import_provider({"records": []})
-        self.assertTrue(self.store.chart(key)["is_ap"])
-        # Explicit local correction is honored even when provider still reports AP.
-        self.store.import_provider(
-            {"records": [{"song_id": 22, "level_index": 4, "fc": "ap", "achievements": 100.9876}]}
-        )
-        corrected = self.put_manual(f"/api/charts/{key}/manual", json={"ap": False}).json()["chart"]
-        self.assertFalse(corrected["is_complete"])
-        self.assertTrue(corrected["conflict"])
-        restored = self.delete_manual(f"/api/charts/{key}/manual").json()["chart"]
-        self.assertTrue(restored["is_ap"])
+        before = self.client.get(f"/api/charts/{key}").json()
+        self.assertTrue(before["conflict"])
+        self.assertEqual((before["venue"], before["achievement"]), ("测试机厅", 100.9876))
+        for response in (
+            self.client.put(f"/api/charts/{key}/manual", json={"ap": True}),
+            self.client.delete(f"/api/charts/{key}/manual"),
+        ):
+            self.assertEqual(response.status_code, 410)
+            self.assertEqual(response.json()["detail"]["code"], "manual_retired")
+        self.assertEqual(self.client.get(f"/api/charts/{key}").json(), before)
 
-    def test_manual_venue_policy_is_exposed_and_rejects_blank_without_mutation(self):
+    def test_venue_policy_is_exposed_and_low_claim_needs_no_venue(self):
         high, low = "22:standard:4", "30:standard:0"
-        listing = self.client.get("/api/charts", params={"limit": 6000}).json()["items"]
-        flags = {c["chart_key"]: c["requires_venue"] for c in listing}
-        self.assertTrue(flags[high])
-        self.assertFalse(flags[low])
-        saved = self.put_manual(
-            f"/api/charts/{high}/manual", json={"venue": "  测试机厅  "}
-        ).json()["chart"]
+        saved = self.put_record(high, json={"venue": "  测试机厅  "}).json()["chart"]
         self.assertTrue(saved["requires_venue"])
-        self.assertEqual(saved["venue"], "测试机厅")
+        self.assertEqual(saved["pending_record"]["venue"], "测试机厅")
         with self.store.db() as conn:
             events_before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         for venue in ("", " \t\u3000"):
-            result = self.put_manual(f"/api/charts/{high}/manual", json={"venue": venue})
+            result = self.put_record(high, json={"venue": venue})
             self.assertEqual(result.status_code, 422)
-            self.assertEqual(result.json()["detail"], "请填写完成 AP 的机厅名称。")
             self.assertEqual(self.client.get(f"/api/charts/{high}").json(), saved)
         with self.store.db() as conn:
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], events_before
             )
-        low_result = self.put_manual(f"/api/charts/{low}/manual", json={"ap": True})
+        low_result = self.put_record(low)
         self.assertEqual(low_result.status_code, 200)
         self.assertFalse(low_result.json()["chart"]["requires_venue"])
-        self.assertTrue(low_result.json()["chart"]["is_ap"])
-        self.assertEqual(low_result.json()["chart"]["venue"], "")
-        correction = self.put_manual(f"/api/charts/{high}/manual", json={"ap": False})
-        self.assertEqual(correction.status_code, 200)
-        self.assertFalse(correction.json()["chart"]["is_complete"])
-        self.assertEqual(
-            self.put_manual("/api/charts/missing/manual", json={"ap": True}).status_code, 404
-        )
+        self.assertEqual(low_result.json()["chart"]["pending_record"]["venue"], "")
+        self.assertEqual(self.put_record("missing").status_code, 404)
 
     def test_catalog_only_venue_policy_uses_constant_threshold(self):
         template = self.store.catalog["30:standard:0"]
@@ -1118,7 +1106,7 @@ class AppTests(unittest.TestCase):
             chart = self.client.get(f"/api/charts/{key}").json()
             self.assertFalse(chart["in_original_table"])
             self.assertEqual(chart["requires_venue"], required)
-            result = self.put_manual(f"/api/charts/{key}/manual", json={"ap": True})
+            result = self.put_record(key)
             self.assertEqual(result.status_code, 422 if required else 200)
 
     def test_provider_fc_not_high_score_controls_ap(self):
@@ -1179,17 +1167,14 @@ class AppTests(unittest.TestCase):
             )
         self.assertTrue(self.store.chart("30:standard:0")["is_ap"])
         self.assertEqual(
-            self.put_manual(
-                "/api/charts/30:standard:0/manual", json={"achievement": 101.5}
-            ).status_code,
+            self.put_record("30:standard:0", json={"achievement": 101.5}).status_code,
             422,
         )
 
     def test_foreign_origin_cannot_mutate_and_data_is_uncached(self):
-        result = self.put_manual(
-            "/api/charts/30:standard:0/manual",
+        result = self.put_record(
+            "30:standard:0",
             headers={"Origin": "https://external.example"},
-            json={"ap": True},
         )
         self.assertEqual(result.status_code, 403)
         self.assertEqual(self.client.get("/api/summary").headers["cache-control"], "no-store")
