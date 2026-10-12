@@ -44,6 +44,7 @@ export function useCatalogUpdate(onChanged: () => void, notify: (message: string
   const [action, setAction] = useState<Action | null>(null);
   const previousRevision = useRef<string | null>(null);
   const generation = useRef(0);
+  const initializing = useRef(true);
   const accept = useCallback(
     (next: CatalogUpdateState) => {
       setState(next);
@@ -71,14 +72,32 @@ export function useCatalogUpdate(onChanged: () => void, notify: (message: string
   );
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal);
+    void load(controller.signal).finally(() => {
+      if (!controller.signal.aborted) initializing.current = false;
+    });
     return () => controller.abort();
   }, [load]);
   useEffect(() => {
     if (action) return;
     const controller = new AbortController();
-    const focus = () => void load(controller.signal);
-    window.addEventListener('focus', focus);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const resume = () => {
+      clearTimeout(timer);
+      if (document.visibilityState !== 'visible' || initializing.current) return;
+      timer = setTimeout(() => void load(controller.signal), 180);
+    };
+    window.addEventListener('focus', resume);
+    document.addEventListener('visibilitychange', resume);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+      window.removeEventListener('focus', resume);
+      document.removeEventListener('visibilitychange', resume);
+    };
+  }, [action, load]);
+  useEffect(() => {
+    if (action) return;
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
       await load(controller.signal);
@@ -88,7 +107,6 @@ export function useCatalogUpdate(onChanged: () => void, notify: (message: string
     return () => {
       controller.abort();
       clearTimeout(timer);
-      window.removeEventListener('focus', focus);
     };
   }, [state, action, load]);
   const run = useCallback(

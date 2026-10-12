@@ -12,6 +12,8 @@ await fs.mkdir(output, { recursive: true });
 const requests = [];
 const checks = [];
 const errors = [];
+let catalogRevision = 'fixture';
+let catalogVersions = [];
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const charts = Array.from({ length: 360 }, (_, index) => ({
   id: 9000 + index,
@@ -116,11 +118,11 @@ const server = http.createServer(async (request, response) => {
           data = queue();
           delay = 500;
         } else if (pathname === '/api/chart-filters') {
-          data = { constants: [13, 13.9], versions: [], cn_versions: [] };
+          data = { constants: [13, 13.9], versions: catalogVersions, cn_versions: [] };
           delay = 250;
         } else if (pathname === '/api/catalog/update')
           data = {
-            revision: 'fixture',
+            revision: catalogRevision,
             snapshot_at: null,
             main: { status: 'succeeded', warnings: [], diff: {} },
             remy: { status: 'complete', pending_count: 0, verified_count: 0, updated_count: 0 },
@@ -188,6 +190,7 @@ try {
   };
   const count = (list, route) => list.filter((item) => item.path === route).length;
   const initialPaths = [
+    '/api/catalog/update',
     '/api/chart-filters',
     '/api/completion-table',
     '/api/settings/preferences',
@@ -268,6 +271,7 @@ try {
     '/api/settings/divingfish',
     '/api/ap-records',
     '/api/completion-table',
+    '/api/catalog/update',
   ])
     assert.equal(count(resumed, pathname), 1, `Resume duplicates ${pathname}`);
   assert.equal(
@@ -322,6 +326,41 @@ try {
   );
   assert.equal(allTotals, 360, 'Lazy mounting must not change totals');
   checks.push('Scrolling requests the next visible jackets while all-chart totals remain complete');
+  const catalogResumeStart = requests.length;
+  catalogRevision = 'from-another-device';
+  catalogVersions = [{ value: 'PRiSM', label: 'PRiSM' }];
+  charts[0].title = 'Remote catalog update';
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await pause(220);
+  assert.equal(
+    count(requests.slice(catalogResumeStart), '/api/catalog/update'),
+    0,
+    'Hidden state must not fetch catalog',
+  );
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('select[aria-label="登场版本"] option')].some(
+      (option) => option.value === 'PRiSM',
+    ),
+  );
+  await page.waitForFunction(() =>
+    document
+      .querySelector('.completion-tile[data-chart-key="9000:3"]')
+      ?.getAttribute('aria-label')
+      ?.includes('Remote catalog update'),
+  );
+  await settle();
+  assert.equal(count(requests.slice(catalogResumeStart), '/api/catalog/update'), 1);
+  assert.equal(count(requests.slice(catalogResumeStart), '/api/chart-filters'), 1);
+  checks.push(
+    'Visibility-only iPhone/PWA resume refreshes remote catalog revision, version options and chart content without a focus event',
+  );
   await fs.writeFile(
     path.join(output, 'report.json'),
     JSON.stringify({ checks, requests, errors }, null, 2),
