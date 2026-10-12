@@ -43,6 +43,7 @@ const errors = [],
   reportRequests = [],
   posts = [],
   checks = [];
+let statusReads = 0;
 page.on('pageerror', (error) => errors.push(error.message));
 let status = {
   revision: 'r1',
@@ -50,7 +51,13 @@ let status = {
   applied_decision_revision: 0,
   decisions_pending: false,
   snapshot_at: '2026-10-11T01:00:00Z',
-  main: { status: 'idle', stage: '', message: '', warnings: [] },
+  main: {
+    status: 'failed',
+    stage: '',
+    message: '历史更新失败',
+    error: '历史更新失败',
+    warnings: ['历史更新提示'],
+  },
   remy: {
     status: 'complete',
     pending_count: 0,
@@ -131,6 +138,7 @@ await page.route('**/api/**', async (route) => {
     return;
   }
   if (pathname === '/api/catalog/update') {
+    statusReads++;
     await route.fulfill({ json: status });
     return;
   }
@@ -243,6 +251,7 @@ await page.route('**/*', async (route) => {
   } else await route.fallback();
 });
 const review = () => page.locator('.catalog-review');
+const toast = () => page.locator('#toast');
 const entries = () => review().locator('.record-review-list > .record-review-entry');
 const entry = (id, difficulty) =>
   entries()
@@ -293,6 +302,11 @@ const checkSummary = async () => {
 };
 try {
   await page.goto(origin + '/#settings', { waitUntil: 'networkidle' });
+  assert.equal(
+    await toast().innerText(),
+    '',
+    'Loading historical failures must not replay a toast',
+  );
   assert.equal(reportRequests.length, 0, 'No catalog changes must not fetch the detailed report');
   assert.equal(await page.locator('.catalog-changes').count(), 0);
   checks.push('An unchanged catalog does not mount or fetch an empty changes section');
@@ -467,7 +481,14 @@ try {
   failNext = true;
   await globalConfirm().click();
   await modalConfirm().click();
-  await waitFor(async () => (await page.getByRole('alert').count()) > 0, 'stale batch reports 409');
+  await waitFor(
+    async () => /曲库已变化，请刷新后重新选择/.test(await toast().innerText()),
+    'stale batch reports 409 through toast',
+  );
+  assert.equal(
+    await review().locator('.form-message, .review-pending, .review-message').count(),
+    0,
+  );
   assert.equal(posts.length, 2);
   assert.equal(posts[1].base_catalog_revision, 'r3');
   assert.equal(posts[1].base_decision_revision, 1);
@@ -490,9 +511,7 @@ try {
   };
   await page.getByRole('button', { name: '刷新差异', exact: true }).click();
   await waitFor(
-    async () =>
-      (await review().locator('[role=alert]').count()) === 0 &&
-      (await entry(383, 2).locator('input[value="title-lxns-changed"]').count()) === 1,
+    async () => (await entry(383, 2).locator('input[value="title-lxns-changed"]').count()) === 1,
     'explicit refresh adopts new evidence',
   );
   assert.equal(await entry(383, 2).locator('input:checked').count(), 1);
@@ -520,6 +539,63 @@ try {
   assert.deepEqual(errors, []);
   checks.push(
     'Fresh explicit confirmation publishes only revised selection; untouched charts remain and browser has no errors',
+  );
+
+  status = {
+    ...status,
+    main: {
+      ...status.main,
+      status: 'running',
+      message: '正在更新',
+      error: undefined,
+      warnings: [],
+    },
+  };
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(
+    async () => await page.getByRole('button', { name: '更新中…', exact: true }).isVisible(),
+    'observe running job before its result',
+  );
+  status = {
+    ...status,
+    main: {
+      ...status.main,
+      status: 'failed',
+      error: '测试更新失败',
+      warnings: ['测试来源暂不可用'],
+    },
+  };
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(
+    async () => /测试更新失败/.test(await toast().innerText()),
+    'background error is shown through toast',
+  );
+  assert.match(await toast().innerText(), /测试来源暂不可用/);
+  assert.equal(await page.locator('.catalog-settings .form-message, .catalog-warnings').count(), 0);
+  assert.doesNotMatch(await review().innerText(), /测试更新失败|测试来源暂不可用/);
+  await waitFor(
+    async () => !(await toast().getAttribute('class'))?.includes('show'),
+    'toast expires',
+  );
+  const readsBefore = statusReads;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(() => statusReads > readsBefore, 'same failed status is polled again');
+  await page.waitForTimeout(250);
+  assert.equal((await toast().getAttribute('class'))?.includes('show'), false);
+  checks.push(
+    'Catalog errors and warnings only use transient toast; repeating status does not replay old notices',
+  );
+  await page.reload({ waitUntil: 'networkidle' });
+  assert.equal(await toast().innerText(), '', 'Reload does not replay a historical failure');
+  await page.getByRole('button', { name: '更新曲库', exact: true }).click();
+  await waitFor(
+    async () => /测试更新失败/.test(await toast().innerText()),
+    'explicit update returning failed reports its actual failure',
+  );
+  assert.doesNotMatch(await toast().innerText(), /已开始更新曲库/);
+  assert.deepEqual(errors, []);
+  checks.push(
+    'Initial load and reload do not toast historical failures; an explicit immediate failure is shown accurately',
   );
   await fs.writeFile(
     path.join(output, 'report.json'),

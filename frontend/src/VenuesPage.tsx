@@ -6,6 +6,7 @@ import { VenueLocationEditor } from './VenueLocationEditor';
 import { venuePoint, type VenuePlace } from './venueTypes';
 import { DifficultyBadge } from './ChartBadges';
 import type { Chart, ChartList } from './types';
+import { useToastMessage } from './Toast';
 
 function VenueAlbum({
   venue,
@@ -22,6 +23,7 @@ function VenueAlbum({
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
+  useToastMessage(error);
   useEffect(() => {
     const controller = new AbortController();
     setBusy(true);
@@ -47,8 +49,7 @@ function VenueAlbum({
   return (
     <div className="venue-album" aria-busy={busy}>
       {error && (
-        <div className="error-box" role="alert">
-          {error}
+        <div>
           <button type="button" className="btn" onClick={() => setRetry((value) => value + 1)}>
             重试
           </button>
@@ -124,6 +125,7 @@ export function VenuesPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  useToastMessage(error);
   const [search, setSearch] = useState('');
   const [selection, setSelection] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ name: string; location: VenuePlace['location'] } | null>(
@@ -195,8 +197,7 @@ export function VenuesPage({
             </span>
           </div>
           {error && (
-            <div className="error-box" role="alert">
-              {error}
+            <div>
               <button className="btn" onClick={() => setReload((value) => value + 1)}>
                 重试
               </button>

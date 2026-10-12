@@ -154,12 +154,19 @@ try {
   await page.getByRole('button', { name: '隐藏密钥' }).click();
   assert.equal(await input.getAttribute('type'), 'password');
   await input.press('Enter');
-  await page.getByRole('alert').filter({ hasText: 'Master Key 不正确' }).waitFor();
+  await page.locator('#toast.show').filter({ hasText: 'Master Key 不正确' }).waitFor();
+  assert.equal(await page.locator('.auth-error,.auth-session-notice,.form-message').count(), 0);
+  assert(await page.locator('#toast').evaluate((element) => element.matches(':popover-open')));
+  await page.locator('#toast.show').waitFor({ state: 'hidden', timeout: 6000 });
+  await input.press('Enter');
+  await page.locator('#toast.show').filter({ hasText: 'Master Key 不正确' }).waitFor();
   assert.deepEqual(privateRequests, []);
-  checks.push('Show/hide and Enter submission work; incorrect keys stay on the login page');
+  checks.push(
+    'Login errors only toast, expire, and reappear on retry; no permanent message remains',
+  );
   await input.fill('limited');
   await input.press('Enter');
-  await page.getByRole('alert').filter({ hasText: '尝试次数较多' }).waitFor();
+  await page.locator('#toast.show').filter({ hasText: '尝试次数较多' }).waitFor();
   checks.push('Rate limits have a readable retry message');
   await input.fill(key);
   loginDelay = 350;
@@ -205,7 +212,7 @@ try {
   validSessions = new Set();
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await input.waitFor();
-  await page.getByRole('alert').filter({ hasText: '登录已过期' }).waitFor();
+  await page.locator('#toast.show').filter({ hasText: '登录已过期' }).waitFor();
   assert.equal(await page.locator('.shell').count(), 0);
   checks.push('A personal API 401 immediately returns to login and removes the app state');
   unavailable = true;

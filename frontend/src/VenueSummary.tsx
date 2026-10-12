@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, messageOf } from './api';
+import { useToastMessage } from './Toast';
 
 type VenueRow = {
   name: string;
@@ -26,6 +27,7 @@ export function VenueSummary({ revision }: { revision: number }) {
   const [retry, setRetry] = useState(0);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  useToastMessage(error);
   useEffect(() => {
     const controller = new AbortController();
     setError('');
@@ -72,8 +74,7 @@ export function VenueSummary({ revision }: { revision: number }) {
         )}
       </div>
       {error && (
-        <div className="error-box venue-summary-error" role="alert">
-          <span>{error}</span>
+        <div className="venue-summary-error">
           <button className="btn" type="button" onClick={() => setRetry((value) => value + 1)}>
             重试
           </button>

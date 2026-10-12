@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, messageOf } from './api';
 import { VenueMap, type VenueMapPoint } from './VenueMap';
 import { venuePoint, type VenueLocation, type VenuePlace } from './venueTypes';
+import { useNotify } from './Toast';
 
 type SearchPlace = VenueMapPoint & { place_name: string; address: string };
 
@@ -24,10 +25,9 @@ export function VenueLocationEditor({
   );
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchPlace[]>([]);
-  const [searchMessage, setSearchMessage] = useState('');
   const [searchBusy, setSearchBusy] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const notify = useNotify();
   const searchRequest = useRef<AbortController | null>(null);
   const active = useRef(true);
   useEffect(() => {
@@ -53,7 +53,6 @@ export function VenueLocationEditor({
     const controller = new AbortController();
     searchRequest.current = controller;
     setSearchBusy(true);
-    setSearchMessage('');
     setResults([]);
     try {
       const result = await api<{ items: SearchPlace[] }>(
@@ -63,9 +62,9 @@ export function VenueLocationEditor({
       );
       if (controller.signal.aborted) return;
       setResults(result.items);
-      if (!result.items.length) setSearchMessage('没有找到地点，请加上城市或商场名称再试。');
+      if (!result.items.length) notify('没有找到地点，请加上城市或商场名称再试。');
     } catch (error) {
-      if (!controller.signal.aborted) setSearchMessage(messageOf(error));
+      if (!controller.signal.aborted) notify(messageOf(error));
     } finally {
       if (!controller.signal.aborted) setSearchBusy(false);
     }
@@ -75,11 +74,10 @@ export function VenueLocationEditor({
     event.preventDefault();
     if (busy) return;
     if (!point) {
-      setError('请先搜索并选择地点。');
+      notify('请先搜索并选择地点。');
       return;
     }
     setBusy(true);
-    setError('');
     try {
       await api('/venues/location', {
         method: 'PUT',
@@ -91,7 +89,7 @@ export function VenueLocationEditor({
       });
       if (active.current) onSaved(name.trim());
     } catch (error) {
-      if (active.current) setError(messageOf(error));
+      if (active.current) notify(messageOf(error));
     } finally {
       if (active.current) setBusy(false);
     }
@@ -130,11 +128,6 @@ export function VenueLocationEditor({
             {searchBusy ? '搜索中…' : '搜索'}
           </button>
         </form>
-        {searchMessage && (
-          <p className="form-message" role="status">
-            {searchMessage}
-          </p>
-        )}
         {!!results.length && (
           <div className="venue-place-results">
             {results.map((result, index) => (
@@ -178,11 +171,6 @@ export function VenueLocationEditor({
               onChange={(event) => setName(event.target.value)}
             />
           </label>
-          {error && (
-            <div className="error-box" role="alert">
-              {error}
-            </div>
-          )}
           <footer className="venue-editor-actions">
             <button type="button" className="btn" disabled={busy} onClick={onClose}>
               取消

@@ -227,8 +227,8 @@ try {
   phone.on('pageerror', (error) => errors.push(error.message));
   await phone.goto(origin + '/#venues', { waitUntil: 'networkidle' });
   await phone.getByRole('button', { name: '汇总表', exact: true }).click();
-  await phone.getByRole('alert').waitFor();
-  assert.equal(await phone.getByRole('alert').textContent(), '机厅暂时无法加载重试');
+  await phone.locator('#toast').filter({ hasText: '机厅暂时无法加载' }).waitFor();
+  assert.equal(await phone.locator('.venue-summary .error-box').count(), 0);
   assert.equal(
     await phone.locator('.venue-summary-table').count(),
     0,
@@ -236,7 +236,7 @@ try {
   );
   await phone.getByRole('button', { name: '重试', exact: true }).click();
   await waitCount(phone, '5 家机厅 · 20 AP');
-  assert.equal(await phone.getByRole('alert').count(), 0);
+  assert.equal(await phone.locator('.venue-summary-error').count(), 0);
   assert.equal(countSummary(), 4);
   checks.push('A failed request shows an actionable retry, which recovers without a full reload');
   for (const width of [390, 320]) {

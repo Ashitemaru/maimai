@@ -4,6 +4,7 @@ import App from './App';
 import { api, ApiError } from './api';
 import { advanceAuthGeneration, AUTH_EXPIRED_EVENT } from './auth';
 import type { AuthSession } from './auth';
+import { useNotify, useToastMessage } from './Toast';
 
 type GateState = 'checking' | 'locked' | 'ready' | 'unavailable' | 'logging-out';
 
@@ -24,6 +25,8 @@ export default function AuthGate() {
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const notify = useNotify();
+  useToastMessage(error);
   const request = useRef<AbortController | null>(null);
   const keyInput = useRef<HTMLInputElement>(null);
 
@@ -48,9 +51,12 @@ export default function AuthGate() {
       });
       if (!controller.signal.aborted) acceptSession(session);
     } catch {
-      if (!controller.signal.aborted) setState('unavailable');
+      if (!controller.signal.aborted) {
+        setState('unavailable');
+        notify('暂时无法连接，请检查网络后重试。');
+      }
     }
-  }, [acceptSession]);
+  }, [acceptSession, notify]);
 
   useEffect(() => {
     void checkSession();
@@ -117,17 +123,7 @@ export default function AuthGate() {
     }
   }
 
-  if (state === 'ready')
-    return (
-      <>
-        {error && (
-          <div className="auth-session-notice" role="alert">
-            {error}
-          </div>
-        )}
-        <App onLogout={authRequired ? () => void logout() : undefined} />
-      </>
-    );
+  if (state === 'ready') return <App onLogout={authRequired ? () => void logout() : undefined} />;
 
   const loading = state === 'checking' || state === 'logging-out';
   return (
@@ -156,7 +152,6 @@ export default function AuthGate() {
           </div>
         ) : state === 'unavailable' ? (
           <div className="auth-retry">
-            <p role="alert">暂时无法连接，请检查网络后重试。</p>
             <button className="btn primary auth-submit" onClick={() => void checkSession()}>
               重新连接
             </button>
@@ -189,7 +184,7 @@ export default function AuthGate() {
                 required
                 disabled={busy}
                 aria-invalid={Boolean(error)}
-                aria-describedby={error ? 'auth-error' : undefined}
+                aria-describedby={error ? 'toast' : undefined}
                 onChange={(event) => {
                   setMasterKey(event.target.value);
                   setError('');
@@ -205,11 +200,6 @@ export default function AuthGate() {
                 <EyeIcon visible={visible} />
               </button>
             </div>
-            {error && (
-              <p className="auth-error" id="auth-error" role="alert">
-                {error}
-              </p>
-            )}
             <button className="btn primary auth-submit" type="submit" disabled={busy || !masterKey}>
               {busy ? (
                 <>

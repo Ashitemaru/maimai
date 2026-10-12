@@ -5,13 +5,12 @@ import type { ScoreSyncJob, ScoreSyncStatus } from './scoreSync';
 export function useScoreSync(onChanged: () => Promise<void>, notify: (message: string) => void) {
   const [state, setState] = useState<ScoreSyncStatus | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [error, setError] = useState('');
-  const [errorKind, setErrorKind] = useState<ScoreSyncJob['kind'] | null>(null);
   const [action, setAction] = useState<ScoreSyncJob['kind'] | null>(null);
   const current = useRef<ScoreSyncStatus | null>(null);
   const active = useRef(true);
   const writing = useRef(false);
   const generation = useRef(0);
+  const lastLoadError = useRef('');
   const observedJobs = useRef(new Set<string>());
   const completedJobs = useRef(new Set<string>());
 
@@ -27,8 +26,17 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
         completedJobs.current.add(job.id);
         if (job.state === 'failed') notify(job.error?.message || '同步未完成，请重试');
         else if (job.kind === 'wahlap') {
-          void onChanged().catch((error) => notify(messageOf(error)));
-          notify('华立成绩已同步，待核记录已核对');
+          const result = job.result;
+          const notice = result?.source === 'wahlap' ? result.notice : null;
+          void onChanged().then(
+            () => notify(['华立成绩已同步，待核记录已核对', notice].filter(Boolean).join('；')),
+            (error) =>
+              notify(
+                ['华立成绩已保存，页面刷新失败：' + messageOf(error), notice]
+                  .filter(Boolean)
+                  .join('；'),
+              ),
+          );
         } else {
           const result = job.result;
           if (result?.source === 'divingfish_upload')
@@ -50,15 +58,20 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
           cache: 'no-store',
         });
         if (!signal?.aborted && sequence === generation.current && active.current) {
+          lastLoadError.current = '';
           setLoadError('');
           accept(next);
         }
       } catch (error) {
-        if (!signal?.aborted && sequence === generation.current && active.current)
-          setLoadError(messageOf(error));
+        if (!signal?.aborted && sequence === generation.current && active.current) {
+          const message = messageOf(error);
+          setLoadError(message);
+          if (message !== lastLoadError.current) notify(message);
+          lastLoadError.current = message;
+        }
       }
     },
-    [accept],
+    [accept, notify],
   );
   useEffect(() => {
     active.current = true;
@@ -100,10 +113,20 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
   const run = useCallback(
     async (kind: ScoreSyncJob['kind'], qrText?: string) => {
       if (writing.current || current.current?.job?.state === 'running') return false;
+      const status = current.current;
+      let prerequisite = '';
+      if (!status) prerequisite = '同步状态尚未取得，请重试';
+      else if (kind === 'wahlap') {
+        if (!status.wahlap.available) prerequisite = status.wahlap.reason || '华立同步暂不可用';
+        else if (!qrText?.trim()) prerequisite = '请选择二维码截图或粘贴二维码内容';
+      } else if (!status.divingfish.configured) prerequisite = '请先保存水鱼 Token';
+      else if (!status.wahlap.has_snapshot) prerequisite = '请先完成一次华立同步';
+      if (prerequisite) {
+        notify(prerequisite);
+        return false;
+      }
       writing.current = true;
       setAction(kind);
-      setError('');
-      setErrorKind(null);
       generation.current += 1;
       try {
         const job = await api<ScoreSyncJob>(
@@ -119,8 +142,6 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
         return true;
       } catch (error) {
         if (active.current) {
-          setError(messageOf(error));
-          setErrorKind(kind);
           notify(messageOf(error));
         }
         // A lost response does not imply that the server stopped the job.
@@ -135,8 +156,6 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
   );
   return {
     state,
-    error,
-    errorKind,
     loadError,
     action,
     busy: action !== null || state?.job?.state === 'running',

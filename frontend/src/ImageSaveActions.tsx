@@ -1,20 +1,20 @@
 import { useState } from 'react';
 import type { PreparedImage } from './imageSave';
+import { useNotify } from './Toast';
 
 export function ImageSaveActions({ image }: { image: PreparedImage }) {
   const [sharing, setSharing] = useState(false);
-  const [error, setError] = useState('');
+  const notify = useNotify();
   const canShare = !!navigator.canShare?.({ files: [image.file] });
   async function share() {
     if (sharing) return;
     setSharing(true);
-    setError('');
     try {
       // No asynchronous preparation precedes this call: it keeps the tap's user activation.
       await navigator.share({ files: [image.file], title: image.file.name });
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        setError('分享未完成，可选择保存 PNG，或打开整张图片后长按保存。');
+        notify('分享未完成，可选择保存 PNG，或打开整张图片后长按保存。');
       }
     } finally {
       setSharing(false);
@@ -37,11 +37,6 @@ export function ImageSaveActions({ image }: { image: PreparedImage }) {
         </a>
       </div>
       <p className="image-save-help">iPhone 可在分享菜单中存储图像；也可打开图片后长按保存。</p>
-      {error && (
-        <div className="form-message" role="alert">
-          {error}
-        </div>
-      )}
     </section>
   );
 }

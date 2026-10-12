@@ -1911,10 +1911,9 @@ try {
     await page.goto(origin + '/#settings', { waitUntil: 'networkidle' });
     await page.locator('.record-review-entry').first().waitFor();
     assert.equal(await page.getByRole('button', { name: '记录 AP', exact: true }).count(), 0);
-    await page
-      .getByRole('note', { name: '更新提示' })
-      .getByText('合成更新提示', { exact: true })
-      .waitFor();
+    assert.equal(await page.getByRole('note', { name: '更新提示' }).count(), 0);
+    assert.equal(await page.getByText('合成更新提示', { exact: true }).count(), 0);
+    assert.equal(await page.locator('.form-message,.error-box,.auth-session-notice').count(), 0);
     await badges(page.locator('.record-review-list'), `${name}-pending review`);
     if (name === 'desktop') await retryControls(page);
     await audit(page, `${name}-settings`);

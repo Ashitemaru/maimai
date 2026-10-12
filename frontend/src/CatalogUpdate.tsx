@@ -49,12 +49,11 @@ function RemyStatus({ control }: { control: CatalogUpdateControl }) {
 }
 
 export function CatalogUpdatePanel({ control }: { control: CatalogUpdateControl }) {
-  const { state, error, mainBusy, remyBusy, action } = control;
+  const { state, mainBusy, remyBusy, action } = control;
   const diff = state?.main.diff;
   const hasChanges = Boolean(
     diff && (diff.songs_added > 0 || diff.charts_added > 0 || diff.constants_changed > 0),
   );
-  const warnings = state?.main.warnings || [];
   const canRetryRemy = (state?.remy.pending_count ?? 0) > 0 && !remyBusy;
   return (
     <>
@@ -91,18 +90,6 @@ export function CatalogUpdatePanel({ control }: { control: CatalogUpdateControl 
             <span>
               定数变化 <strong>{diff.constants_changed}</strong>
             </span>
-          </div>
-        )}
-        {(error || state?.main.error) && (
-          <div className="form-message">{error || state?.main.error}</div>
-        )}
-        {warnings.length > 0 && (
-          <div className="catalog-warnings" role="note" aria-label="更新提示">
-            <ul>
-              {warnings.map((warning, index) => (
-                <li key={index}>{warning}</li>
-              ))}
-            </ul>
           </div>
         )}
         {state && hasChanges && <CatalogChanges revision={state.revision} />}

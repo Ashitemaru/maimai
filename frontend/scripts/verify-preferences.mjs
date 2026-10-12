@@ -490,7 +490,8 @@ try {
         control.stored.default_constant_max === 14.5,
       'fixture persists preference',
     );
-    await panel.getByRole('status').filter({ hasText: '已保存' }).waitFor();
+    await page.locator('#toast').filter({ hasText: '偏好设置已保存' }).waitFor();
+    assert.equal(await panel.locator('.form-message, .preferences-saved').count(), 0);
     for (const route of ['ap', 'statistics']) {
       await page.locator(`a.nav-item[href="#${route}"]`).click();
       await range(page, name, route === 'ap' ? 'charts' : 'completion-matrix', 12.5, 14.5);
@@ -538,7 +539,7 @@ try {
     const writeCount = simulatedPreferenceWrites.length;
     await save.click();
     await waitFor(
-      async () => (await panel.locator('.form-message').count()) > 0,
+      async () => (await page.locator('#toast').textContent()).includes('最低定数不能大于最高定数'),
       'invalid preference range is rejected',
     );
     assert.equal(simulatedPreferenceWrites.length, writeCount, 'Invalid range never reaches PUT');
@@ -549,7 +550,8 @@ try {
       await maximum.fill('14.6');
       control.failNextSave = true;
       await save.click();
-      await panel.getByRole('alert').filter({ hasText: '隔离测试：偏好保存失败' }).waitFor();
+      await page.locator('#toast').filter({ hasText: '隔离测试：偏好保存失败' }).waitFor();
+      assert.equal(await panel.locator('.form-message, .error-box').count(), 0);
       assert.deepEqual(control.stored, { default_constant_min: 12.5, default_constant_max: 14.5 });
       control.ready = false;
       await page.reload({ waitUntil: 'networkidle' });

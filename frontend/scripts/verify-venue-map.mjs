@@ -175,7 +175,13 @@ try {
   await editor.getByRole('button', { name: /搜索结果广场/ }).click();
   failSave = true;
   await editor.getByRole('button', { name: '保存', exact: true }).click();
-  await editor.getByRole('alert').filter({ hasText: '保存暂时失败' }).waitFor();
+  await page.locator('#toast').filter({ hasText: '保存暂时失败' }).waitFor();
+  assert.equal(await editor.locator('.form-message, .error-box').count(), 0);
+  assert.equal(
+    await page.locator('#toast').evaluate((element) => element.matches(':popover-open')),
+    true,
+    'Editor errors remain visible above the modal dialog',
+  );
   assert.equal(await editor.getByLabel('搜索地点', { exact: true }).inputValue(), '搜索结果广场');
   await editor.getByRole('button', { name: '保存', exact: true }).click();
   await editor.waitFor({ state: 'hidden' });
@@ -183,6 +189,26 @@ try {
   assert.equal(writes.at(-1).latitude, 31.24);
   assert.deepEqual(Object.keys(writes.at(-1)).sort(), ['latitude', 'longitude', 'name']);
   checks.push('Search is explicit; failed save preserves form; retry persists WGS84 point');
+  await page.locator('#toast').filter({ hasText: '机厅位置已保存' }).waitFor();
+  await page.evaluate(() => {
+    const toast = document.querySelector('#toast');
+    const show = toast.showPopover.bind(toast);
+    window.venueToastPromotions = 0;
+    toast.showPopover = () => {
+      window.venueToastPromotions += 1;
+      show();
+    };
+  });
+  await page.getByRole('button', { name: '编辑位置', exact: true }).click();
+  failSave = true;
+  await editor.getByRole('button', { name: '保存', exact: true }).click();
+  await page.locator('#toast').filter({ hasText: '保存暂时失败' }).waitFor();
+  assert(
+    (await page.evaluate(() => window.venueToastPromotions)) > 0,
+    'A new error promotes an already visible toast above a newly opened dialog',
+  );
+  await editor.getByRole('button', { name: '取消', exact: true }).click();
+  checks.push('An existing toast is promoted above a later modal for new errors');
   await page.reload();
   await page
     .getByRole('button', { name: /【上海】测试机厅.*2 AP/ })

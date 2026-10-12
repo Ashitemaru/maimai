@@ -307,7 +307,8 @@ try {
     pending_record: { ...charts[1].pending_record, venue: 'Other device update' },
   });
   await record.getByRole('button', { name: '保存待核记录', exact: true }).click();
-  await record.getByRole('alert').waitFor();
+  await page.locator('#toast.show').filter({ hasText: '记录已在其他页面更新' }).waitFor();
+  assert.equal(await record.locator('[role=alert],.form-message').count(), 0);
   assert.equal(
     await record.getByLabel('AP 机厅', { exact: true }).inputValue(),
     'Keep this unsaved draft',
@@ -343,7 +344,8 @@ try {
     pending_record: { ...charts[1].pending_record, venue: 'Newer before deletion' },
   });
   await record.getByRole('button', { name: '取消登记', exact: true }).click();
-  await record.getByRole('alert').waitFor();
+  await page.locator('#toast.show').filter({ hasText: '记录已在其他页面更新' }).waitFor();
+  assert.equal(await record.locator('[role=alert],.form-message').count(), 0);
   assert.equal(charts[1].pending_record.venue, 'Newer before deletion');
   assert.equal(mutations.at(-1).expected_revision, 3);
   await record.getByRole('button', { name: '重新载入记录', exact: true }).click();

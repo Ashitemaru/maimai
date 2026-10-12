@@ -9,6 +9,7 @@ import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
 import { ImageSaveActions } from './ImageSaveActions';
 import { downloadImage, needsSaveGesture, prepareImage } from './imageSave';
 import type { PreparedImage } from './imageSave';
+import { useToastMessage } from './Toast';
 export interface CoverState {
   chart: Chart | null;
   score: string;
@@ -34,6 +35,7 @@ export function CoverPage({
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState('');
+  useToastMessage(error);
   const [exporting, setExporting] = useState(false);
   const [readyImage, setReadyImage] = useState<PreparedImage | null>(null);
   const exportGeneration = useRef(0);
@@ -105,7 +107,7 @@ export function CoverPage({
   }, [value]);
   async function download() {
     if (!value.chart || !validScore(value.score)) {
-      setError('请填写达成率');
+      notify('请填写达成率');
       return;
     }
     if (exporting) return;
@@ -137,7 +139,7 @@ export function CoverPage({
         notify('封面已导出');
       }
     } catch (error) {
-      if (generation === exportGeneration.current) setError(messageOf(error));
+      if (generation === exportGeneration.current) notify(messageOf(error));
     } finally {
       output.width = output.height = 0;
       if (generation === exportGeneration.current) setExporting(false);
@@ -151,6 +153,7 @@ export function CoverPage({
       : '自动 · 版本待核实';
   const notices =
     receipt?.notices || (!value.version && automatic?.notice ? [automatic.notice] : []);
+  useToastMessage(notices.join('\n'));
   return (
     <>
       <div className="heading">
@@ -228,14 +231,6 @@ export function CoverPage({
               <option value="4:3">4:3 · 1440 × 1080</option>
             </select>
           </div>
-          {notices.length > 0 && (
-            <div className="cover-notices">
-              {notices.map((notice) => (
-                <div key={notice}>{notice}</div>
-              ))}
-            </div>
-          )}
-          {error && <div className="form-message">{error}</div>}
           <button
             className="btn primary full"
             type="button"

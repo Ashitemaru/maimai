@@ -345,7 +345,8 @@ try {
     assert.equal(await panel.getByRole('alert').count(), 0);
     await share('success', 3200, completedHash);
     await share('failure', 3200, completedHash);
-    await panel.getByRole('alert').waitFor();
+    await page.locator('#toast').filter({ hasText: '分享未完成' }).waitFor();
+    assert.equal(await panel.locator('.form-message, .error-box').count(), 0);
     await page.screenshot({
       path: path.join(output, `completion-ready-${width}.png`),
       fullPage: true,
@@ -425,7 +426,8 @@ try {
     assert.equal(await panel.getByRole('alert').count(), 0);
     await share('success', 1440);
     await share('failure', 1440);
-    await panel.getByRole('alert').waitFor();
+    await page.locator('#toast').filter({ hasText: '分享未完成' }).waitFor();
+    assert.equal(await panel.locator('.form-message, .error-box').count(), 0);
     assert.equal(await panel.getByRole('link', { name: '保存 PNG', exact: true }).count(), 1);
     assert.equal(await panel.getByRole('link', { name: '打开整张图片', exact: true }).count(), 1);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));

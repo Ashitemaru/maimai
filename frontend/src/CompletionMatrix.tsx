@@ -3,6 +3,7 @@ import { api, messageOf } from './api';
 import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
 import { ConstantRange } from './ConstantRange';
 import type { Chart, ChartFilters, ChartList } from './types';
+import { useToastMessage } from './Toast';
 
 type Counts = { complete: number; total: number; remaining: number };
 type MatrixVersion = { value: string; label: string; title: string };
@@ -35,9 +36,9 @@ const countLabel = (counts: Counts) =>
 const isComplete = (counts: Counts) => counts.complete === counts.total;
 
 function RequestError({ message, retry }: { message: string; retry: () => void }) {
+  useToastMessage(message);
   return (
-    <div className="matrix-error error-box" role="alert">
-      <span>{message}</span>
+    <div className="matrix-error">
       <button type="button" className="btn" onClick={retry}>
         重试
       </button>

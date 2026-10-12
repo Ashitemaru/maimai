@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, messageOf } from './api';
+import { useToastMessage } from './Toast';
 
 export interface CatalogUpdateState {
   revision: string;
@@ -40,20 +41,60 @@ const remyRunning = (state: CatalogUpdateState | null) =>
 
 export function useCatalogUpdate(onChanged: () => void, notify: (message: string) => void) {
   const [state, setState] = useState<CatalogUpdateState | null>(null);
-  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  useToastMessage(loadError);
   const [action, setAction] = useState<Action | null>(null);
   const previousRevision = useRef<string | null>(null);
+  const previousState = useRef<CatalogUpdateState | null>(null);
+  const announced = useRef(new Set<string>());
+  const runs = useRef({ main: 0, remy: 0 });
   const generation = useRef(0);
   const initializing = useRef(true);
   const accept = useCallback(
-    (next: CatalogUpdateState) => {
+    (next: CatalogUpdateState, requested?: 'main' | 'remy') => {
+      const previous = previousState.current;
+      if (next.main.status === 'running' && previous?.main.status !== 'running')
+        runs.current.main++;
+      if (remyRunning(next) && !remyRunning(previous)) runs.current.remy++;
+      const mainFinished =
+        (previous?.main.status === 'running' || requested === 'main') &&
+        (next.main.status === 'succeeded' || next.main.status === 'failed');
+      const remyFinished = (remyRunning(previous) || requested === 'remy') && !remyRunning(next);
+      const messages = mainFinished
+        ? [
+            next.main.status === 'failed'
+              ? next.main.error || next.main.message || '曲库更新失败，请重试'
+              : next.main.message || '曲库已更新',
+            ...(next.main.warnings || []),
+          ]
+        : [];
+      const notices = [
+        ...[...new Set(messages)].map((message) => ({
+          key: `main:${next.main.job_id || next.main.started_at || runs.current.main}`,
+          message,
+        })),
+        {
+          key: `remy:${runs.current.remy}`,
+          message: remyFinished
+            ? next.remy.message ||
+              (next.remy.status === 'failed' ? '版本核准失败，请重试' : '版本核准完成')
+            : '',
+        },
+      ];
+      const pending = notices.filter(({ key, message }) => {
+        if (!message || (!requested && announced.current.has(`${key}:${message}`))) return false;
+        announced.current.add(`${key}:${message}`);
+        return true;
+      });
+      if (pending.length) notify(pending.map(({ message }) => message).join('\n'));
+      previousState.current = next;
       setState(next);
-      setError('');
+      setLoadError('');
       if (previousRevision.current !== null && previousRevision.current !== next.revision)
         onChanged();
       previousRevision.current = next.revision;
     },
-    [onChanged],
+    [onChanged, notify],
   );
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -65,7 +106,7 @@ export function useCatalogUpdate(onChanged: () => void, notify: (message: string
         });
         if (!signal?.aborted && request === generation.current) accept(next);
       } catch (error) {
-        if (!signal?.aborted && request === generation.current) setError(messageOf(error));
+        if (!signal?.aborted && request === generation.current) setLoadError(messageOf(error));
       }
     },
     [accept],
@@ -113,21 +154,21 @@ export function useCatalogUpdate(onChanged: () => void, notify: (message: string
     async (nextAction: Action) => {
       if (action || state?.main.status === 'running') return;
       setAction(nextAction);
-      setError('');
       const request = ++generation.current;
       try {
         const next = await api<CatalogUpdateState>('/catalog/' + nextAction, { method: 'POST' });
-        if (request === generation.current) accept(next);
-        notify(
-          nextAction === 'decisions/reapply'
-            ? '正在应用已保存裁决'
-            : nextAction === 'remy/retry'
-              ? '已开始核准版本'
-              : '已开始更新曲库',
-        );
+        if (request === generation.current)
+          accept(next, nextAction === 'remy/retry' ? 'remy' : 'main');
+        if (nextAction === 'remy/retry' ? remyRunning(next) : next.main.status === 'running')
+          notify(
+            nextAction === 'decisions/reapply'
+              ? '正在应用已保存裁决'
+              : nextAction === 'remy/retry'
+                ? '已开始核准版本'
+                : '已开始更新曲库',
+          );
       } catch (error) {
         const message = messageOf(error);
-        setError(message);
         notify(message);
       } finally {
         setAction(null);
@@ -138,13 +179,12 @@ export function useCatalogUpdate(onChanged: () => void, notify: (message: string
   const receive = useCallback(
     (next: CatalogUpdateState) => {
       generation.current += 1;
-      accept(next);
+      accept(next, 'main');
     },
     [accept],
   );
   return {
     state,
-    error,
     action,
     run,
     reload: load,

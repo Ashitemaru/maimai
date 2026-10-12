@@ -27,6 +27,7 @@ import { useCatalogUpdate } from './useCatalogUpdate';
 import type { CatalogUpdateControl } from './useCatalogUpdate';
 import { ScoreSyncPanel } from './ScoreSyncPanel';
 import { useScoreSync, type ScoreSyncControl } from './useScoreSync';
+import { useNotify, useToastMessage } from './Toast';
 
 const paths: Record<string, string> = {
   clock: 'M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
@@ -246,6 +247,7 @@ function ChartPicker({
   const query = useDebounce(q);
   const [items, setItems] = useState<Chart[]>([]);
   const [error, setError] = useState('');
+  useToastMessage(error);
   useEffect(() => {
     const control = new AbortController();
     api<ChartList>(
@@ -275,7 +277,6 @@ function ChartPicker({
           aria-label="查找谱面"
         />
       </label>
-      {error && <div className="form-message">{error}</div>}
       <div className="search-results">
         {items.map((c) => (
           <button key={c.chart_key} className="pick-song" onClick={() => onPick(c)}>
@@ -322,9 +323,9 @@ function Detail({
   const syncStatus = (
     { sync: 'SYNC', fs: 'FS', fsp: 'FS+', fsd: 'FDX', fsdp: 'FDX+' } as Record<string, string>
   )[c.provider_fs || ''];
-  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [conflicted, setConflicted] = useState(false);
+  useToastMessage(c.conflict ? '成绩待核对 · 个人记录已保留' : '');
   const active = useRef(true);
   useEffect(() => {
     active.current = true;
@@ -334,21 +335,20 @@ function Detail({
   }, []);
   function showError(error: unknown) {
     if (!active.current) return;
-    setError(messageOf(error));
+    notify(messageOf(error));
     if (error instanceof ApiError && error.status === 409) setConflicted(true);
   }
   async function save(event: FormEvent) {
     event.preventDefault();
     if (busy || conflicted || venueRecorded) return;
     if (c.requires_venue && !venues.some((item) => item.name === venue)) {
-      setError('请选择 AP 机厅');
+      notify('请选择 AP 机厅');
       return;
     }
     const submittedVenue = c.requires_venue ? venue.trim() : '';
     if (request.current?.venue !== submittedVenue)
       request.current = { venue: submittedVenue, id: crypto.randomUUID() };
     setBusy(true);
-    setError('');
     try {
       await api<{ chart: Chart }>('/charts/' + encodeURIComponent(c.chart_key) + '/ap-record', {
         method: 'PUT',
@@ -370,7 +370,6 @@ function Detail({
   async function reset() {
     if (busy || conflicted) return;
     setBusy(true);
-    setError('');
     try {
       await api(
         '/charts/' +
@@ -426,7 +425,6 @@ function Detail({
           <Badge chart={c} />
         </div>
       )}
-      {c.conflict && <div className="form-message">成绩待核对 · 个人记录已保留</div>}
       {venueRecorded ? (
         <div className="detail-rule">
           <strong>{c.venue}</strong>
@@ -460,17 +458,11 @@ function Detail({
                 {!venueChoices.length && <small>请先在“我的机厅”新增机厅。</small>}
               </div>
             )}
-            {error && (
-              <div className="form-message" role="alert">
-                {error}
-                {conflicted && (
-                  <>
-                    <p>当前选择已保留。重新载入会替换表单内容。</p>
-                    <button type="button" className="btn" disabled={busy} onClick={reload}>
-                      重新载入记录
-                    </button>
-                  </>
-                )}
+            {conflicted && (
+              <div className="form-actions">
+                <button type="button" className="btn" disabled={busy} onClick={reload}>
+                  重新载入记录
+                </button>
               </div>
             )}
             <button
@@ -562,7 +554,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const [listBusy, setListBusy] = useState(true);
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
-  const [toast, setToast] = useState('');
   const [detail, setDetail] = useState<Chart | null>(null);
   const detailRequest = useRef<{ controller: AbortController; sequence: number } | null>(null);
   const detailSequence = useRef(0);
@@ -575,7 +566,9 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     safeGuides: false,
   });
   const [catalogRevision, setCatalogRevision] = useState(0);
-  const notify = useCallback((value: string) => setToast(value), []);
+  const notify = useNotify();
+  useToastMessage(error);
+  useToastMessage(listError);
   const closeModal = useCallback(() => {
     detailRequest.current?.controller.abort();
     detailRequest.current = null;
@@ -590,11 +583,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     setOffset(0);
   }, []);
   const catalog = useCatalogUpdate(catalogChanged, notify);
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(''), 4000);
-    return () => clearTimeout(timer);
-  }, [toast]);
   useEffect(() => {
     const change = () => {
       const p = location.hash.slice(1) as Page;
@@ -984,12 +972,13 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
             </div>
           </div>
           {error ? (
-            <div className="error-box">
-              {error}
-              <br />
+            <div className="empty-state">
               <button
                 className="btn"
-                onClick={() => void refresh().catch((error) => setError(messageOf(error)))}
+                onClick={() => {
+                  setError('');
+                  void refresh().catch((error) => setError(messageOf(error)));
+                }}
               >
                 重试
               </button>
@@ -1161,8 +1150,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                           </div>
                         </div>
                         {listError ? (
-                          <div className="empty-state" role="alert">
-                            {listError}
+                          <div className="empty-state">
                             <div>
                               <button
                                 type="button"
@@ -1436,9 +1424,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
           onPick={(chart) => (picker === 'cover' ? chooseCover(chart) : void openDetail(chart))}
         />
       )}
-      <div id="toast" className={toast ? 'show' : ''} role="status" aria-live="polite">
-        {toast}
-      </div>
     </>
   );
 }

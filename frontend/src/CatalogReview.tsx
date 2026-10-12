@@ -3,6 +3,7 @@ import { api, ApiError, messageOf } from './api';
 import type { CatalogUpdateControl, CatalogUpdateState } from './useCatalogUpdate';
 import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
 import { formatDate } from './dateTime';
+import { useNotify, useToastMessage } from './Toast';
 
 type Value = unknown;
 interface SourceOption {
@@ -396,6 +397,7 @@ function SavedEntry({
 }
 
 export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
+  const notify = useNotify();
   const [data, setData] = useState<ReviewData | null>(null),
     [saved, setSaved] = useState<DecisionsData | null>(null);
   const [loading, setLoading] = useState(true),
@@ -405,7 +407,8 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
     [preview, setPreview] = useState<BatchPreview | null>(null);
   const [error, setError] = useState(''),
     [refreshNeeded, setRefreshNeeded] = useState(false),
-    [message, setMessage] = useState('');
+    [loadError, setLoadError] = useState('');
+  useToastMessage(loadError);
   const [reload, setReload] = useState(0),
     [filter, setFilter] = useState<'pending' | 'manual'>('pending'),
     [search, setSearch] = useState(''),
@@ -437,10 +440,14 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
         setSaved(decisions);
         setRefreshNeeded(false);
         setError('');
+        setLoadError('');
         setOperation((previous) => (previous?.phase === 'submitting' ? previous : null));
       })
       .catch((error) => {
-        if (!controller.signal.aborted && request === requestId.current) setError(messageOf(error));
+        if (!controller.signal.aborted && request === requestId.current) {
+          setError(messageOf(error));
+          setLoadError(messageOf(error));
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted && request === requestId.current) setLoading(false);
@@ -459,8 +466,9 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
     if (changed) {
       setPreview(null);
       setError('曲库已变化，请重新核对选择后提交。');
+      notify('曲库已变化，请重新核对选择后提交。');
     }
-  }, [preview, control.state?.revision, control.state?.decision_revision, data]);
+  }, [preview, control.state?.revision, control.state?.decision_revision, data, notify]);
   useEffect(() => {
     const element = dialog.current;
     if (preview && element && !element.open) element.showModal();
@@ -503,7 +511,6 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
   function openPreview() {
     if (!data || disabled || !selected.records.length || selected.incomplete) return;
     setError('');
-    setMessage('');
     const records = selected.records.map((record) => ({
       ...record,
       fields: record.fields.flatMap((field) => {
@@ -539,6 +546,7 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
     ) {
       setPreview(null);
       setError('曲库已变化，请重新核对选择后提交。');
+      notify('曲库已变化，请重新核对选择后提交。');
       return;
     }
     submission.current = true;
@@ -548,7 +556,6 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
       phase: 'submitting',
     });
     setError('');
-    setMessage('');
     try {
       const body = {
         base_catalog_revision: confirmed.revision,
@@ -576,12 +583,14 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
         phase: 'applying',
       });
       control.receive(next);
-      setMessage(`${confirmed.records.length} 张谱面的选择已保存，正在统一入库`);
+      if (next.main.status === 'running')
+        notify(`${confirmed.records.length} 张谱面的选择已保存，正在统一入库`);
       await control.reload();
       setReload((value) => value + 1);
     } catch (error) {
       setOperation(null);
       setError(messageOf(error));
+      notify(messageOf(error));
       if (error instanceof ApiError && error.status === 409) setRefreshNeeded(true);
     } finally {
       submission.current = false;
@@ -594,7 +603,6 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
     setSubmitting(true);
     setOperation({ chartKeys: [record.chart_key], phase: 'submitting' });
     setError('');
-    setMessage('');
     try {
       const body = {
         base_catalog_revision: data.revision,
@@ -609,12 +617,13 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
       });
       setOperation({ chartKeys: [record.chart_key], phase: 'applying' });
       control.receive(next);
-      setMessage('裁决已撤销，正在更新');
+      if (next.main.status === 'running') notify('裁决已撤销，正在更新');
       await control.reload();
       setReload((value) => value + 1);
     } catch (error) {
       setOperation(null);
       setError(messageOf(error));
+      notify(messageOf(error));
       if (error instanceof ApiError && error.status === 409) setRefreshNeeded(true);
     } finally {
       submission.current = false;
@@ -622,7 +631,6 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
     }
   }
   function refresh() {
-    setMessage('');
     void control.reload();
     setReload((value) => value + 1);
   }
@@ -655,17 +663,14 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
         </span>
       </div>
       {decisionsPending && (
-        <div className="review-pending" role="status">
-          <span>{control.mainBusy ? '正在应用已保存的选择' : '选择已保存，尚未应用到曲库'}</span>
-          <button
-            className="btn"
-            type="button"
-            disabled={disabled}
-            onClick={() => void control.run('decisions/reapply')}
-          >
-            重新应用
-          </button>
-        </div>
+        <button
+          className="btn"
+          type="button"
+          disabled={disabled}
+          onClick={() => void control.run('decisions/reapply')}
+        >
+          重新应用
+        </button>
       )}
       {data?.initialized !== false && (
         <div className="review-toolbar">
@@ -702,29 +707,15 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
           />
         </div>
       )}
-      {error && !preview && (
-        <div className="form-message" role="alert">
-          {error}
-          {refreshNeeded && (
-            <button
-              className="btn quiet"
-              type="button"
-              disabled={submitting || control.mainBusy}
-              onClick={refresh}
-            >
-              刷新差异
-            </button>
-          )}
-        </div>
-      )}
-      {message && !decisionsPending && (
-        <div className="review-message" role="status">
-          {control.mainBusy
-            ? message
-            : control.state?.main.status === 'failed'
-              ? '选择已保存，应用失败，可重新应用。'
-              : '曲库已更新'}
-        </div>
+      {refreshNeeded && !preview && (
+        <button
+          className="btn quiet"
+          type="button"
+          disabled={submitting || control.mainBusy}
+          onClick={refresh}
+        >
+          刷新差异
+        </button>
       )}
       <div className="record-review-list" aria-busy={loading || submitting || control.mainBusy}>
         {filtered
@@ -758,19 +749,17 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
             ),
           )}
       </div>
-      {!filtered.length && (
+      {!filtered.length && !error && (
         <div className="review-empty">
           {loading
             ? '载入中…'
             : data?.initialized === false
               ? '更新一次曲库后可查看差异'
-              : error
-                ? '差异数据未能载入'
-                : search
-                  ? '没有匹配的谱面'
-                  : filter === 'pending'
-                    ? '没有待入库的谱面'
-                    : '暂无人工记录'}
+              : search
+                ? '没有匹配的谱面'
+                : filter === 'pending'
+                  ? '没有待入库的谱面'
+                  : '暂无人工记录'}
         </div>
       )}
       {filtered.length > 0 && (
@@ -890,11 +879,6 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
               </article>
             ))}
           </div>
-          {error && (
-            <div className="form-message" role="alert">
-              {error}
-            </div>
-          )}
           <footer className="record-confirm-actions">
             <button
               autoFocus

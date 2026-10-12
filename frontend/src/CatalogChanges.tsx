@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api, messageOf } from './api';
 import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
+import { useToastMessage } from './Toast';
 
 interface SongChange {
   song_id: number;
@@ -62,6 +63,7 @@ export function CatalogChanges({ revision }: { revision: string }) {
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(false);
+  useToastMessage(error);
   useEffect(() => {
     if (cached?.revision === revision) return;
     const controller = new AbortController();
@@ -90,16 +92,13 @@ export function CatalogChanges({ revision }: { revision: string }) {
           </div>
         )}
         {error && (
-          <div className="form-message">
-            {error}{' '}
-            <button
-              type="button"
-              className="btn quiet"
-              onClick={() => setAttempt((value) => value + 1)}
-            >
-              重试
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn quiet"
+            onClick={() => setAttempt((value) => value + 1)}
+          >
+            重试
+          </button>
         )}
         {data && (
           <>

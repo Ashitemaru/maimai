@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { messageOf } from './api';
 import type { Preferences } from './types';
+import { useNotify, useToastMessage } from './Toast';
 
 export function PreferencesStatus({ error, onRetry }: { error: string; onRetry: () => void }) {
+  useToastMessage(error ? `偏好设置加载失败：${error}` : null);
   return error ? (
-    <div className="preferences-load-error error-box" role="alert">
-      <span>偏好设置加载失败：{error}</span>
+    <div className="preferences-load-error">
       <button type="button" className="btn" onClick={onRetry}>
         重试
       </button>
@@ -32,8 +33,7 @@ export function PreferencesPanel({
   const [minimum, setMinimum] = useState('');
   const [maximum, setMaximum] = useState('');
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [saved, setSaved] = useState(false);
+  const notify = useNotify();
   useEffect(() => {
     if (!preferences) return;
     setMinimum(preferences.default_constant_min.toFixed(1));
@@ -46,32 +46,30 @@ export function PreferencesPanel({
     const lower = Number(minimum),
       upper = Number(maximum);
     if (!minimum.trim() || !maximum.trim() || !Number.isFinite(lower) || !Number.isFinite(upper)) {
-      setError('请填写最低和最高定数');
+      notify('请填写最低和最高定数');
       return;
     }
     if (
       Math.abs(lower * 10 - Math.round(lower * 10)) > 1e-8 ||
       Math.abs(upper * 10 - Math.round(upper * 10)) > 1e-8
     ) {
-      setError('定数最多保留一位小数');
+      notify('定数最多保留一位小数');
       return;
     }
     if (lower < 0 || upper > 20) {
-      setError('定数范围需在 0.0–20.0 之间');
+      notify('定数范围需在 0.0–20.0 之间');
       return;
     }
     if (lower > upper) {
-      setError('最低定数不能大于最高定数');
+      notify('最低定数不能大于最高定数');
       return;
     }
     setSaving(true);
-    setError('');
-    setSaved(false);
     try {
       await onSave({ default_constant_min: lower, default_constant_max: upper });
-      setSaved(true);
+      notify('偏好设置已保存');
     } catch (error) {
-      setError(messageOf(error));
+      notify(messageOf(error));
     } finally {
       setSaving(false);
     }
@@ -99,8 +97,6 @@ export function PreferencesPanel({
                   value={minimum}
                   onChange={(event) => {
                     setMinimum(event.target.value);
-                    setError('');
-                    setSaved(false);
                   }}
                 />
               </div>
@@ -116,8 +112,6 @@ export function PreferencesPanel({
                   value={maximum}
                   onChange={(event) => {
                     setMaximum(event.target.value);
-                    setError('');
-                    setSaved(false);
                   }}
                 />
               </div>
@@ -127,16 +121,6 @@ export function PreferencesPanel({
               </button>
             </div>
           </fieldset>
-          {error && (
-            <div className="form-message preferences-message" role="alert">
-              {error}
-            </div>
-          )}
-          {saved && (
-            <div className="preferences-saved" role="status">
-              已保存
-            </div>
-          )}
         </form>
       )}
     </section>

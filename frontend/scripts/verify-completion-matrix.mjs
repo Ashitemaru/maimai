@@ -855,9 +855,17 @@ try {
       control.fail = (pathname, params) =>
         pathname === '/api/completion-matrix' && params.get('difficulty') === '2';
       await page.getByRole('combobox', { name: '难度', exact: true }).selectOption('2');
-      await page.getByRole('alert').waitFor();
+      await page
+        .locator('.matrix-error')
+        .getByRole('button', { name: '重试', exact: true })
+        .waitFor();
+      await page.locator('#toast').waitFor();
+      assert.equal(await page.locator('.matrix-workspace .error-box').count(), 0);
       assert.equal(await page.locator('.matrix-table').count(), 0);
-      await page.getByRole('alert').getByRole('button', { name: '重试', exact: true }).click();
+      await page
+        .locator('.matrix-error')
+        .getByRole('button', { name: '重试', exact: true })
+        .click();
       await settled(page, new URLSearchParams({ difficulty: '2' }));
       await page.getByRole('button', { name: '清除', exact: true }).click();
       await settled(page);
