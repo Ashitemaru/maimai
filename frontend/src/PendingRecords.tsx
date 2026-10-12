@@ -47,7 +47,7 @@ export function PendingRecords({
           {records.items.map((record) => (
             <article className="pending-card" key={record.chart_key}>
               <button className="pending-chart" onClick={() => onSelect(record)}>
-                <img src={record.jacket_url} alt="" loading="lazy" />
+                <img src={record.thumbnail_url || record.jacket_url} alt="" loading="lazy" />
                 <span className="pending-chart-info">
                   <strong>{record.title}</strong>
                   <span className="detail-badges">

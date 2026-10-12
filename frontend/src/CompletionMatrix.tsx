@@ -192,7 +192,7 @@ function MatrixDetail({
               onClick={() => choose(chart)}
               aria-label={`查看 ${chart.display_title || chart.title}，${chart.difficulty_name}，${chart.is_complete ? '已完成' : '未标记'}`}
             >
-              <MatrixJacket src={chart.jacket_url} />
+              <MatrixJacket src={chart.thumbnail_url || chart.jacket_url} />
               <span className="matrix-chart-info">
                 <strong>{chart.display_title || chart.title || '（空白曲名）'}</strong>
                 <span className="chart-meta">

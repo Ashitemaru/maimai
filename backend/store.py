@@ -11,7 +11,10 @@ import sqlite3
 import tempfile
 import threading
 import unicodedata
+import weakref
 from contextlib import contextmanager, nullcontext
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -68,9 +71,12 @@ def normalized(value):
 
 def canonical_chart_key(value):
     """Translate a historical key without changing a chart's identity."""
-    match = re.fullmatch(r"(\d+):(standard|dx|utage):(\d+)", str(value))
+    value = str(value)
+    if value.count(":") != 2:
+        return value
+    match = re.fullmatch(r"(\d+):(standard|dx|utage):(\d+)", value)
     if not match:
-        return str(value)
+        return value
     song_id, kind, difficulty = match.groups()
     return f"{int(song_id) + (10000 if kind == 'dx' else 0)}:{int(difficulty)}"
 
@@ -126,6 +132,42 @@ class ChartList(list):
         self.cn_matrix_versions = cn_matrix_versions
 
 
+@dataclass(frozen=True)
+class ChartReadSnapshot:
+    """One internal snapshot; every public reader receives its own mutable copy."""
+
+    token: tuple
+    charts: ChartList
+    mutable_fields: tuple
+
+    @classmethod
+    def from_charts(cls, token, charts):
+        mutable_fields = tuple(
+            {
+                key
+                for chart in charts
+                for key, value in chart.items()
+                if isinstance(value, dict | list | set)
+            }
+        )
+        return cls(token, charts, mutable_fields)
+
+    def copy_chart(self, chart):
+        copied = chart.copy()
+        for key in self.mutable_fields:
+            value = chart.get(key)
+            if value is not None:
+                copied[key] = deepcopy(value)
+        return copied
+
+    def copy_charts(self):
+        return ChartList(
+            (self.copy_chart(chart) for chart in self.charts),
+            cn_versions=deepcopy(self.charts.cn_versions),
+            cn_matrix_versions=deepcopy(self.charts.cn_matrix_versions),
+        )
+
+
 def requires_venue(chart, legacy):
     return legacy["group_name"] == "high" if legacy else chart["constant"] >= 12.6
 
@@ -146,6 +188,11 @@ class Store(APRecords):
         self._token_lock = threading.RLock()
         self._sync_lock = threading.Lock()
         self._token_generation = 0
+        self._chart_cache_lock = threading.RLock()
+        self._chart_cache = None
+        self._version_connection = None
+        self._version_file_identity = None
+        self._close_version_connection = None
         if os.environ.get("MAIMAI_ENV") == "production":
             if not (self.catalog_directory() / "catalog.sqlite").is_file():
                 raise RuntimeError("Production catalog.sqlite is missing; set MAIMAI_CATALOG_DIR.")
@@ -189,7 +236,9 @@ class Store(APRecords):
             with self.db() as conn:
                 self._migrate_personal_keys(conn)
         # Publish both indexes together; readers retain their existing snapshot.
-        self._catalog_snapshot = tuple(loaded_tuple)
+        with self._chart_cache_lock:
+            self._catalog_snapshot = tuple(loaded_tuple)
+            self._chart_cache = None
 
     def reload_catalog(self):
         self.install_catalog(self.load_catalog(self.catalog_directory()))
@@ -201,11 +250,64 @@ class Store(APRecords):
         try:
             yield conn
             conn.commit()
+            if conn.total_changes:
+                self._invalidate_chart_cache()
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
+
+    def _invalidate_chart_cache(self):
+        with self._chart_cache_lock:
+            self._chart_cache = None
+
+    def close(self):
+        """Release the read-only change observer when the application shuts down."""
+        with self._chart_cache_lock:
+            if self._close_version_connection is not None:
+                self._close_version_connection()
+            self._version_connection = None
+            self._version_file_identity = None
+            self._close_version_connection = None
+            self._chart_cache = None
+
+    def _personal_data_version(self):
+        # PRAGMA data_version is comparable only across reads on the same connection.
+        # Inode checks also detect atomic restores/replacements of the database file.
+        stat = self.db_path.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        if self._version_connection is None or identity != self._version_file_identity:
+            self.close()
+            connection = sqlite3.connect(
+                f"{self.db_path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+                isolation_level=None,
+                timeout=20,
+            )
+            self._version_connection = connection
+            self._version_file_identity = identity
+            self._close_version_connection = weakref.finalize(self, connection.close)
+        version = self._version_connection.execute("PRAGMA data_version").fetchone()[0]
+        return (*identity, version)
+
+    def _read_chart_snapshot(self):
+        # Serialize cold builds, not request rendering. A single published snapshot
+        # serves concurrent endpoints; writers invalidate after committing.
+        with self._chart_cache_lock:
+            catalog = self.catalog
+            before = self._personal_data_version()
+            token = (id(catalog), len(catalog), before)
+            if self._chart_cache is not None and self._chart_cache.token == token:
+                return self._chart_cache
+            charts = self._assemble_charts(catalog=catalog)
+            snapshot = ChartReadSnapshot.from_charts(token, charts)
+            # An external connection may commit while this read is being assembled.
+            # Return that coherent read, but never cache it under the later version.
+            if before == self._personal_data_version() and catalog is self.catalog:
+                self._chart_cache = snapshot
+            return snapshot
 
     def load_catalog(self, path):
         conn = sqlite3.connect(
@@ -489,14 +591,25 @@ class Store(APRecords):
         return value
 
     def all_charts(self, connection=None):
-        catalog = self.catalog
+        if connection is not None:
+            # The sync transaction must see its own unpublished writes and must not
+            # acquire the shared-cache lock while holding a SQLite write lock.
+            return self._assemble_charts(connection=connection)
+        return self._read_chart_snapshot().copy_charts()
+
+    def _assemble_charts(self, connection=None, catalog=None):
+        if catalog is None:
+            catalog = self.catalog
         with self.db() if connection is None else nullcontext(connection) as conn:
             # Record fields and their revisions must describe one SQLite snapshot.
             if connection is None:
                 conn.execute("BEGIN")
             legacy = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM legacy")}
             manual = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM manual")}
-            provider = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM provider")}
+            provider = {
+                row["chart_key"]: dict(row)
+                for row in conn.execute("SELECT chart_key,achievement,fc,synced_at FROM provider")
+            }
             record_state = read_record_state(conn)
             revisions = dict(
                 conn.execute(
@@ -509,9 +622,12 @@ class Store(APRecords):
             cn_versions=catalog.cn_versions, cn_matrix_versions=catalog.cn_matrix_versions
         )
         for key, c in catalog.items():
+            canonical_key = canonical_chart_key(key)
 
-            def lookup(records, chart_key=key):
-                return records.get(chart_key, records.get(canonical_chart_key(chart_key)))
+            def lookup(records, chart_key=key, fallback_key=canonical_key):
+                if chart_key in records:
+                    return records[chart_key]
+                return records.get(fallback_key) if chart_key != fallback_key else None
 
             old, user, remote = lookup(legacy), lookup(manual), lookup(provider)
             evidence = lookup(record_state["evidence"])
@@ -546,7 +662,7 @@ class Store(APRecords):
                 "_search",
             )
             item = {name: c.get(name) for name in fields}
-            item["id"] = c.get("id", int(canonical_chart_key(key).split(":")[0]))
+            item["id"] = c["id"] if "id" in c else int(canonical_key.split(":")[0])
             item["difficulty"] = c.get("difficulty", c["difficulty_index"])
             item["cn_version"] = c.get("cn_version", c.get("api_version"))
             item["_cn_version_group"] = catalog.cn_version_group(item["cn_version"])
@@ -603,9 +719,7 @@ class Store(APRecords):
                     "note": user["note"] if user else "",
                     "manual_date": user["achieved_date"] if user else None,
                     "manual_updated_at": user["updated_at"] if user else None,
-                    "manual_revision": revisions.get(
-                        key, revisions.get(canonical_chart_key(key), 0)
-                    ),
+                    "manual_revision": revisions.get(key, revisions.get(canonical_key, 0)),
                     "achievement": achievement,
                     "provider_achievement": remote["achievement"] if remote else None,
                     "provider_fc": remote["fc"] if remote else None,
@@ -651,7 +765,7 @@ class Store(APRecords):
     def chart(self, key):
         if getattr(self.catalog, "schema_version", 1) >= 2:
             key = canonical_chart_key(key)
-        return next((c for c in self.all_charts() if c["chart_key"] == key), None)
+        return next((chart for chart in self.all_charts() if chart["chart_key"] == key), None)
 
     def save_manual(self, key, data):
         catalog = self.catalog

@@ -46,7 +46,7 @@ GET /api/charts?q=&group=all|low|high|catalog&difficulty=0..4&type=standard|dx
   PLUS versions remain distinct. Set constant_min=constant_max for an exact constant.
 GET /api/charts/{chart_key} -> Chart
 GET /api/ap-records -> {items:[{chart_key,title,type,difficulty_name,constant,
-  jacket_url,record_revision,pending_record}],count}
+  jacket_url,thumbnail_url,record_revision,pending_record}],count}
 PUT /api/charts/{chart_key}/ap-record {venue,request_id,expected_revision}
   -> {chart:Chart}. Saves a pending venue claim, never marks a chart AP by itself.
   request_id is a client-generated idempotency key. Replaying the same request
@@ -77,7 +77,7 @@ POST /api/sync/divingfish (no body)
 Chart fields:
 id, difficulty, chart_key (id:difficulty), lxns_song_id, song_id (alias of id),
 title, display_title, artist, type, difficulty_index (alias of difficulty),
-difficulty_name, level, constant, divingfish_id, jacket_url,
+difficulty_name, level, constant, divingfish_id, jacket_url, thumbnail_url,
 jp_release_version, jp_release_version_candidate, release_status,
 group(low/high/catalog), in_original_table, requires_venue, legacy_complete, legacy_venue,
 manual_ap(null/true/false), manual_venue, venue, note, manual_date,
@@ -102,7 +102,15 @@ venue until the new claim is confirmed. Venues come only from the user's records
 Provider exact achievement is not auto-confirmed for covers (account score masks may apply).
 
 GET /jackets/{song_id}.png -> active snapshot image, falling back to base catalog cache
-  Numeric PNG filenames only. Cache-Control: no-cache permits updated art at the same URL.
+  Numeric PNG filenames only. Private revalidation permits updated art at the same URL.
+  Original resolution is retained for cover/completion exports.
+GET /jackets/thumbnails/{song_id}/{revision}.webp -> authenticated 160px WebP preview
+  thumbnail_url is generated from the current source asset; source changes produce a new URL.
+  Private browser caching and ETag/304 are supported. Server-generated previews are bounded.
+  Preview URLs do not replace jacket_url and are not used for high-resolution exports.
+Personal JSON APIs and exports remain no-store. Static artwork caching never unlocks API access.
+Chart reads reuse one assembled snapshot until personal writes or catalog publication change it;
+transactional sync reads bypass that cache so their receipt includes the transaction's own writes.
 GET / -> frontend/dist/index.html, React + TypeScript app built with Vite.
 
 Run: ./start-app.sh (installs missing dependencies and builds the React app)

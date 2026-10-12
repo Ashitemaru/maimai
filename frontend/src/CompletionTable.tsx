@@ -7,7 +7,7 @@ import { ImageSaveActions } from './ImageSaveActions';
 import { downloadImage, needsSaveGesture, prepareImage } from './imageSave';
 import type { PreparedImage } from './imageSave';
 
-const batchSize = 120;
+const batchSize = 48;
 const chartName = (chart: CompletionChart) => chart.display_title || chart.title || '（空白曲名）';
 
 function CompletionTile({
@@ -20,7 +20,28 @@ function CompletionTile({
   retryKey: number;
 }) {
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [chart.jacket_url, retryKey]);
+  const [nearViewport, setNearViewport] = useState(false);
+  const image = useRef<HTMLImageElement>(null);
+  const preview = chart.thumbnail_url || chart.jacket_url;
+  useEffect(() => setFailed(false), [preview, retryKey]);
+  useEffect(() => {
+    if (nearViewport || !image.current) return;
+    if (!('IntersectionObserver' in window)) {
+      setNearViewport(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '80px' },
+    );
+    observer.observe(image.current);
+    return () => observer.disconnect();
+  }, [nearViewport]);
   const status = chart.is_ap
     ? chart.status === 'app'
       ? 'AP+'
@@ -49,7 +70,8 @@ function CompletionTile({
           <span className="completion-placeholder">{chartName(chart)}</span>
         ) : (
           <img
-            src={chart.jacket_url}
+            ref={image}
+            src={nearViewport ? preview : undefined}
             alt=""
             loading="lazy"
             decoding="async"
@@ -134,7 +156,7 @@ export function CompletionTable({
         if (entries.some((entry) => entry.isIntersecting))
           setVisibleCount((count) => Math.min(count + batchSize, data.items.length));
       },
-      { rootMargin: '480px' },
+      { rootMargin: '80px' },
     );
     observer.observe(sentinel.current);
     return () => observer.disconnect();

@@ -13,7 +13,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -30,6 +30,7 @@ from .auth import (
 from .catalog_decisions import StaleDecisionError
 from .catalog_updates import BusyError, CatalogUpdates
 from .completion_exports import completion_export_router
+from .jackets import IMMUTABLE_CACHE, REVALIDATE_CACHE, JacketPreviews, etag_matches
 from .store import (
     ROOT,
     Store,
@@ -285,6 +286,10 @@ def create_app(store=None, updater=None):
             )
     store = store or Store()
     updater = updater if updater is not None else CatalogUpdates(store)
+    previews = JacketPreviews(
+        store.runtime / "jacket-thumbnails",
+        lambda: (store.catalog_directory(), store.catalog_root),
+    )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -292,6 +297,7 @@ def create_app(store=None, updater=None):
             yield
         finally:
             updater.close()
+            store.close()
 
     app = FastAPI(title="Ashitemaru · maimai", version="0.1.0", lifespan=lifespan)
     auth = AuthStore(auth_config, store.runtime)
@@ -300,6 +306,7 @@ def create_app(store=None, updater=None):
     app.include_router(auth_router(auth))
     app.state.store = store
     app.state.catalog_updates = updater
+    app.state.jacket_previews = previews
     app.include_router(completion_export_router(store.runtime / "completion-exports"))
     allowed_hosts = ["127.0.0.1", "localhost", "::1", "testserver"]
     allowed_hosts += [
@@ -352,12 +359,50 @@ def create_app(store=None, updater=None):
                     headers={"Cache-Control": "no-store"},
                 )
         response = await call_next(request)
-        if auth_config.required or request.url.path.startswith("/api/"):
+        successful_read = request.method in ("GET", "HEAD") and response.status_code in (200, 304)
+        hashed_bundle = path in public_frontend and re.fullmatch(
+            r"/assets/[^/]+-[A-Za-z0-9_-]{8,}\.(?:js|css|woff2?|ttf|png|svg|webp)", path
+        )
+        artwork = path.startswith("/cover-assets/") and Path(path).suffix.lower() in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".svg",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".otf",
+        }
+        if successful_read and hashed_bundle:
+            response.headers["Cache-Control"] = IMMUTABLE_CACHE
+        elif successful_read and artwork:
+            response.headers["Cache-Control"] = REVALIDATE_CACHE
+        elif successful_read and path.startswith("/jackets/"):
+            # Jacket routes set their policy only after source/revision validation.
+            response.headers.setdefault("Cache-Control", "no-store")
+        elif auth_config.required or path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    def public_many(charts, fields=None):
+        urls = {}
+        result = []
+        for chart in charts:
+            original = chart.get("jacket_url")
+            if original not in urls:
+                urls[original] = previews.url(original)
+            item = (
+                {field: chart.get(field) for field in fields}
+                if fields
+                else {key: value for key, value in chart.items() if not key.startswith("_")}
+            )
+            item["thumbnail_url"] = urls[original]
+            result.append(item)
+        return result
+
     def public(c):
-        return {key: value for key, value in c.items() if not key.startswith("_")}
+        return public_many([c])[0]
 
     def filtered(
         items,
@@ -583,7 +628,7 @@ def create_app(store=None, updater=None):
     ):
         items = sort_charts(filtered(store.all_charts(), **filters), sort)
         return {
-            "items": [public(c) for c in items[offset : offset + limit]],
+            "items": public_many(items[offset : offset + limit]),
             "total": len(items),
             "offset": offset,
             "limit": limit,
@@ -593,7 +638,7 @@ def create_app(store=None, updater=None):
     def completion_table(filters: dict = Depends(chart_filters), sort: ChartSort = "constant_desc"):
         items = sort_charts(filtered(store.all_charts(), **filters), sort)
         return {
-            "items": [{field: c.get(field) for field in COMPLETION_FIELDS} for c in items],
+            "items": public_many(items, COMPLETION_FIELDS),
             "total": len(items),
             "summary": selection_summary(items),
             "generated_at": now(),
@@ -683,7 +728,8 @@ def create_app(store=None, updater=None):
 
     @app.get("/api/ap-records")
     def ap_records():
-        return store.ap_records()
+        records = store.ap_records()
+        return {**records, "items": public_many(records["items"])}
 
     def record_conflict(chart_key):
         return HTTPException(
@@ -799,17 +845,33 @@ def create_app(store=None, updater=None):
             ) from exc
         return result
 
+    @app.get("/jackets/thumbnails/{song_id}/{revision}.webp")
+    def jacket_thumbnail(song_id: str, revision: str, request: Request):
+        try:
+            _, current = previews.source(song_id + ".png")
+            if current != revision:
+                raise FileNotFoundError(revision)
+            etag = f'"{revision}"'
+            headers = {"Cache-Control": IMMUTABLE_CACHE, "ETag": etag}
+            if etag_matches(request.headers.get("if-none-match"), etag):
+                return Response(status_code=304, headers=headers)
+            return Response(
+                previews.image(song_id, revision), media_type="image/webp", headers=headers
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "曲绘预览不存在，请刷新曲库列表。") from exc
+
     @app.get("/jackets/{filename}")
-    def jacket(filename: str):
-        if not re.fullmatch(r"[0-9]+\.png", filename):
-            raise HTTPException(404, "曲绘不存在")
-        for directory in (store.catalog_directory(), store.catalog_root):
-            path = directory / "jackets" / filename
-            if path.is_file():
-                return FileResponse(
-                    path, media_type="image/png", headers={"Cache-Control": "no-cache"}
-                )
-        raise HTTPException(404, "曲绘不存在")
+    def jacket(filename: str, request: Request):
+        try:
+            path, revision = previews.source(filename)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "曲绘不存在") from exc
+        etag = f'"{revision}-original"'
+        headers = {"Cache-Control": REVALIDATE_CACHE, "ETag": etag}
+        if etag_matches(request.headers.get("if-none-match"), etag):
+            return Response(status_code=304, headers=headers)
+        return FileResponse(path, media_type="image/png", headers=headers)
 
     app.mount("/cover-assets", StaticFiles(directory=assets), name="cover-assets")
     if frontend.is_dir():

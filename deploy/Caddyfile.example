@@ -1,7 +1,7 @@
 # The app owns Master Key login; enable this only after its auth preflight passes.
 maimai.example.com {
+	encode zstd gzip
 	header {
-		Cache-Control "private, no-store"
 		X-Content-Type-Options nosniff
 		Referrer-Policy same-origin
 		X-Frame-Options DENY

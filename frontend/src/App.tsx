@@ -279,7 +279,7 @@ function ChartPicker({
       <div className="search-results">
         {items.map((c) => (
           <button key={c.chart_key} className="pick-song" onClick={() => onPick(c)}>
-            <JacketImage src={c.jacket_url} loading="lazy" retryKey={revision} />
+            <JacketImage src={c.thumbnail_url || c.jacket_url} loading="lazy" retryKey={revision} />
             <div>
               <strong>{chartName(c)}</strong>
               <div className="chart-meta">
@@ -402,7 +402,7 @@ function Detail({
   return (
     <Drawer title="谱面记录" onClose={onClose}>
       <div className="detail-song">
-        <JacketImage src={c.jacket_url} />
+        <JacketImage src={c.thumbnail_url || c.jacket_url} />
         <div>
           <h2>{chartName(c)}</h2>
           <div className="detail-badges">
@@ -670,6 +670,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const [venues, setVenues] = useState<Venue[]>([]);
   const [records, setRecords] = useState<APRecords>({ items: [], count: 0 });
   const refreshSequence = useRef(0);
+  const refreshFlight = useRef<Promise<void> | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [busy, setBusy] = useState(false);
   const [listBusy, setListBusy] = useState(true);
@@ -732,31 +733,51 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     document.addEventListener('keydown', key);
     return () => document.removeEventListener('keydown', key);
   }, []);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback((invalidate = true) => {
     const sequence = ++refreshSequence.current;
-    const [nextVenues, nextSettings, nextRecords] = await Promise.all([
+    const request = Promise.all([
       api<{ items: Venue[] }>('/venues'),
       api<Settings>('/settings/divingfish'),
       api<APRecords>('/ap-records'),
-    ]);
-    if (sequence !== refreshSequence.current) return;
-    setRecords(nextRecords);
-    setVenues(nextVenues.items);
-    setSettings(nextSettings);
-    setRevision((value) => value + 1);
-    setError('');
+    ]).then(([nextVenues, nextSettings, nextRecords]) => {
+      if (sequence !== refreshSequence.current) return;
+      setRecords(nextRecords);
+      setVenues(nextVenues.items);
+      setSettings(nextSettings);
+      if (invalidate) setRevision((value) => value + 1);
+      setError('');
+    });
+    refreshFlight.current = request;
+    return request.finally(() => {
+      if (refreshFlight.current === request) refreshFlight.current = null;
+    });
   }, []);
   useEffect(() => {
-    void refresh().catch((error) => setError(messageOf(error)));
+    void refresh(false).catch((error) => setError(messageOf(error)));
   }, [refresh]);
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let sequence = 0;
     const update = () => {
-      if (document.visibilityState === 'visible')
-        void refresh().catch((error) => notify(messageOf(error)));
+      const request = ++sequence;
+      clearTimeout(timer);
+      if (document.visibilityState !== 'visible') return;
+      timer = setTimeout(async () => {
+        // A request started before the app regained focus may contain old device data.
+        await refreshFlight.current?.catch(() => undefined);
+        if (request !== sequence || document.visibilityState !== 'visible') return;
+        try {
+          await refresh();
+        } catch (error) {
+          if (request === sequence) notify(messageOf(error));
+        }
+      }, 180);
     };
     window.addEventListener('focus', update);
     document.addEventListener('visibilitychange', update);
     return () => {
+      sequence += 1;
+      clearTimeout(timer);
       window.removeEventListener('focus', update);
       document.removeEventListener('visibilitychange', update);
     };
@@ -806,7 +827,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
         if (!controller.signal.aborted) notify(messageOf(error));
       });
     return () => controller.abort();
-  }, [revision, notify]);
+  }, [catalogRevision, notify]);
   useEffect(() => {
     if (page !== 'ap' || !preferences || constantRange !== rangeQuery) return;
     const controller = new AbortController();
@@ -1335,7 +1356,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                                         <div className="song-cell">
                                           <JacketImage
                                             className="jacket"
-                                            src={c.jacket_url}
+                                            src={c.thumbnail_url || c.jacket_url}
                                             loading="lazy"
                                             retryKey={catalogRevision}
                                           />

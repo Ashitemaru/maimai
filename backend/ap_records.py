@@ -58,13 +58,13 @@ def pending_record(row):
 
 def read_record_state(conn):
     return {
-        name: {row["chart_key"]: dict(row) for row in conn.execute(f"SELECT * FROM {table}")}
-        for name, table in (
-            ("pending", "ap_pending"),
-            ("confirmed", "ap_confirmations"),
-            ("evidence", "ap_evidence"),
-            ("revisions", "ap_record_revisions"),
-            ("details", "provider_details"),
+        name: {row["chart_key"]: dict(row) for row in conn.execute(f"SELECT {fields} FROM {table}")}
+        for name, table, fields in (
+            ("pending", "ap_pending", "chart_key,id,venue,created_at,updated_at,revision,reason"),
+            ("confirmed", "ap_confirmations", "chart_key,venue,confirmed_at"),
+            ("evidence", "ap_evidence", "chart_key,fc,confirmed_at"),
+            ("revisions", "ap_record_revisions", "chart_key,revision"),
+            ("details", "provider_details", "chart_key,fs,dx_score,rate,ra"),
         )
     }
 
@@ -230,11 +230,13 @@ class APRecords:
             }
 
     def ap_records(self):
-        charts = {chart["chart_key"]: chart for chart in self.all_charts()}
         with self.db() as conn:
             rows = conn.execute(
                 "SELECT * FROM ap_pending ORDER BY updated_at DESC,chart_key"
             ).fetchall()
+        if not rows:
+            return {"items": [], "count": 0}
+        catalog = self.catalog
         fields = (
             "chart_key",
             "title",
@@ -246,7 +248,7 @@ class APRecords:
         )
         items = []
         for row in rows:
-            chart = charts.get(row["chart_key"])
+            chart = catalog.get(row["chart_key"])
             item = (
                 {key: chart.get(key) for key in fields}
                 if chart
@@ -257,6 +259,9 @@ class APRecords:
                     "record_revision": row["revision"],
                 }
             )
+            # Keep the revision paired with the pending row read in this query,
+            # even if another request edits it while chart metadata is assembled.
+            item["record_revision"] = row["revision"]
             item["pending_record"] = pending_record(row)
             items.append(item)
         return {"items": items, "count": len(items)}

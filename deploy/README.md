@@ -57,6 +57,15 @@ token digest is stored in `shared/runtime/auth.sqlite3`. Sessions survive restar
 logout revokes the session and changing the configured key hash invalidates all
 existing sessions. The Master Key is not stored in browser local storage.
 
+Let the application own Cache-Control; do not add a blanket no-store header in
+Caddy. The example enables gzip/zstd for HTML, JSON and scripts. Personal API
+responses and exports remain no-store. Authenticated jacket previews use versioned
+160px WebP URLs with a private immutable browser cache and conditional GET support;
+the original PNG URLs are preserved for image export and revalidate when reused.
+Unversioned cover artwork also revalidates; hashed frontend bundles can be cached.
+Derived previews live in shared/runtime/jacket-thumbnails, capped at 64 MiB and
+4,096 files. They are disposable and regenerated from catalog artwork after eviction.
+
 ## Activation and recovery
 
 Dependencies are installed into the final candidate release directory before the

@@ -14,6 +14,7 @@ export interface APRecordItem {
   difficulty_name: string;
   constant: number;
   jacket_url: string;
+  thumbnail_url?: string;
   record_revision: number;
   pending_record: PendingRecord;
 }
@@ -35,6 +36,7 @@ export interface Chart {
   level: string;
   constant: number;
   jacket_url: string;
+  thumbnail_url?: string;
   jp_release_version: string | null;
   jp_release_version_candidate: string | null;
   cn_version?: number | null;
@@ -125,6 +127,7 @@ export type CompletionChart = Pick<
   | 'level'
   | 'constant'
   | 'jacket_url'
+  | 'thumbnail_url'
   | 'is_complete'
   | 'is_ap'
   | 'status'

@@ -1977,7 +1977,7 @@ try {
     );
     const initial = await page.locator('.completion-tile').count();
     assert(
-      initial >= 120 && initial < completionItems.length,
+      initial >= 48 && initial < completionItems.length,
       `Completion should progressively mount, initial count ${initial}`,
     );
     assert.equal(

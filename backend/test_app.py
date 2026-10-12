@@ -332,6 +332,7 @@ class AppTests(unittest.TestCase):
             "pending_record",
             "record_revision",
             "venue_pending",
+            "thumbnail_url",
         }
         with patch.object(self.store, "all_charts", return_value=fixtures):
             for sort in (
