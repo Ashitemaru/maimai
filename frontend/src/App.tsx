@@ -303,7 +303,6 @@ function Detail({
   onClose,
   onSaved,
   onReload,
-  onSync,
   notify,
 }: {
   chart: Chart;
@@ -311,7 +310,6 @@ function Detail({
   onClose: () => void;
   onSaved: () => Promise<void>;
   onReload: () => Promise<void>;
-  onSync: () => void;
   notify: (message: string) => void;
 }) {
   const [venue, setVenue] = useState(c.pending_record?.venue || '');
@@ -423,10 +421,6 @@ function Detail({
           {combo && <span>{combo}</span>}
           {syncStatus && <span>{syncStatus}</span>}
         </div>
-        <button className="btn quiet" onClick={onSync}>
-          <Icon name="sync" />
-          同步
-        </button>
       </div>
       {!combo && (
         <div className="record-status">
@@ -1522,7 +1516,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
           onClose={closeModal}
           onSaved={refresh}
           onReload={() => openDetail(detail, true)}
-          onSync={sync}
           notify={notify}
         />
       )}{' '}
