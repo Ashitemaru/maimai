@@ -127,11 +127,11 @@ try {
   assert.equal(countSummary(), 1, 'Initial metadata loading must not repeat the venue summary');
   assert.deepEqual(await page.locator('.venue-summary-table thead th').allTextContents(), [
     '机厅',
-    'AP 12+',
-    'AP 13',
-    'AP 13+',
-    'AP 14',
-    'AP 14+/15',
+    '12+',
+    '13',
+    '13+',
+    '14',
+    '14+/15',
     '合计',
   ]);
   assert.equal(await page.locator('.venue-summary-entry').count(), 4);

@@ -93,7 +93,7 @@ export function VenueSummary({ revision }: { revision: number }) {
                 <th scope="col">机厅</th>
                 {data.levels.map((level) => (
                   <th key={level.value} scope="col">
-                    AP {level.label}
+                    {level.label}
                   </th>
                 ))}
                 <th scope="col">合计</th>
@@ -108,9 +108,11 @@ export function VenueSummary({ revision }: { revision: number }) {
                       <span>小计</span>
                     </th>
                     {data.levels.map((level) => (
-                      <td key={level.value}>{sum(group, level.value)}</td>
+                      <td key={level.value} data-empty={!sum(group, level.value)}>
+                        {sum(group, level.value)}
+                      </td>
                     ))}
-                    <td>{sum(group)}</td>
+                    <td data-empty={!sum(group)}>{sum(group)}</td>
                   </tr>
                   {group.map((row) => (
                     <tr key={row.name} className="venue-summary-entry">
@@ -120,7 +122,7 @@ export function VenueSummary({ revision }: { revision: number }) {
                           {row.counts[level.value] || 0}
                         </td>
                       ))}
-                      <td>{row.total}</td>
+                      <td data-empty={!row.total}>{row.total}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -139,9 +141,11 @@ export function VenueSummary({ revision }: { revision: number }) {
               <tr>
                 <th scope="row">合计</th>
                 {data.levels.map((level) => (
-                  <td key={level.value}>{sum(rows, level.value)}</td>
+                  <td key={level.value} data-empty={!sum(rows, level.value)}>
+                    {sum(rows, level.value)}
+                  </td>
                 ))}
-                <td>{sum(rows)}</td>
+                <td data-empty={!sum(rows)}>{sum(rows)}</td>
               </tr>
             </tfoot>
           </table>

@@ -14,6 +14,7 @@
   --text: #263344;
   --text-secondary: #52647b;
   --muted: #68788d;
+  --text-faint: #a3adba;
   --accent: #d94667;
   --accent-hover: #c83758;
   --accent-soft: #fff0f4;
@@ -1829,7 +1830,7 @@ textarea {
   font-weight: 400;
 }
 .venue-summary-table td[data-empty='true'] {
-  color: var(--muted);
+  color: var(--text-faint);
 }
 .venue-summary-table tr > :last-child {
   font-weight: 650;
