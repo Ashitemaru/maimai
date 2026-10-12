@@ -20,6 +20,13 @@ let unavailable = false;
 let loginDelay = 0;
 const data = {
   '/api/venues': { items: [] },
+  '/api/venues/summary': {
+    levels: ['12+', '13', '13+', '14', '14+/15'].map((value) => ({ value, label: value })),
+    items: [],
+    totals: { '12+': 0, 13: 0, '13+': 0, 14: 0, '14+/15': 0 },
+    total: 0,
+    pending_count: 0,
+  },
   '/api/ap-records': { items: [], count: 0 },
   '/api/settings/divingfish': { configured: false, source: null, sync: null },
   '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
@@ -154,6 +161,7 @@ try {
   loginDelay = 0;
   assert.equal(await page.locator('.auth-page').count(), 0);
   assert(privateRequests.length > 0);
+  assert.equal(await page.locator('.venue-summary-total').innerText(), '0 家机厅 · 0 AP');
   assert.equal(
     await page
       .evaluate(() =>

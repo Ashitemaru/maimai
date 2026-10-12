@@ -269,6 +269,13 @@ try {
         '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
         '/api/catalog/update': catalog,
         '/api/venues': { items: [] },
+        '/api/venues/summary': {
+          levels: ['12+', '13', '13+', '14', '14+/15'].map((value) => ({ value, label: value })),
+          items: [],
+          totals: { '12+': 0, 13: 0, '13+': 0, 14: 0, '14+/15': 0 },
+          total: 0,
+          pending_count: 0,
+        },
         '/api/ap-records': { items: [], count: 0 },
         '/api/summary': summary,
         '/api/charts': { items: [chart], total: 1, offset: 0, limit: 12 },
@@ -356,7 +363,10 @@ try {
       const job = await bounded(gate.started.promise, 'Export creation was not reached');
       if (action === 'cancel')
         await page.getByRole('button', { name: '取消导出', exact: true }).tap();
-      else await page.getByRole('link', { name: '我的机厅', exact: true }).tap();
+      else {
+        await page.getByRole('link', { name: '我的机厅', exact: true }).tap();
+        assert.equal(await page.locator('.venue-summary-total').innerText(), '0 家机厅 · 0 AP');
+      }
       gate.release.resolve();
       await bounded(job.deleted.promise, `The ${action} export must DELETE its late-created job`);
       assert.equal(job.image, null, 'Cancelled job must not upload a partial image');
