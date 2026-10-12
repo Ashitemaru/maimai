@@ -63,6 +63,32 @@ DELETE /api/charts/{chart_key}/ap-record?expected_revision=N -> {chart}
 PUT/DELETE /api/charts/{chart_key}/manual -> 410; obsolete immediate-AP writes.
 GET /api/venues -> {items:[{name,count,last_used_at}]}
   Includes recent pending venue choices; count includes only completed charts.
+GET /api/venues/map -> {items:[{name,city,total,pending_count,location,jackets}]}
+  location is null or {place_name,address,latitude,longitude,coordinate_system,
+  accuracy,closed_status,source,updated_at}. All API coordinates are WGS84.
+  Address-only locations have both coordinates null. Closed venues retain their
+  historical position; a change of location never renames or reassigns AP records.
+  jackets contains at most three confirmed AP charts per venue, with chart_key,
+  title,jacket_url,thumbnail_url,difficulty,difficulty_name,level,constant,status,
+  type,achievement. No pending claim counts as a completed AP.
+GET /api/venues/charts?name=&offset=0&limit=60 -> {items:[Chart],total,offset,limit}
+  Exact venue match, confirmed AP only; max limit 100. Sort by current constant
+  descending, then ID and difficulty ascending. Only the requested page is returned.
+PUT /api/venues/location {name,place_name,address,latitude,longitude,accuracy,closed_status}
+  -> {name,location}. Saves directly and can create a new named venue.
+  latitude/longitude must be finite in range and both present or both null.
+  When null, place_name or address is required. accuracy is exact|building|
+  approximate|unknown; closed_status is unknown|open|closed|probably_closed.
+  Both default to unknown. No AP state is modified; source is recorded as user.
+GET /api/venues/search?q=&city= -> {items,provider,attribution,attribution_url}
+  Explicit user search only; no autocomplete or automatic background requests.
+  Default provider is Photon https://photon.komoot.io/api/. MAIMAI_GEOCODER_URL
+  can select another Photon endpoint or disable lookup with an empty value.
+  Results use the same WGS84 location fields, with approximate accuracy. Results
+  are cached for 7 days (at most 512 queries). Uncached requests are limited to
+  one per second across app workers. HTTP timeouts and safe error messages keep
+  provider errors separate from direct map/address editing. Display attribution.
+  All venue map/location APIs require the existing session and use no-store.
 GET /api/settings/divingfish -> {configured,source:"environment"|"local"|null,sync}
 PUT /api/settings/divingfish {token:"Import-Token"} -> same public settings.
   Empty token clears local saved token. Token is never returned or logged.

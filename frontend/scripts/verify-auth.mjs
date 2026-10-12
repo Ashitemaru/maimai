@@ -20,6 +20,7 @@ let unavailable = false;
 let loginDelay = 0;
 const data = {
   '/api/venues': { items: [] },
+  '/api/venues/map': { items: [] },
   '/api/venues/summary': {
     levels: ['12+', '13', '13+', '14', '14+/15'].map((value) => ({ value, label: value })),
     items: [],
@@ -127,6 +128,12 @@ const origin = 'http://127.0.0.1:' + server.address().port;
 const browser = await launchBrowser();
 try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });
+  await context.route('https://tile.openstreetmap.org/**', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" />',
+    }),
+  );
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(origin + '/#venues');
@@ -161,6 +168,7 @@ try {
   loginDelay = 0;
   assert.equal(await page.locator('.auth-page').count(), 0);
   assert(privateRequests.length > 0);
+  await page.getByRole('button', { name: '汇总表', exact: true }).click();
   assert.equal(await page.locator('.venue-summary-total').innerText(), '0 家机厅 · 0 AP');
   assert.equal(
     await page
@@ -215,6 +223,12 @@ try {
       hasTouch: true,
       deviceScaleFactor: 2,
     });
+    await mobile.route('https://tile.openstreetmap.org/**', (route) =>
+      route.fulfill({
+        contentType: 'image/svg+xml',
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" />',
+      }),
+    );
     const mobilePage = await mobile.newPage();
     mobilePage.on('pageerror', (error) => errors.push(error.message));
     await mobilePage.goto(origin + '/#venues');

@@ -386,6 +386,7 @@ async function mock(context, { completionItems } = {}) {
           { name: '测试很长的机厅名字 — 城市购物中心店', count: 7 },
         ],
       };
+    else if (pathname === '/api/venues/map') value = { items: [] };
     else if (pathname === '/api/venues/summary')
       value = {
         levels: ['12+', '13', '13+', '14', '14+/15'].map((value) => ({ value, label: value })),
@@ -483,7 +484,12 @@ async function mock(context, { completionItems } = {}) {
   // The audit is self-contained: no request may escape the isolated static server.
   await context.route('**/*', async (route) => {
     const url = new URL(route.request().url());
-    if (url.origin !== origin) {
+    if (url.origin === 'https://tile.openstreetmap.org') {
+      await route.fulfill({
+        contentType: 'image/svg+xml',
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" />',
+      });
+    } else if (url.origin !== origin) {
       errors.push(`External request blocked: ${url.origin}${url.pathname}`);
       await route.abort();
     } else await route.fallback();
@@ -1870,6 +1876,7 @@ try {
     await badges(page.locator('.cover-song'), `${name}-cover selection`);
     await audit(page, `${name}-cover`);
     await page.goto(origin + '/#venues', { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '汇总表', exact: true }).click();
     await page.locator('.venue-summary-entry').first().waitFor();
     await audit(page, `${name}-venues`);
     await page.goto(origin + '/#settings', { waitUntil: 'networkidle' });

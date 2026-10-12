@@ -163,6 +163,12 @@ try {
     isMobile: true,
     hasTouch: true,
   });
+  await context.route('https://tile.openstreetmap.org/**', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" />',
+    }),
+  );
   await context.route('**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -293,6 +299,25 @@ try {
   const beta = page.locator('.completion-tile[data-chart-key="9101:3"]');
   const save = () => drawer.getByRole('button', { name: '保存待核记录', exact: true }).click();
   const close = () => drawer.getByRole('button', { name: '关闭', exact: true }).click();
+  const cancelNewVenueLocation = async (name, chart) => {
+    const editor = page.getByRole('dialog', { name: '编辑机厅位置' });
+    await editor.waitFor();
+    assert.equal(await editor.getByLabel('机厅名称', { exact: true }).inputValue(), name);
+    const recordBeforeCancel = structuredClone(chart);
+    const mutationsBeforeCancel = mutations.length;
+    await editor.getByRole('button', { name: '取消', exact: true }).click();
+    await editor.waitFor({ state: 'detached' });
+    assert.deepEqual(
+      chart,
+      recordBeforeCancel,
+      'Cancelling location editing must preserve AP and buffer facts',
+    );
+    assert.equal(
+      mutations.length,
+      mutationsBeforeCancel,
+      'Cancelling location editing must not write an AP record',
+    );
+  };
   const settle = async () => {
     await page.waitForLoadState('networkidle');
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
@@ -317,8 +342,9 @@ try {
   assert.equal(await alpha.getAttribute('data-complete'), 'false');
   assert.equal(await alpha.locator('.completion-result').count(), 0);
   await alpha.getByLabel('待核实', { exact: true }).waitFor();
+  await cancelNewVenueLocation('【广州】新机厅', charts[0]);
   checks.push(
-    'Mobile venue-only form uses recent venue; an accepted request with lost response retries idempotently without claiming AP',
+    'Mobile venue-only form uses recent venue; a lost response retries idempotently; new-venue location editing can be cancelled without claiming AP or removing the buffer record',
   );
   await page.reload();
   await alpha.getByLabel('待核实', { exact: true }).waitFor();
@@ -330,6 +356,11 @@ try {
   await save();
   await drawer.waitFor({ state: 'detached' });
   assert.equal(charts[0].pending_record.venue, '【上海】最近机厅');
+  assert.equal(
+    await page.locator('.venue-editor').count(),
+    0,
+    'An existing venue must not open new-venue location editing',
+  );
   await page.getByRole('button', { name: '取消登记', exact: true }).click();
   await page.getByText('暂无待核记录', { exact: true }).waitFor();
   assert.equal(charts[0].is_ap, false);
@@ -341,6 +372,7 @@ try {
   await drawer.getByLabel('AP 机厅', { exact: true }).fill('【广州】新机厅');
   await save();
   await drawer.waitFor({ state: 'detached' });
+  await cancelNewVenueLocation('【广州】新机厅', charts[0]);
   await page.getByRole('link', { name: /待核记录/ }).click();
   await page.getByRole('button', { name: '同步水鱼', exact: true }).click();
   await page.getByText('水鱼暂未显示 AP', { exact: true }).waitFor();
@@ -373,6 +405,7 @@ try {
   await drawer.waitFor({ state: 'detached' });
   await beta.locator('.completion-result').waitFor();
   await beta.getByLabel('待核实', { exact: true }).waitFor();
+  await cancelNewVenueLocation('【潮州】第二机厅', charts[1]);
   await beta.click();
   await drawer.getByRole('button', { name: '取消登记', exact: true }).click();
   await drawer.waitFor({ state: 'detached' });

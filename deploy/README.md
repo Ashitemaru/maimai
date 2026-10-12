@@ -104,3 +104,24 @@ schema-compatible releases; destructive migrations need a separate reviewed plan
 Tests use fake GitHub archives, fake service management and temporary SQLite
 databases. They do not prove the first real asset download, server wheel install,
 systemd sandbox or public proxy configuration. Validate those during bootstrap.
+
+## Venue map and place lookup
+
+Venue locations live in the private `venue_locations` table in `personal.sqlite3`.
+The migration only adds tables. Locations use WGS84 coordinates; converting a
+GCJ-02 source is an import responsibility, never an inferred API behavior. Location
+edits do not rename personal venues or change confirmed/pending AP records.
+Initial personal location seeds are imported privately, never bundled in releases.
+
+The map requests only visible OpenStreetMap tiles, with the browser cache and a
+visible attribution. Configure Caddy `Referrer-Policy strict-origin-when-cross-origin`
+so the tile provider receives the site origin. Do not add offline tile prefetching.
+See https://operations.osmfoundation.org/policies/tiles/ for provider requirements.
+
+User-triggered place search uses Photon's public endpoint, with a shared one-request
+per second limit and a bounded seven-day SQLite cache. No autocomplete or background
+geocoding is performed. Set `MAIMAI_GEOCODER_URL` to another Photon-compatible endpoint
+without a code release; set it to an empty string to disable remote search. The public
+endpoint is best-effort (https://github.com/komoot/photon#demo-server); manual map
+selection and address entry remain available when search is unavailable. Only the
+search text is sent to Photon; AP records and saved venue lists stay in the app.

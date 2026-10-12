@@ -59,6 +59,8 @@ const server = http.createServer(async (request, response) => {
       else if (pathname === '/api/settings/divingfish')
         data = { configured: true, source: 'local', sync: null };
       else if (pathname === '/api/venues') data = { items: [] };
+      else if (pathname === '/api/venues/map')
+        data = { items: items.map((item) => ({ ...item, location: null, jackets: [] })) };
       else if (pathname === '/api/ap-records') data = { items: [], count: 0 };
       else if (pathname === '/api/chart-filters')
         data = { constants: [1, 15], versions: [], cn_versions: [] };
@@ -109,9 +111,18 @@ async function waitCount(page, text) {
 }
 try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.route('https://tile.openstreetmap.org/**', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" />',
+    }),
+  );
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(origin + '/#venues', { waitUntil: 'networkidle' });
+  assert.equal(countSummary(), 0, 'The default map must not prefetch the summary');
+  assert.equal(await page.locator('.venue-atlas-card').count(), 4);
+  await page.getByRole('button', { name: '汇总表', exact: true }).click();
   await waitCount(page, '4 家机厅 · 19 AP');
   assert.equal(countSummary(), 1, 'Initial metadata loading must not repeat the venue summary');
   assert.deepEqual(await page.locator('.venue-summary-table thead th').allTextContents(), [
@@ -204,9 +215,17 @@ try {
     hasTouch: true,
     deviceScaleFactor: 3,
   });
+  await mobile.route('https://tile.openstreetmap.org/**', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" />',
+    }),
+  );
   const phone = await mobile.newPage();
   phone.on('pageerror', (error) => errors.push(error.message));
   await phone.goto(origin + '/#venues', { waitUntil: 'networkidle' });
+  await phone.getByRole('button', { name: '汇总表', exact: true }).click();
+  await phone.getByRole('alert').waitFor();
   assert.equal(await phone.getByRole('alert').textContent(), '机厅暂时无法加载重试');
   assert.equal(
     await phone.locator('.venue-summary-table').count(),

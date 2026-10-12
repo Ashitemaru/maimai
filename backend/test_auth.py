@@ -69,6 +69,17 @@ class AuthenticationTests(unittest.TestCase):
     def login(self, key=MASTER_KEY, client=None, **kwargs):
         return (client or self.client).post("/api/auth/login", json={"master_key": key}, **kwargs)
 
+    def test_venue_location_save_requires_session_and_same_origin(self):
+        payload = {"name": "synthetic venue", "address": "synthetic address"}
+        self.assertEqual(self.client.put("/api/venues/location", json=payload).status_code, 401)
+        self.assertEqual(self.login().status_code, 200)
+        response = self.client.put(
+            "/api/venues/location", json=payload, headers={"Origin": "https://foreign.invalid"}
+        )
+        self.assertEqual(response.status_code, 403)
+        with self.store.db() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM venue_locations").fetchone()[0], 0)
+
     def test_public_login_shell_and_exact_bundle_paths_do_not_unlock_private_routes(self):
         for path in ("/", "/index.html", "/assets/bundle.js", "/manifest.webmanifest", "/icon.svg"):
             with self.subTest(path=path):
@@ -76,6 +87,9 @@ class AuthenticationTests(unittest.TestCase):
         for path in (
             "/api/summary",
             "/api/venues/summary",
+            "/api/venues/map",
+            "/api/venues/charts?name=synthetic",
+            "/api/venues/search?q=synthetic",
             "/api/catalog/data",
             "/api/health",
             "/api/ready",

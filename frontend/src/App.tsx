@@ -17,7 +17,8 @@ import type {
 import { PendingRecords } from './PendingRecords';
 import { CompletionTable } from './CompletionTable';
 import { CompletionMatrix } from './CompletionMatrix';
-import { VenueSummary } from './VenueSummary';
+import { VenuesPage } from './VenuesPage';
+import { VenueLocationEditor } from './VenueLocationEditor';
 import { PreferencesPanel, PreferencesStatus } from './Preferences';
 import { CoverPage } from './CoverWorkshop';
 import type { CoverState } from './CoverWorkshop';
@@ -305,6 +306,7 @@ function Detail({
   onReload,
   onCover,
   onSync,
+  onNewVenue,
   notify,
 }: {
   chart: Chart;
@@ -314,6 +316,7 @@ function Detail({
   onReload: () => Promise<void>;
   onCover: (chart: Chart) => void;
   onSync: () => void;
+  onNewVenue: (name: string) => void;
   notify: (message: string) => void;
 }) {
   const [venue, setVenue] = useState(
@@ -365,6 +368,8 @@ function Detail({
       await onSaved();
       if (active.current) onClose();
       notify('已加入待核记录');
+      if (active.current && submittedVenue && !venues.some((item) => item.name === submittedVenue))
+        onNewVenue(submittedVenue);
     } catch (error) {
       showError(error);
     } finally {
@@ -679,6 +684,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const [revision, setRevision] = useState(0);
   const [toast, setToast] = useState('');
   const [detail, setDetail] = useState<Chart | null>(null);
+  const [newVenueLocation, setNewVenueLocation] = useState<string | null>(null);
   const detailRequest = useRef<{ controller: AbortController; sequence: number } | null>(null);
   const detailSequence = useRef(0);
   const [picker, setPicker] = useState<'record' | 'cover' | null>(null);
@@ -1531,7 +1537,12 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               {page === 'venues' && (
                 <>
                   <Heading eyebrow="PLACES & PERFECTS" title="我的机厅" actions={recordButton} />
-                  <VenueSummary revision={revision} />
+                  <VenuesPage
+                    revision={revision}
+                    onChanged={refresh}
+                    onSelect={(chart) => void openDetail(chart)}
+                    notify={notify}
+                  />
                 </>
               )}
               {page === 'settings' && (
@@ -1561,9 +1572,21 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
           onReload={() => openDetail(detail, true)}
           onCover={chooseCover}
           onSync={sync}
+          onNewVenue={setNewVenueLocation}
           notify={notify}
         />
       )}{' '}
+      {newVenueLocation && (
+        <VenueLocationEditor
+          venue={{ name: newVenueLocation, location: null }}
+          onClose={() => setNewVenueLocation(null)}
+          onSaved={() => {
+            setNewVenueLocation(null);
+            notify('机厅位置已保存');
+            void refresh().catch((error) => notify(messageOf(error)));
+          }}
+        />
+      )}
       {picker && (
         <ChartPicker
           mode={picker}

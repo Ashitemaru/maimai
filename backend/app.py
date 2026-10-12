@@ -40,6 +40,15 @@ from .store import (
     now,
     summarize,
 )
+from .venue_locations import (
+    PlaceSearchError,
+    VenueLocationInput,
+    confirmed_venue_charts,
+    initialize_locations,
+    save_location,
+    search_places,
+    venue_map,
+)
 from .venue_summary import summarize_venues
 
 VERSION_ORDER = (
@@ -286,6 +295,7 @@ def create_app(store=None, updater=None):
                 "Production frontend/index.html is missing; set MAIMAI_FRONTEND_DIR."
             )
     store = store or Store()
+    initialize_locations(store)
     updater = updater if updater is not None else CatalogUpdates(store)
     previews = JacketPreviews(
         store.runtime / "jacket-thumbnails",
@@ -327,6 +337,11 @@ def create_app(store=None, updater=None):
             # Rejected NaN/Infinity values cannot be echoed through a JSON response.
             return JSONResponse(
                 {"detail": "默认定数须为 0–20 的有限数值，精确到 0.1，且下限不能高于上限。"},
+                status_code=422,
+            )
+        if request.url.path == "/api/venues/location":
+            return JSONResponse(
+                {"detail": "地点信息无效，请检查名称、地址及经纬度。经纬度须同时填写或留空。"},
                 status_code=422,
             )
         return await request_validation_exception_handler(request, exc)
@@ -775,6 +790,41 @@ def create_app(store=None, updater=None):
             names = [row["name"] for row in conn.execute("SELECT name FROM venues")]
             pending_records = [dict(row) for row in conn.execute("SELECT venue FROM ap_pending")]
         return summarize_venues(store.all_charts(), names, pending_records)
+
+    @app.get("/api/venues/map")
+    def venue_map_data():
+        result = venue_map(store)
+        for item in result["items"]:
+            item["jackets"] = public_many(item["jackets"])
+        return result
+
+    @app.get("/api/venues/charts")
+    def venue_charts(
+        name: str = Query(min_length=1, max_length=200),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=60, ge=1, le=100),
+    ):
+        items = confirmed_venue_charts(store.all_charts(), name)
+        return {
+            "items": public_many(items[offset : offset + limit]),
+            "total": len(items),
+            "offset": offset,
+            "limit": limit,
+        }
+
+    @app.put("/api/venues/location")
+    def update_venue_location(value: VenueLocationInput):
+        return save_location(store, value)
+
+    @app.get("/api/venues/search")
+    def venue_search(
+        q: str = Query(min_length=1, max_length=300),
+        city: str = Query(default="", max_length=100),
+    ):
+        try:
+            return search_places(store, q, city)
+        except PlaceSearchError as exc:
+            raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
 
     @app.get("/api/settings/divingfish")
     def settings():

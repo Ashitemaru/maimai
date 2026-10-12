@@ -41,3 +41,13 @@ On iPhone/iPad, image generation and saving are separate actions. The app keeps 
 ## Master Key entry
 
 `verify:auth` runs against an isolated cookie-backed fixture server. It verifies that the application never mounts or requests personal data before authentication, invalid and rate-limited key messages, show/hide and keyboard submission, loading states, cookie persistence through refresh, logout, expired-session 401 handling, and failed-session-request recovery. The key is kept only in form memory and never written to localStorage, sessionStorage, or a JavaScript-readable cookie. Desktop, 320px, and 390px screenshots and a report are written under `../output/auth-ui-audit`. These UI fixtures do not establish backend cookie security, which is verified by the backend authentication suite.
+
+## Venue atlas
+
+`verify:venue-map` covers SVG jacket clicks, paginated AP details, cancel without
+writes, explicit place search, failed-save recovery, persistence through reload,
+address-only creation, and map selection at a 390px viewport. Every external map
+tile is replaced by a synthetic SVG during tests; no map-provider prefetching is
+performed. The AP buffer regression also verifies that dismissing a new venue's
+location form preserves its already-saved pending record. Reports are saved under
+`../output/venue-map-audit`.

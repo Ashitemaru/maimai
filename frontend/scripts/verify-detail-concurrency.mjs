@@ -124,6 +124,12 @@ const origin = 'http://127.0.0.1:' + server.address().port;
 const browser = await launchBrowser();
 try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.route('https://tile.openstreetmap.org/**', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" />',
+    }),
+  );
   // Deliberately ignore AbortSignal for detail reads so sequence invalidation is
   // exercised even if a transport or cached response arrives after cancellation.
   await context.addInitScript(() => {
@@ -209,6 +215,7 @@ try {
       '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
       '/api/catalog/update': catalog,
       '/api/venues': { items: [] },
+      '/api/venues/map': { items: [] },
       '/api/venues/summary': {
         levels: ['12+', '13', '13+', '14', '14+/15'].map((value) => ({ value, label: value })),
         items: [],
@@ -277,6 +284,7 @@ try {
   navigated.release.resolve();
   await settle();
   assert.equal(await page.getByRole('dialog').count(), 0);
+  await page.getByRole('button', { name: '汇总表', exact: true }).click();
   assert.equal(await page.locator('.venue-summary-total').innerText(), '0 家机厅 · 0 AP');
   checks.push('Leaving the page invalidates pending detail responses');
   await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
@@ -315,6 +323,20 @@ try {
   assert.equal(charts[1].pending_record.venue, 'Reviewed update');
   assert.equal(mutations.at(-1).expected_revision, 2);
   checks.push('Explicit reload restores the latest form and uses its revision for the next save');
+  const locationEditor = page.getByRole('dialog', { name: '编辑机厅位置' });
+  await locationEditor.waitFor();
+  assert.equal(
+    await locationEditor.getByLabel('机厅名称', { exact: true }).inputValue(),
+    'Reviewed update',
+  );
+  const mutationsBeforeLocationCancel = mutations.length;
+  await locationEditor.getByRole('button', { name: '取消', exact: true }).click();
+  await locationEditor.waitFor({ state: 'detached' });
+  assert.equal(mutations.length, mutationsBeforeLocationCancel);
+  assert.equal(charts[1].pending_record.venue, 'Reviewed update');
+  checks.push(
+    'A new venue opens location editing after the AP buffer save; cancelling it preserves that saved AP record',
+  );
 
   await beta.click();
   await record.waitFor();
@@ -351,6 +373,7 @@ try {
   write.release.resolve();
   await settle();
   assert.equal(await record.getByRole('heading').textContent(), 'Alpha');
+  assert.equal(await page.locator('.venue-editor').count(), 0);
   checks.push('A completed write from a closed detail cannot close a subsequently opened detail');
   assert.deepEqual(errors, []);
   await fs.writeFile(
