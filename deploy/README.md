@@ -11,7 +11,9 @@ The archive has no enclosing directory. It contains `backend/*.py` excluding tes
 the core `scripts/*.py` allowlist in `deploy_release.py`, `requirements.lock`,
 `frontend/dist/**`, `RELEASE_SHA`, and optionally `deploy/**` for manual bootstrap
 updates. It must contain no runtime, catalogs, pictures, archives, credentials,
-symlinks or private records. Requirements are exact version pins with no URLs or
+symlinks or private records. The only allowed deployment JSON is the public
+`deploy/wahlap-runtime.lock.json` manifest; the external score runtime and its
+binary files never enter a release. Requirements are exact version pins with no URLs or
 pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other tests.
 
 ## One-time root bootstrap
@@ -77,7 +79,7 @@ request. GitHub errors/rate limits keep the running version and are retried on a
 later timer run; a release in progress is not an error.
 
 The deployer writes a recovery journal, stops the single application service
-(90-second systemd budget), makes SQLite online-backup copies of personal and
+(210-second systemd budget, allowing an active game sync to finish session cleanup), makes SQLite online-backup copies of personal and
 adjudications databases (plus the session database when present), changes
 `current` atomically and starts the new code.
 It accepts `/api/ready` only when `ok` is true and `release_sha` matches. A failed
@@ -104,6 +106,30 @@ schema-compatible releases; destructive migrations need a separate reviewed plan
 Tests use fake GitHub archives, fake service management and temporary SQLite
 databases. They do not prove the first real asset download, server wheel install,
 systemd sandbox or public proxy configuration. Validate those during bootstrap.
+
+## Direct game-score synchronization
+
+The Wahlap worker has separate, pinned dependencies and an explicitly provisioned
+runtime. See [Wahlap runtime setup](wahlap-runtime.md). Provision the runtime and
+`mai-journal-wahlap.socket` before setting `MAIMAI_WAHLAP_ENABLED=1` and
+`MAIMAI_WAHLAP_SOCKET=/run/mai-journal-wahlap.sock` in the application environment.
+Each private Unix socket connection starts a separate service using the current
+release, which launches the sandboxed worker. The web service retains its existing
+systemd hardening; only the broker disables `ProtectKernelTunables`, because its
+masked host `/proc` otherwise prevents bubblewrap from mounting a private `/proc`.
+The broker has no application EnvironmentFile, does not log the QR, and disables
+core dumps. The website can continue running if this optional runtime
+is unavailable. Only the worker's state directory is writable inside its Linux
+filesystem sandbox. The personal database, catalog and application credentials
+are not mounted there.
+
+The root-owned deployer must include the exact `wahlap-runtime.lock.json` allowlist
+entry before activating the first release that contains it. Normal CI releases
+do not replace that bootstrap script or install Wine/system packages. Existing
+personal scores and AP confirmations are migrated additively, without replacing
+their evidence. A runtime probe validates local dependencies only; an authenticated
+full score fetch and confirmed game logout are still required for end-to-end
+verification. Do not simulate those using unrelated accounts.
 
 ## Venue map and place lookup
 

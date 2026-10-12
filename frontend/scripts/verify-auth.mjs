@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { idleScoreSync } from './score-sync-fixture.mjs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -29,6 +30,7 @@ const data = {
     pending_count: 0,
   },
   '/api/ap-records': { items: [], count: 0 },
+  '/api/sync/status': idleScoreSync,
   '/api/settings/divingfish': { configured: false, source: null, sync: null },
   '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
   '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },

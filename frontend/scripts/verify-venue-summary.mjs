@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { idleScoreSync } from './score-sync-fixture.mjs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -56,6 +57,7 @@ const server = http.createServer(async (request, response) => {
       if (pathname === '/api/auth/session') data = { authenticated: true, auth_required: false };
       else if (pathname === '/api/settings/preferences')
         data = { default_constant_min: 13, default_constant_max: 13.9 };
+      else if (pathname === '/api/sync/status') data = idleScoreSync;
       else if (pathname === '/api/settings/divingfish')
         data = { configured: true, source: 'local', sync: null };
       else if (pathname === '/api/venues') data = { items: [] };

@@ -194,6 +194,8 @@ def checksum_for(data, name):
 
 
 def allowed_file(parts):
+    if parts == ("deploy", "wahlap-runtime.lock.json"):
+        return True
     if len(parts) == 1:
         return parts[0] in {"RELEASE_SHA", "requirements.lock"}
     if parts[0] == "backend":
@@ -325,7 +327,7 @@ class Host:
     def service(self, action):
         if action not in {"start", "stop", "restart"}:
             raise DeployError("Unsupported service operation")
-        self.run(["/usr/bin/sudo", "-n", "/usr/bin/systemctl", action, SERVICE], timeout=105)
+        self.run(["/usr/bin/sudo", "-n", "/usr/bin/systemctl", action, SERVICE], timeout=225)
 
     def ready(self, sha, timeout=60):
         deadline = time.monotonic() + timeout

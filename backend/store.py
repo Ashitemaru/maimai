@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -618,6 +619,8 @@ class Store(APRecords):
             )
             row = conn.execute("SELECT value FROM metadata WHERE key='last_sync'").fetchone()
             last_sync = json.loads(row[0]) if row else None
+            provider_source = (last_sync or {}).get("source", "divingfish")
+            provider_label = "华立" if provider_source == "wahlap" else "水鱼"
         items = ChartList(
             cn_versions=catalog.cn_versions, cn_matrix_versions=catalog.cn_matrix_versions
         )
@@ -688,19 +691,21 @@ class Store(APRecords):
             warnings = []
             if manual_ap is True and not provider_ap:
                 if last_sync:
-                    warnings.append("已保存你的 AP 记录；水鱼尚未记录 AP，可能还未传分。")
+                    warnings.append(
+                        f"已保存你的 AP 记录；{provider_label}尚未记录 AP，可能还未更新成绩。"
+                    )
                 else:
-                    warnings.append("已保存你的 AP 记录；尚未同步水鱼。")
+                    warnings.append("已保存你的 AP 记录；尚未同步成绩。")
             if manual_ap is False and provider_ap:
-                warnings.append("本地已按你的修改标为未完成；水鱼仍有 AP 记录。")
+                warnings.append(f"本地已按你的修改标为未完成；{provider_label}仍有 AP 记录。")
             if old and old["complete"] and not is_ap and manual_ap is None:
                 warnings.append("原表完成标记尚未核实为 AP（原表可能包含删曲豁免）。")
                 if last_sync:
-                    warnings.append("水鱼暂未记录 AP；保留原表完成状态，可稍后核对。")
+                    warnings.append(f"{provider_label}暂未记录 AP；保留原表完成状态，可稍后核对。")
             if evidence and not remote:
-                warnings.append("本次水鱼未返回这张成绩；保留此前核准记录。")
+                warnings.append(f"本次{provider_label}未返回这张成绩；保留此前核准记录。")
             elif evidence and not provider_ap:
-                warnings.append("水鱼当前成绩与此前 AP 证据不一致；保留已核准记录。")
+                warnings.append(f"{provider_label}当前成绩与此前 AP 证据不一致；保留已核准记录。")
             item.update(
                 {
                     "group": old["group_name"] if old else "catalog",
@@ -724,6 +729,7 @@ class Store(APRecords):
                     "provider_achievement": remote["achievement"] if remote else None,
                     "provider_fc": remote["fc"] if remote else None,
                     "provider_synced_at": remote["synced_at"] if remote else None,
+                    "provider_source": provider_source if remote else None,
                     "provider_fs": details["fs"] if details else None,
                     "provider_dx_score": details["dx_score"] if details else None,
                     "provider_rate": details["rate"] if details else None,
@@ -859,10 +865,18 @@ class Store(APRecords):
         if not self._sync_lock.acquire(blocking=False):
             raise SyncBusyError()
         try:
-            with self._token_lock:
-                token, _ = self.token()
-                generation = self._token_generation
-            yield token, generation
+            descriptor = os.open(self.runtime / ".score-sync.lock", os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise SyncBusyError() from None
+                with self._token_lock:
+                    token, _ = self.token()
+                    generation = self._token_generation
+                yield token, generation
+            finally:
+                os.close(descriptor)
         finally:
             self._sync_lock.release()
 

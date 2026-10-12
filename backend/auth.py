@@ -210,7 +210,7 @@ class AuthStore:
 
 
 class LoginBodyLimitMiddleware:
-    """Bound login bodies even when transfer encoding provides no Content-Length."""
+    """Bound credential bodies even without a Content-Length header."""
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -219,7 +219,7 @@ class LoginBodyLimitMiddleware:
         if not (
             scope["type"] == "http"
             and scope["method"] == "POST"
-            and scope["path"] == "/api/auth/login"
+            and scope["path"] in {"/api/auth/login", "/api/sync/wahlap"}
         ):
             await self.app(scope, receive, send)
             return
@@ -231,7 +231,7 @@ class LoginBodyLimitMiddleware:
             body.extend(message.get("body", b""))
             if len(body) > 8192:
                 response = JSONResponse(
-                    {"detail": "登录请求过大。"},
+                    {"detail": "请求过大，请检查输入。"},
                     status_code=413,
                     headers={"Cache-Control": "no-store"},
                 )

@@ -46,8 +46,21 @@ On iPhone/iPad, image generation and saving are separate actions. The app keeps 
 
 `verify:venue-map` covers SVG jacket clicks, paginated AP details, cancel without
 writes, explicit place search, failed-save recovery, persistence through reload,
-address-only creation, and map selection at a 390px viewport. Every external map
+search-result creation with a separate display name, minimal location payloads, and map selection at a 390px viewport. Every external map
 tile is replaced by a synthetic SVG during tests; no map-provider prefetching is
-performed. The AP buffer regression also verifies that dismissing a new venue's
-location form preserves its already-saved pending record. Reports are saved under
+performed. The AP buffer regression verifies empty initial venue selection, choosing only existing venues, and locking confirmed venue records. Reports are saved under
 `../output/venue-map-audit`.
+
+## Game score sync
+
+`verify:score-sync` decodes the original synthetic QR fixture with `jsQR` while
+`BarcodeDetector` is unavailable. It checks that no image is uploaded, only QR text
+is sent to the score endpoint, and the text is cleared after submission without
+browser persistence. It covers unavailable and unverified states, asynchronous
+job polling across page navigation, AP-buffer refresh, expired codes, failed jobs,
+and unreadable images. Uploading to DivingFish requires a saved Token and a prior
+Wahlap snapshot; it is a separate explicit action, reports skipped records, and
+never calls the old score-pull endpoint. The fixture makes no requests to game
+servers and does not prove that the live worker can read a real account or close
+a game session. Reports and 390px/desktop screenshots are saved under
+`../output/score-sync-audit`.

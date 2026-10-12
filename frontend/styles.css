@@ -3983,3 +3983,52 @@ textarea {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+/* Personal score sync */
+.score-sync-panels {
+  display: grid;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.qr-sync-form,
+.score-token-form {
+  margin-top: var(--space-4);
+}
+.qr-image-row,
+.score-sync-progress,
+.score-sync-counts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.qr-image-row {
+  margin-bottom: var(--space-4);
+}
+.qr-image-row > span,
+.score-sync-receipt > time,
+.score-sync-panels .form-actions > time {
+  color: var(--muted);
+  font-size: var(--font-ui);
+}
+.score-sync-progress,
+.score-sync-receipt {
+  margin-top: var(--space-4);
+}
+.score-sync-counts {
+  margin-top: var(--space-2);
+}
+.score-sync-counts strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.score-token-form {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+.score-sync-panels .settings-panel {
+  margin-bottom: 0;
+}
+.score-sync-panels .form-actions {
+  flex-wrap: wrap;
+}

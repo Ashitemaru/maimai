@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { idleScoreSync } from './score-sync-fixture.mjs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -417,6 +418,7 @@ async function mock(context, { completionItems } = {}) {
         total: 138,
         pending_count: 0,
       };
+    else if (pathname === '/api/sync/status') value = idleScoreSync;
     else if (pathname === '/api/settings/divingfish')
       value = { configured: false, source: null, sync: null };
     else if (pathname === '/api/catalog/update') value = status;

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { idleScoreSync } from './score-sync-fixture.mjs';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -271,6 +272,7 @@ try {
       }
       const fixtures = {
         '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
+        '/api/sync/status': idleScoreSync,
         '/api/settings/divingfish': { configured: false, source: null, sync: null },
         '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
         '/api/catalog/update': catalog,

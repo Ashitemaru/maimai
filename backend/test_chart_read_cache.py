@@ -76,7 +76,7 @@ class ChartReadCacheTests(unittest.TestCase):
         single["pending_record"]["reason"] = "incorrect"
         second = self.store.all_charts()
         self.assertEqual(second.cn_versions, [])
-        self.assertEqual(second[0]["pending_record"]["reason"], "待同步核实")
+        self.assertEqual(second[0]["pending_record"]["reason"], "等待华立核准")
 
     def test_personal_save_edit_cancel_and_sync_invalidate_without_a_timer(self):
         self.assertIsNone(self.store.chart(self.key)["pending_record"])

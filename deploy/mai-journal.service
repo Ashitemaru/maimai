@@ -19,7 +19,7 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/srv/mai-journal/current/venv/bin/python -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8766 --workers 1
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=90
+TimeoutStopSec=210
 KillMode=control-group
 UMask=0077
 NoNewPrivileges=yes

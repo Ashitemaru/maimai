@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { idleScoreSync } from './score-sync-fixture.mjs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -210,6 +211,7 @@ await page.route('**/api/**', async (route) => {
   }
   const defaults = {
     '/api/settings/preferences': { default_constant_min: 1, default_constant_max: 15 },
+    '/api/sync/status': idleScoreSync,
     '/api/settings/divingfish': { configured: false, sync: null },
     '/api/venues': { items: [] },
     '/api/ap-records': { items: [], count: 0 },

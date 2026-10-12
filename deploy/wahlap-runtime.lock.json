@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/XiaoLan9999/astrbot_plugin_maimai_updater",
+  "commit": "4aa10aea4e559b53e939d9013bde419a33417067",
+  "license_status": "No LICENSE, COPYING, or NOTICE file at this commit; not vendored or redistributed by this repository.",
+  "dependencies": ["httpx==0.28.1", "cryptography==50.0.2"],
+  "files": {
+    "maimai_official_interface/__init__.py": "7f8b8180eb007884cfc0f4b0abcf5c73848d18325d68604f8674729d184e8668",
+    "maimai_official_interface/client.py": "0ad46f146478e844fb4c0e0d134843a58f0bffebde328482a182c44a5e1aaa19",
+    "maimai_official_interface/protocol.py": "1ad6440d50530ccd04d965d2cf8444e6d5f56417c59599a0d034549a7e7cde78",
+    "maimai_official_interface/wine_bridge.py": "fb02cd230f58676de19dc5ffe15d4c3098eda15eae8e6045e92e1d00757c3122",
+    "maimai_official_interface/resources/core.dat": "48b91e2e794e6c6725fcc011040f703db60727f068bbbbdfaa3f145fc371697e",
+    "maimai_official_interface/resources/chime_bridge.exe": "13023cd2ead70594a17f3b41cf9f9adc8e81eb7acb9b9e6c50f66c7a3900455f"
+  }
+}

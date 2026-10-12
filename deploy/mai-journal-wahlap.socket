@@ -1,0 +1,14 @@
+[Unit]
+Description=mai journal private Wahlap sync socket
+
+[Socket]
+ListenStream=/run/mai-journal-wahlap.sock
+Accept=yes
+SocketUser=maimai
+SocketGroup=maimai
+SocketMode=0600
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

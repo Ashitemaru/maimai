@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections import Counter
@@ -11,6 +12,14 @@ from uuid import uuid4
 
 class RecordConflictError(Exception):
     """The venue claim changed since the client loaded it."""
+
+
+class ScoreAccountError(ValueError):
+    """A complete import belongs to a different already-bound game account."""
+
+
+class ScoreSourceError(ValueError):
+    """An older score provider may not replace the authoritative game snapshot."""
 
 
 def timestamp():
@@ -37,6 +46,8 @@ def initialize_records(conn):
         CREATE TABLE IF NOT EXISTS provider_syncs(
           id TEXT PRIMARY KEY, synced_at TEXT NOT NULL, receipt_json TEXT NOT NULL,
           records_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS score_sync_sources(
+          sync_id TEXT PRIMARY KEY, source TEXT NOT NULL, account_hash TEXT);
         CREATE TABLE IF NOT EXISTS provider_details(
           chart_key TEXT PRIMARY KEY, sync_id TEXT NOT NULL, fs TEXT,
           dx_score INTEGER, rate TEXT, ra REAL);
@@ -47,6 +58,10 @@ def initialize_records(conn):
     """)
     if "chart_json" not in {row[1] for row in conn.execute("PRAGMA table_info(ap_pending)")}:
         conn.execute("ALTER TABLE ap_pending ADD COLUMN chart_json TEXT NOT NULL DEFAULT '{}'")
+    conn.execute(
+        "INSERT OR IGNORE INTO score_sync_sources(sync_id,source) "
+        "SELECT id,'divingfish' FROM provider_syncs"
+    )
 
 
 def pending_record(row):
@@ -221,7 +236,7 @@ class APRecords:
                     "INSERT INTO ap_pending VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(chart_key) "
                     "DO UPDATE SET venue=excluded.venue,updated_at=excluded.updated_at,"
                     "revision=excluded.revision,reason=excluded.reason,chart_json=excluded.chart_json",
-                    (key, claim_id, venue, created_at, at, revision, "待同步核实", chart_json),
+                    (key, claim_id, venue, created_at, at, revision, "等待华立核准", chart_json),
                 )
                 conn.execute(
                     "INSERT INTO ap_record_requests VALUES(?,?,?)",
@@ -332,9 +347,27 @@ class APRecords:
             ]
         }
 
-    def import_provider(self, payload, eligible_records=None):
+    def import_provider(
+        self, payload, eligible_records=None, *, source="divingfish", account_id=None, outcome=None
+    ):
+        if source not in ("divingfish", "wahlap"):
+            raise ValueError("不支持的成绩来源。")
+        label = "华立" if source == "wahlap" else "水鱼"
         if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
-            raise ValueError("水鱼返回的数据不含完整 records 列表。")
+            raise ValueError(f"{label}返回的数据不含完整 records 列表。")
+        account_hash = None
+        if source == "wahlap":
+            if (
+                not isinstance(account_id, str)
+                or not account_id.isascii()
+                or not account_id.isdigit()
+                or not 0 < len(account_id) <= 20
+                or int(account_id) <= 0
+            ):
+                raise ScoreAccountError("华立账号信息不完整，未修改本地记录。")
+            account_hash = hashlib.sha256(f"wahlap:{int(account_id)}".encode()).hexdigest()
+            if not 0 < len(payload["records"]) <= 50000:
+                raise ValueError("华立未返回有效的完整成绩，未修改本地记录。")
         if eligible_records is None:
             eligible_records = self.pending_snapshot()
         catalog, waterfish_map = self._catalog_snapshot
@@ -343,7 +376,30 @@ class APRecords:
         incoming, details, unmatched, seen = [], [], [], set()
         try:
             for record in payload["records"]:
-                ext = waterfish_map.get(str(record["song_id"]))
+                if source == "wahlap":
+                    required = {"song_id", "level_index", "achievements", "fc", "fs", "dxScore"}
+                    if not isinstance(record, dict) or set(record) != required:
+                        raise ValueError("incomplete game score")
+                    if (
+                        isinstance(record["achievements"], bool)
+                        or not isinstance(record["achievements"], int | float)
+                        or record["fs"] not in ("", "sync", "fs", "fsp", "fsd", "fsdp")
+                        or isinstance(record["dxScore"], bool)
+                        or not isinstance(record["dxScore"], int)
+                    ):
+                        raise ValueError("invalid game score")
+                if source == "wahlap":
+                    music_id = int(record["song_id"])
+                    ext = {
+                        "song_id": music_id
+                        if getattr(catalog, "schema_version", 1) >= 2
+                        else music_id - 10000
+                        if music_id >= 10000
+                        else music_id,
+                        "type": "dx" if music_id >= 10000 else "standard",
+                    }
+                else:
+                    ext = waterfish_map.get(str(record["song_id"]))
                 key = None
                 if ext:
                     key = (
@@ -379,7 +435,7 @@ class APRecords:
                 raise ValueError("duplicate mapped chart")
             raw_records = json.dumps(payload["records"], ensure_ascii=False, allow_nan=False)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
-            raise ValueError("水鱼成绩格式异常，未修改本地记录。") from exc
+            raise ValueError(f"{label}成绩格式异常，未修改本地记录。") from exc
         receipt = {
             "ok": True,
             "records": len(payload["records"]),
@@ -388,10 +444,35 @@ class APRecords:
             "synced_at": at,
             "sync_id": sync_id,
             "confirmed": 0,
+            "source": source,
         }
+        if source == "wahlap":
+            receipt.update(
+                {
+                    key: value
+                    for key, value in (outcome or {}).items()
+                    if key in ("logout_confirmed", "logout_status", "notice")
+                }
+            )
         scores = {row[0]: row for row in incoming}
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            binding = conn.execute(
+                "SELECT value FROM metadata WHERE key='wahlap_account_hash'"
+            ).fetchone()
+            if source == "divingfish" and binding:
+                raise ScoreSourceError("已启用华立直连，请扫描二维码更新成绩。")
+            if source == "wahlap":
+                if binding and json.loads(binding[0]) != account_hash:
+                    raise ScoreAccountError("二维码对应其他游戏账号，未修改本地记录。")
+                conn.execute(
+                    "INSERT OR IGNORE INTO metadata(key,value) VALUES('wahlap_account_hash',?)",
+                    (json.dumps(account_hash),),
+                )
+            conn.execute(
+                "INSERT INTO score_sync_sources(sync_id,source,account_hash) VALUES(?,?,?)",
+                (sync_id, source, account_hash),
+            )
             conn.execute("DELETE FROM provider")
             conn.executemany("INSERT INTO provider VALUES(?,?,?,?,?)", incoming)
             conn.execute("DELETE FROM provider_details")
@@ -440,6 +521,7 @@ class APRecords:
                                     "venue": row["venue"],
                                     "sync_id": sync_id,
                                     "revision": revision,
+                                    "source": source,
                                 },
                                 ensure_ascii=False,
                             ),
@@ -450,9 +532,9 @@ class APRecords:
                     reason = (
                         "谱面尚未匹配"
                         if key not in catalog
-                        else "水鱼暂未显示 AP"
+                        else f"{label}暂未显示 AP"
                         if score
-                        else "水鱼暂无这张成绩"
+                        else f"{label}暂无这张成绩"
                     )
                     conn.execute("UPDATE ap_pending SET reason=? WHERE chart_key=?", (reason, key))
             receipt["pending"] = conn.execute("SELECT COUNT(*) FROM ap_pending").fetchone()[0]
@@ -471,6 +553,10 @@ class APRecords:
             conn.execute(
                 "INSERT INTO metadata VALUES('last_sync',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (receipt_json,),
+            )
+            conn.execute(
+                "INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (f"last_{source}_sync", receipt_json),
             )
             conn.execute(
                 "INSERT INTO events(kind,created_at,data_json) VALUES(?,?,?)",

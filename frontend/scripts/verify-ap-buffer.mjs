@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { idleScoreSync } from './score-sync-fixture.mjs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -126,6 +127,12 @@ let failWriteOnce = true;
 let syncStage = 0;
 let delaySync = null;
 let syncFailure = false;
+let scoreSyncStatus = {
+  ...idleScoreSync,
+  wahlap: { ...idleScoreSync.wahlap, available: true, reason: null },
+  divingfish: { configured: true, last_upload: null },
+};
+let syncSequence = 0;
 charts.forEach((chart, index) =>
   Object.assign(chart, {
     record_revision: 0,
@@ -213,7 +220,7 @@ try {
       await route.fulfill({ json: { chart } });
       return;
     }
-    if (pathname === '/api/sync/divingfish') {
+    if (pathname === '/api/sync/wahlap') {
       assert.equal(method, 'POST');
       if (delaySync) {
         const delay = delaySync;
@@ -223,14 +230,14 @@ try {
       }
       if (syncFailure) {
         syncFailure = false;
-        await route.fulfill({ status: 502, json: { detail: '水鱼暂时无法连接' } });
+        await route.fulfill({ status: 502, json: { detail: '华立暂时无法连接' } });
         return;
       }
       let confirmed = 0;
       for (const chart of charts) {
         if (!chart.pending_record) continue;
         if (syncStage === 0 && !chart.is_ap) {
-          chart.pending_record.reason = '水鱼暂未显示 AP';
+          chart.pending_record.reason = '当前成绩暂未显示 AP';
           continue;
         }
         chart.venue = chart.pending_record.venue;
@@ -251,18 +258,37 @@ try {
         });
         confirmed += 1;
       }
-      await route.fulfill({
-        json: {
-          ok: true,
-          records: 2,
-          matched: 2,
-          unmatched: 0,
-          conflicts: 0,
-          confirmed,
-          pending: queue().count,
-          synced_at: '2026-10-12T22:00:00+08:00',
+      const result = {
+        ok: true,
+        source: 'wahlap',
+        records: 2,
+        matched: 2,
+        unmatched: 0,
+        conflicts: 0,
+        confirmed,
+        pending: queue().count,
+        synced_at: '2026-10-12T22:00:00+08:00',
+        sync_id: `fixture-sync-${++syncSequence}`,
+      };
+      const job = {
+        id: result.sync_id,
+        kind: 'wahlap',
+        state: 'succeeded',
+        stage: 'completed',
+        error: null,
+        result,
+      };
+      scoreSyncStatus = {
+        ...scoreSyncStatus,
+        job,
+        wahlap: {
+          ...scoreSyncStatus.wahlap,
+          verified: true,
+          last_sync: result,
+          has_snapshot: true,
         },
-      });
+      };
+      await route.fulfill({ json: job });
       return;
     }
     assert.equal(method, 'GET');
@@ -270,9 +296,21 @@ try {
     const fixtures = {
       '/api/auth/session': { authenticated: true, auth_required: false },
       '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
+      '/api/sync/status': scoreSyncStatus,
       '/api/settings/divingfish': { configured: true, source: 'local', sync: null },
       '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
       '/api/catalog/update': catalog,
+      '/api/catalog/records/review': {
+        revision: catalog.revision,
+        decision_revision: 0,
+        records: [],
+        counts: { admitted: 0, pending: 0 },
+      },
+      '/api/catalog/records/decisions': {
+        revision: catalog.revision,
+        decision_revision: 0,
+        records: [],
+      },
       '/api/venues': {
         items: ['【上海】最近机厅', '【广州】已有机厅', '【潮州】第二机厅'].map((name) => ({
           name,
@@ -303,6 +341,15 @@ try {
   const beta = page.locator('.completion-tile[data-chart-key="9101:3"]');
   const save = () => drawer.getByRole('button', { name: '保存待核记录', exact: true }).click();
   const close = () => drawer.getByRole('button', { name: '关闭', exact: true }).click();
+  const startSync = async () => {
+    await page.getByRole('link', { name: '数据与同步', exact: true }).click();
+    await page.getByLabel('或粘贴二维码内容', { exact: true }).fill('fixture-qr');
+    await page.getByRole('button', { name: '同步华立成绩', exact: true }).click();
+  };
+  const syncAndReturn = async () => {
+    await startSync();
+    await page.getByRole('link', { name: /待核记录/ }).click();
+  };
   const settle = async () => {
     await page.waitForLoadState('networkidle');
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
@@ -362,16 +409,16 @@ try {
   await drawer.waitFor({ state: 'detached' });
   assert.equal(await page.locator('.venue-editor').count(), 0);
   await page.getByRole('link', { name: /待核记录/ }).click();
-  await page.getByRole('button', { name: '同步水鱼', exact: true }).click();
-  await page.getByText('水鱼暂未显示 AP', { exact: true }).waitFor();
+  await syncAndReturn();
+  await page.getByText('当前成绩暂未显示 AP', { exact: true }).waitFor();
   assert.equal(charts[0].is_ap, false);
   syncFailure = true;
-  await page.getByRole('button', { name: '同步水鱼', exact: true }).click();
-  await page.getByText('水鱼暂时无法连接', { exact: true }).waitFor();
+  await syncAndReturn();
+  await page.locator('#toast').filter({ hasText: '华立暂时无法连接' }).waitFor();
   assert.equal(queue().count, 1);
   checks.push('Non-AP results and failed sync retain pending rows and leave completion unchanged');
   syncStage = 1;
-  await page.getByRole('button', { name: '同步水鱼', exact: true }).click();
+  await syncAndReturn();
   await page.getByText('暂无待核记录', { exact: true }).waitFor();
   assert.equal(charts[0].venue, '【广州】已有机厅');
   await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
@@ -407,8 +454,9 @@ try {
   );
   const delay = { started: deferred(), release: deferred() };
   delaySync = delay;
-  await page.getByRole('button', { name: '同步水鱼', exact: true }).click();
+  await startSync();
   await delay.started.promise;
+  await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
   await beta.click();
   await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('【潮州】第二机厅');
   delay.release.resolve();

@@ -93,8 +93,60 @@ GET /api/venues/search?q=&city= -> {items,provider,attribution,attribution_url}
 GET /api/settings/divingfish -> {configured,source:"environment"|"local"|null,sync}
 PUT /api/settings/divingfish {token:"Import-Token"} -> same public settings.
   Empty token clears local saved token. Token is never returned or logged.
+GET /api/sync/status -> {wahlap,job,divingfish}
+  wahlap={available,reason,verified,last_sync,has_snapshot}. available only describes
+  whether the configured adapter/runtime can be invoked; it is not proof of a live
+  protocol check. last_sync is the latest successful Wahlap receipt or null.
+  verified requires that receipt to confirm logout; has_snapshot is true whenever
+  a complete score snapshot was successfully validated and committed.
+  divingfish={configured,last_upload}. last_upload is the latest explicit upload
+  attempt receipt (including failed attempts) or null. No token/player ID is exposed.
+  job=null or {id,kind,state,stage,message,error,result}, where kind is wahlap or
+  divingfish_upload; state is running, succeeded or failed; stage is starting,
+  fetching, validating, uploading, completed or failed. error is null or {code,message}.
+POST /api/sync/wahlap {qr_text} -> HTTP 202, job object
+  Requires the decoded SGWCMAID login QR text, not an image or URL. The request body
+  is limited to 8192 bytes; validation errors never echo the credential. QR text is
+  held in a bounded worker's memory only, never written to job state, logs or SQLite.
+  No credential/job recovery occurs after restart. Successful receipts remain durable.
+  Records match official musicId:difficulty directly; DX IDs already include 10000.
+  No DivingFish catalog or account request is required to import or confirm scores.
+  Strictly validates every record (ID, difficulty, achievement, fc, fs, DX score),
+  duplicates and account identity before any transaction. The first successful
+  import binds a hash of the game account; later different accounts are rejected.
+  The eligible pending IDs/revisions are captured at job start. Only unchanged
+  claims whose latest complete response has fc=ap/app can promote their venues.
+  All score data, AP evidence, venue confirmations, source provenance, account binding
+  and receipt commit together. Missing/non-AP scores stay pending. Unmatched/deleted
+  and Utage records remain in the full raw snapshot without invented chart matches.
+  Receipt={ok,source:"wahlap",records,matched,unmatched,synced_at,sync_id,confirmed,
+  pending,conflicts,venue_pending,logout_confirmed,logout_status,notice}.
+  Valid scores may commit with logout_status=unverified/failed; verified remains false
+  and notice explains the unresolved session exit. HTTP success alone never confirms it.
+POST /api/sync/divingfish/upload (no body) -> HTTP 202, job object
+  Explicit optional upload of the latest successful complete Wahlap snapshot. Nothing
+  is uploaded automatically by game sync or pending-claim confirmation. Requires an
+  Import-Token. Looks up exact official song IDs in DivingFish /music_data to attach
+  the title/type required by its /player/update_records API; sends a JSON list with
+  the six score fields plus title and type, authenticated by Import-Token.
+  Missing/deleted/unsupported charts are skipped with a count and up to 50 reasons.
+  A wholly unmappable snapshot, duplicate ID/title mapping or malformed catalog fails
+  before sending. No deletion/clear operation is sent. The complete local snapshot
+  remains intact regardless of upload outcome. Success requires the upstream success
+  marker and creates+updates count to equal the uploaded record count.
+  Success receipt={ok:true,source:"divingfish_upload",attempted_at,uploaded_at,sync_id,
+  records,uploaded_count,snapshot_records,skipped_count,skipped:[{song_id,level_index,reason}]}.
+  Failure receipt={ok:false,source:"divingfish_upload",attempted_at,sync_id,error}.
+  Changing the saved token while preparing aborts before upload. A request already
+  started uses its captured token; status polling and settings remain responsive.
+  Upstream timeout/error may leave an externally partial upload; local data is retained
+  and failure is explicit, never retried automatically.
+  All score jobs share a nonblocking process/file lease (busy -> 409); starts have a
+  short cooldown (429). Network operations have bounded timeouts. UI polls status.
 POST /api/sync/divingfish (no body)
-  -> {ok,records,matched,unmatched,conflicts,synced_at,sync_id,confirmed,pending,venue_pending}
+  Compatibility only; disabled with 409 after the first successful Wahlap binding,
+  so an older source cannot replace newer game scores or confirm pending records.
+  -> {ok,source:"divingfish",records,matched,unmatched,conflicts,synced_at,sync_id,confirmed,pending,venue_pending}
   Reads full records from official /player/records endpoint, Import-Token header.
   No credentials configured -> HTTP 409, detail {code:"not_configured",message:...}.
   Never uploads/modifies game or waterfish records. Sync preserves local records.
@@ -115,7 +167,7 @@ jp_release_version, jp_release_version_candidate, release_status,
 group(low/high/catalog), in_original_table, requires_venue, legacy_complete, legacy_venue,
 manual_ap(null/true/false), manual_venue, venue, note, manual_date,
 achievement(null or number, explicit manual score preferred),
-provider_achievement, provider_fc, provider_synced_at,
+provider_achievement, provider_fc, provider_synced_at, provider_source(wahlap/divingfish/null),
 provider_fs, provider_dx_score, provider_rate, provider_ra,
 pending_record(null or {id,venue,created_at,updated_at,revision,reason}),
 record_revision, venue_pending, ap_confirmed_at, venue_confirmed_at,
@@ -130,8 +182,11 @@ Provider AP requires fc=ap/app; 100+ achievement alone never means AP.
 New pending claims never contribute to completed counts, AP masks or exports.
 Provider-confirmed AP counts even if a required venue is missing (venue_pending).
 Confirmed AP evidence survives later missing/reduced scores; an actual non-AP
-response is surfaced for review. A venue correction keeps the previous confirmed
-venue until the new claim is confirmed. Venues come only from the user's records.
+response is surfaced for review. A recorded venue cannot be replaced through a
+new pending claim. Venues come only from the user's records.
+score_sync_sources ties each immutable sync_id to its source; old sync history is
+migrated as divingfish. Account hashes are private. Personal chart fields remain
+separate from catalog metadata, and optional upload receipts never alter AP evidence.
 Provider exact achievement is not auto-confirmed for covers (account score masks may apply).
 
 GET /jackets/{song_id}.png -> active snapshot image, falling back to base catalog cache

@@ -11,7 +11,6 @@ import type {
   Preferences,
   Settings,
   Summary,
-  SyncResult,
   Venue,
 } from './types';
 import { PendingRecords } from './PendingRecords';
@@ -26,7 +25,8 @@ import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
 import { CatalogUpdatePanel } from './CatalogUpdate';
 import { useCatalogUpdate } from './useCatalogUpdate';
 import type { CatalogUpdateControl } from './useCatalogUpdate';
-import { formatTimestamp } from './dateTime';
+import { ScoreSyncPanel } from './ScoreSyncPanel';
+import { useScoreSync, type ScoreSyncControl } from './useScoreSync';
 
 const paths: Record<string, string> = {
   clock: 'M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
@@ -61,7 +61,6 @@ const mobilePageLabels: Record<Page, string> = {
 };
 const num = (value = 0) => value.toLocaleString('en-US');
 const chartName = (c: Chart) => c.display_title || c.title || '（空白曲名）';
-const syncDate = (s: Settings | null) => formatTimestamp(s?.sync?.synced_at, '尚未同步');
 function Icon({ name }: { name: string }) {
   return (
     <svg
@@ -427,7 +426,7 @@ function Detail({
           <Badge chart={c} />
         </div>
       )}
-      {c.conflict && <div className="form-message">水鱼待核对 · 个人记录已保留</div>}
+      {c.conflict && <div className="form-message">成绩待核对 · 个人记录已保留</div>}
       {venueRecorded ? (
         <div className="detail-rule">
           <strong>{c.venue}</strong>
@@ -498,8 +497,7 @@ function Detail({
 
 function SettingsPage({
   settings,
-  busy,
-  onSync,
+  scoreSync,
   onSave,
   catalog,
   preferences,
@@ -508,8 +506,7 @@ function SettingsPage({
   onSavePreferences,
 }: {
   settings: Settings | null;
-  busy: boolean;
-  onSync: () => void;
+  scoreSync: ScoreSyncControl;
   onSave: (token: string) => Promise<void>;
   catalog: CatalogUpdateControl;
   preferences: Preferences | null;
@@ -517,29 +514,10 @@ function SettingsPage({
   onRetryPreferences: () => void;
   onSavePreferences: (value: Preferences) => Promise<void>;
 }) {
-  const [token, setToken] = useState('');
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    if (!token.trim()) {
-      setError('请填写 Import-Token');
-      return;
-    }
-    setSaving(true);
-    try {
-      await onSave(token.trim());
-      setToken('');
-      setError('');
-    } catch (error) {
-      setError(messageOf(error));
-    } finally {
-      setSaving(false);
-    }
-  }
   return (
     <>
       <Heading eyebrow="CONNECTED TO YOUR PLAY" title="数据与同步" />
+      <ScoreSyncPanel control={scoreSync} settings={settings} onSaveToken={onSave} />
       <PreferencesPanel
         preferences={preferences}
         loadError={preferencesError}
@@ -547,56 +525,6 @@ function SettingsPage({
         onSave={onSavePreferences}
       />
       <CatalogUpdatePanel control={catalog} />
-      <div className="settings-panel">
-        <h2>水鱼查分器</h2>
-        <p>手动更新成绩，保留你填写的机厅。</p>
-        <div className="sync-info">
-          <span className="dot" /> {settings?.configured ? '已连接' : '未连接'}
-          <br />
-          {syncDate(settings)}
-        </div>
-        <form onSubmit={save}>
-          <div className="field">
-            <label htmlFor="import-token">Import-Token</label>
-            <input
-              id="import-token"
-              type="password"
-              autoComplete="off"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="水鱼个人资料中的 Token"
-            />
-          </div>
-          {error && <div className="form-message">{error}</div>}
-          <div className="form-actions">
-            <button type="submit" className="btn" disabled={saving}>
-              保存
-            </button>
-            <button type="button" className="btn primary" disabled={busy} onClick={onSync}>
-              <Icon name="sync" />
-              同步成绩
-            </button>
-          </div>
-        </form>
-        <div className="drawer-actions">
-          <a
-            href="https://maimai.diving-fish.com/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn quiet"
-          >
-            打开水鱼 ↗
-          </a>
-          {settings?.configured && (
-            <button
-              className="btn quiet"
-              onClick={() => void onSave('').catch((error) => setError(messageOf(error)))}
-            >
-              断开连接
-            </button>
-          )}
-        </div>
-      </div>
     </>
   );
 }
@@ -631,7 +559,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const refreshSequence = useRef(0);
   const refreshFlight = useRef<Promise<void> | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [busy, setBusy] = useState(false);
   const [listBusy, setListBusy] = useState(true);
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
@@ -711,6 +638,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
       if (refreshFlight.current === request) refreshFlight.current = null;
     });
   }, []);
+  const scoreSync = useScoreSync(refresh, notify);
   useEffect(() => {
     void refresh(false).catch((error) => setError(messageOf(error)));
   }, [refresh]);
@@ -848,34 +776,13 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     catalogView,
     preferences,
   ]);
-  async function sync() {
-    if (busy) return;
-    if (!settings?.configured) {
-      closeModal();
-      location.hash = 'settings';
-      notify('请先填写 Import-Token');
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await api<SyncResult>('/sync/divingfish', { method: 'POST' });
-      await refresh();
-      notify(
-        `已同步 ${num(result.matched)} 条成绩 · 核准 ${num(result.confirmed)} 条 · 待核 ${num(result.pending)} 条`,
-      );
-    } catch (error) {
-      notify(messageOf(error));
-    } finally {
-      setBusy(false);
-    }
-  }
   async function saveToken(token: string) {
     const result = await api<Settings>('/settings/divingfish', {
       method: 'PUT',
       body: JSON.stringify({ token }),
     });
     setSettings(result);
-    notify(token ? '已连接水鱼' : '已断开连接');
+    notify(token ? '已保存上传 Token' : '已移除上传 Token');
   }
   async function savePreferences(value: Preferences) {
     const saved = await api<Preferences>('/settings/preferences', {
@@ -1096,9 +1003,10 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                     title="我的 AP 图鉴"
                     actions={
                       <>
-                        <button className="btn sync-button" disabled={busy} onClick={sync}>
-                          {busy ? <span className="spinner" /> : <Icon name="sync" />}同步水鱼
-                        </button>
+                        <a className="btn sync-button" href="#settings">
+                          <Icon name="sync" />
+                          同步成绩
+                        </a>
                         {recordButton}
                       </>
                     }
@@ -1430,9 +1338,10 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                     title="完成统计"
                     actions={
                       <>
-                        <button className="btn sync-button" disabled={busy} onClick={sync}>
-                          {busy ? <span className="spinner" /> : <Icon name="sync" />}同步水鱼
-                        </button>
+                        <a className="btn sync-button" href="#settings">
+                          <Icon name="sync" />
+                          同步成绩
+                        </a>
                       </>
                     }
                   />
@@ -1459,9 +1368,10 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                     eyebrow="WAITING FOR YOUR NEXT SYNC"
                     title="待核记录"
                     actions={
-                      <button className="btn primary" disabled={busy} onClick={sync}>
-                        {busy ? <span className="spinner" /> : <Icon name="sync" />}同步水鱼
-                      </button>
+                      <a className="btn primary" href="#settings">
+                        <Icon name="sync" />
+                        同步成绩
+                      </a>
                     }
                   />
                   <PendingRecords
@@ -1494,8 +1404,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               {page === 'settings' && (
                 <SettingsPage
                   settings={settings}
-                  busy={busy}
-                  onSync={sync}
+                  scoreSync={scoreSync}
                   onSave={saveToken}
                   catalog={catalog}
                   preferences={preferences}

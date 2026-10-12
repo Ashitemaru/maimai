@@ -143,6 +143,8 @@ class ArchiveTests(unittest.TestCase):
             "backend/runtime/personal.sqlite3",
             "deploy/app.env",
             "deploy/private.sqlite3",
+            "deploy/runtime.json",
+            "deploy/core.dat",
             "deploy/__pycache__/code.pyc",
             "data/catalog/catalog.sqlite",
             "frontend/src/secret.ts",
@@ -458,7 +460,7 @@ class DeploymentTests(unittest.TestCase):
         unit = (deploy / "mai-journal.service").read_text()
         self.assertIn("--workers 1", unit)
         self.assertIn("--host 127.0.0.1", unit)
-        self.assertIn("TimeoutStopSec=90", unit)
+        self.assertIn("TimeoutStopSec=210", unit)
         self.assertIn("NoNewPrivileges=yes", unit)
         self.assertIn("ProtectSystem=strict", unit)
         writes = [line for line in unit.splitlines() if line.startswith("ReadWritePaths=")]

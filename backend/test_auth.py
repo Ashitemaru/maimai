@@ -292,6 +292,17 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertNotIn("x" * 10, response.text)
 
+    def test_oversized_qr_body_is_rejected_without_echoing_credentials(self):
+        self.login()
+        body = json.dumps({"qr_text": "SGWCMAID" + "x" * 9000})
+        for content in (body, iter([body[:4500].encode(), body[4500:].encode()])):
+            response = self.client.post(
+                "/api/sync/wahlap", content=content, headers={"Content-Type": "application/json"}
+            )
+            self.assertEqual(response.status_code, 413)
+            self.assertNotIn("SGWCMAID", response.text)
+            self.assertNotIn("x" * 10, response.text)
+
     def test_body_limit_stops_reading_before_downstream_or_additional_chunks(self):
         async def run():
             messages = []

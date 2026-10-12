@@ -94,6 +94,10 @@ jobs:
           python -m pip install --upgrade pip==26.2.1
           python -m pip install pip-audit==2.10.1
           python -m pip_audit -r requirements.lock --strict --disable-pip --no-deps
+      - name: Audit external score worker dependencies
+        run: |
+          python -c 'import json, os, pathlib; pins = json.loads(pathlib.Path("deploy/wahlap-runtime.lock.json").read_text())["dependencies"]; pathlib.Path(os.environ["RUNNER_TEMP"], "wahlap-requirements.txt").write_text("\n".join(pins) + "\n")'
+          python -m pip_audit -r "$RUNNER_TEMP/wahlap-requirements.txt" --strict
       - name: Audit npm dependencies
         working-directory: frontend
         run: npm audit --audit-level=high

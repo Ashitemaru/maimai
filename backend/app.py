@@ -31,6 +31,7 @@ from .catalog_decisions import StaleDecisionError
 from .catalog_updates import BusyError, CatalogUpdates
 from .completion_exports import completion_export_router
 from .jackets import IMMUTABLE_CACHE, REVALIDATE_CACHE, JacketPreviews, etag_matches
+from .score_sync import ScoreSync, ScoreSyncError
 from .store import (
     ROOT,
     Store,
@@ -207,6 +208,11 @@ class APRecordInput(BaseModel):
     expected_revision: int = Field(ge=0, strict=True)
 
 
+class WahlapSyncInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    qr_text: str = Field(min_length=1, max_length=4096, strict=True)
+
+
 class PreferencesInput(BaseModel):
     model_config = {"extra": "forbid"}
     default_constant_min: float = Field(
@@ -296,6 +302,7 @@ def create_app(store=None, updater=None):
             )
     store = store or Store()
     initialize_locations(store)
+    score_sync = ScoreSync(store)
     updater = updater if updater is not None else CatalogUpdates(store)
     previews = JacketPreviews(
         store.runtime / "jacket-thumbnails",
@@ -308,6 +315,7 @@ def create_app(store=None, updater=None):
             yield
         finally:
             updater.close()
+            score_sync.close()
             store.close()
 
     app = FastAPI(title="Ashitemaru · maimai", version="0.1.0", lifespan=lifespan)
@@ -318,6 +326,7 @@ def create_app(store=None, updater=None):
     app.state.store = store
     app.state.catalog_updates = updater
     app.state.jacket_previews = previews
+    app.state.score_sync = score_sync
     app.include_router(completion_export_router(store.runtime / "completion-exports"))
     allowed_hosts = ["127.0.0.1", "localhost", "::1", "testserver"]
     allowed_hosts += [
@@ -328,6 +337,8 @@ def create_app(store=None, updater=None):
 
     @app.exception_handler(RequestValidationError)
     async def safe_validation(request: Request, exc):
+        if request.url.path == "/api/sync/wahlap":
+            return JSONResponse({"detail": "二维码内容无效，请重新扫描。"}, status_code=422)
         if request.url.path == "/api/auth/login":
             return JSONResponse({"detail": "Master key 格式无效。"}, status_code=422)
         if request.url.path == "/api/settings/divingfish":
@@ -846,6 +857,14 @@ def create_app(store=None, updater=None):
 
     @app.post("/api/sync/divingfish")
     def sync():
+        if store.meta("wahlap_account_hash"):
+            raise HTTPException(
+                409,
+                {
+                    "code": "legacy_sync_disabled",
+                    "message": "已启用华立直连，请扫描二维码更新成绩。",
+                },
+            )
         try:
             with store.sync_lease() as (token, generation):
                 return sync_provider(token, generation)
@@ -903,6 +922,24 @@ def create_app(store=None, updater=None):
                 },
             ) from exc
         return result
+
+    @app.get("/api/sync/status")
+    def score_sync_status():
+        return score_sync.status()
+
+    @app.post("/api/sync/wahlap", status_code=202)
+    def start_wahlap_sync(value: WahlapSyncInput):
+        try:
+            return score_sync.start_wahlap(value.qr_text)
+        except ScoreSyncError as exc:
+            raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
+
+    @app.post("/api/sync/divingfish/upload", status_code=202)
+    def start_divingfish_upload():
+        try:
+            return score_sync.start_upload()
+        except ScoreSyncError as exc:
+            raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
 
     @app.get("/jackets/thumbnails/{song_id}/{revision}.webp")
     def jacket_thumbnail(song_id: str, revision: str, request: Request):

@@ -31,11 +31,14 @@ REQUIRED_FILES = (
     "backend/app.py",
     "backend/store.py",
     "scripts/catalog_pipeline.py",
+    "deploy/wahlap-runtime.lock.json",
     "requirements.lock",
 )
 
 
 def is_release_source(path: Path) -> bool:
+    if path.as_posix() == "deploy/wahlap-runtime.lock.json":
+        return True
     if path.parts[0] == "backend":
         return len(path.parts) == 2 and path.suffix == ".py" and not path.name.startswith("test")
     if path.parts[0] == "scripts":

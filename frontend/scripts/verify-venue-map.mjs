@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { idleScoreSync } from './score-sync-fixture.mjs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -88,6 +89,7 @@ const server = http.createServer(async (req, res) => {
       return send({ authenticated: true, auth_required: false });
     if (url.pathname === '/api/settings/preferences')
       return send({ default_constant_min: 13, default_constant_max: 13.9 });
+    if (url.pathname === '/api/sync/status') return send(idleScoreSync);
     if (url.pathname === '/api/settings/divingfish')
       return send({ configured: true, source: 'local', sync: null });
     if (url.pathname === '/api/ap-records') return send({ items: [], count: 0 });
