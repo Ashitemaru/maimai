@@ -28,6 +28,8 @@ Python 测试使用临时曲库、合成 TSV 和 Remy 页面，禁止外网；�
 
 格式修改使用 `ruff format backend scripts tests deploy` 和前端的 `npm run format`。页面样式统一放在 `frontend/styles.css`，遵循 [前端约定](frontend/AGENTS.md)。
 
+`frontend/dist/`、`release/` 和浏览器测试生成的 `output/*-audit/` 可重新构建。`output/` 同时保存最终封面、部署凭据和恢复备份，不能整目录清空；`data/` 和 `backend/runtime/personal.sqlite3` 是持久数据。完成表临时导出由后端按过期时间清理。
+
 ## 运行现有应用
 
 测试和前端构建可从干净 checkout 执行；完整应用还需要单独准备曲库、素材和个人数据。这些不随源码发布：

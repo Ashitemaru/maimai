@@ -15,7 +15,7 @@ import {
 import type { MapCluster, MapPixel, MapPoint, MapSize, MapView } from './venueMapGeometry';
 
 export type VenueMapPoint = MapPoint;
-export type VenueMapVenue = {
+type VenueMapVenue = {
   name: string;
   total: number;
   jackets: {

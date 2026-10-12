@@ -29,15 +29,11 @@ playwright-report/
 *.sqlite3-*
 
 # One-off personal collection/upload and historical design tools.
-/scripts/audit_bilibili_uploads.py
 /scripts/build_background_library.py
-/scripts/build_cover_gallery.py
 /scripts/build_version_logos.py
 /scripts/collect_covers.py
 /scripts/integrate_cover_ui_assets.py
 /scripts/package_bilibili_covers.py
 /scripts/prepare_bilibili_covers.py
 /scripts/render_background_library.mjs
-/scripts/sync_catalog_sources.py
-/scripts/upload_bilibili_covers.browser.js
 /scripts/upload_bilibili_exact_covers.browser.js

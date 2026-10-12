@@ -41,7 +41,6 @@ const paths: Record<string, string> = {
   plus: 'M12 5v14M5 12h14',
   check: 'm5 12 4 4L19 6',
   close: 'm6 6 12 12M6 18 18 6',
-  download: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',
   spark: 'm12 2 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z',
 };
 const pageLabels: Record<Page, string> = {
@@ -563,7 +562,6 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     score: '100.9615',
     version: '',
     aspect: '16:9',
-    safeGuides: false,
   });
   const [catalogRevision, setCatalogRevision] = useState(0);
   const notify = useNotify();

@@ -287,31 +287,6 @@ def validate_chart_decisions(review, ident, difficulty, choices):
     return result
 
 
-validate_chart_choices = validate_chart_decisions
-
-
-def legacy_catalog_view(catalog):
-    if not catalog or catalog.get("schema_version") != 2:
-        return catalog
-    songs = {}
-    for chart in catalog.get("charts", []):
-        sid = chart["lxns_song_id"]
-        identity = chart.get(
-            "source_identity", {"id": sid, "title": chart["title"], "artist": chart["artist"]}
-        )
-        song = songs.setdefault(
-            sid, {**deepcopy(identity), "source_identity": deepcopy(identity), "charts": []}
-        )
-        song["charts"].append(
-            {
-                **deepcopy(chart),
-                "chart_key": chart["legacy_chart_key"],
-                "difficulty_index": chart["difficulty"],
-            }
-        )
-    return {"songs": list(songs.values())}
-
-
 def _decision_document(directory, explicit=None):
     document = (
         explicit
@@ -567,7 +542,6 @@ def _load_evidence(directory, document):
         arcade,
         version_review=versions,
         adjudications=_legacy_adapter_decisions(document),
-        arcade_metadata=False,
     )
     return lxns, versions, review
 

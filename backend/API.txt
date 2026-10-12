@@ -246,7 +246,7 @@ POST /api/catalog/records/decisions/revoke -> CatalogUpdateState (202)
   {base_catalog_revision,base_decision_revision,id,difficulty,field_keys?}
   Omit field_keys to revoke all fields for this chart; otherwise revoke the selected fields.
   Revocation restores comparison and may withdraw the entire chart to pending admission.
-POST /api/catalog/decisions -> 422 (legacy per-object/identity writes disabled).
+POST /api/catalog/decisions -> 410 (legacy per-object/identity writes disabled).
 GET /api/catalog/review -> legacy read-only provenance report; not the new adjudication API.
 POST /api/catalog/decisions/reapply -> CatalogUpdateState (202), no network.
 GET /api/catalog/decisions/history?object_key=&limit=100 -> {items:[events]}

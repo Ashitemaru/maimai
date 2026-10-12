@@ -10,7 +10,7 @@ const root = path.resolve(import.meta.dirname, '../..');
 const frontend = path.join(root, 'frontend');
 const args = process.argv.slice(2);
 let manifestPath = path.join(root, 'data/bilibili-regenerate/render-manifest.json');
-let output = path.join(root, 'output/bilibili-covers-v6');
+let output = path.join(root, 'output/bilibili-covers-current');
 let origin = process.env.COVER_BATCH_ORIGIN || '';
 let port = 5175,
   hasManifest = false;
@@ -55,7 +55,7 @@ await fs.mkdir(path.join(output, '16x9'), { recursive: true });
 await fs.mkdir(path.join(output, '4x3'), { recursive: true });
 const report = {
   schema_version: 1,
-  layout: 'v6',
+  layout: 'v8-16x9_v6-4x3',
   started_at: new Date().toISOString(),
   finished_at: null,
   status: 'running',
@@ -98,6 +98,7 @@ const stopVite = async () => {
 };
 try {
   await saveReport();
+  await atomicWrite(path.join(output, 'manifest.json'), manifestBytes);
   if (!origin) {
     origin = `http://127.0.0.1:${port}`;
     vite = spawn(
@@ -233,7 +234,6 @@ try {
         const options = {
           achievement: video.achievement,
           versionOverride: video.versionOverride,
-          safeGuides: false,
         };
         const full = document.createElement('canvas'),
           crop = document.createElement('canvas');
@@ -242,79 +242,85 @@ try {
           ...options,
           aspect: '4:3',
         });
-        assert(
-          receipt.version.key &&
-            receipt.version.asset?.status === 'ready' &&
-            receipt.version.asset?.background_png,
-          'Unresolved or unavailable version background',
-        );
-        assert(
-          receipt.bounds.some((box) => box.role === 'version_logo'),
-          'Version logo is missing',
-        );
-        assert(
-          !receipt.notices.some((notice) => /失败|不可用|系统字体/.test(notice)),
-          'Required cover resource unavailable: ' + receipt.notices.join('; '),
-        );
         const title = video.chart.display_title || video.chart.title;
-        assert(
-          receipt.title.lines.join('').replace(/\s+/gu, '') === title.replace(/\s+/gu, ''),
-          'Title characters were lost',
-        );
-        assert(
-          receipt.title.widths.every((width) => width <= cover.COVER_LAYOUT.title.width),
-          'Title exceeds available width',
-        );
-        assert(
-          receipt.title.lines.length * receipt.title.lineHeight <= cover.COVER_LAYOUT.title.height,
-          'Title exceeds available height',
-        );
-        assert(document.fonts.check('800 52px "CoverNewRodin"'), 'Cover font is not loaded');
-        for (const box of receipt.bounds) {
-          assert(
-            box.x >= 264 && box.x + box.width <= 1656,
-            `4:3 safe bounds exceeded: ${box.role}`,
-          );
-          assert(box.y >= 0 && box.y + box.height <= 1080, `Canvas bounds exceeded: ${box.role}`);
-        }
         const apKey = Number(video.achievement) === 101 ? 'app' : 'ap';
-        assert(
-          receipt.achievementStyle === 'sprite' && cropReceipt.achievementStyle === 'sprite',
-          'Gold achievement sprites are unavailable',
-        );
-        assert(
-          receipt.gameAssets.includes(apKey) &&
-            !receipt.gameAssets.includes(apKey === 'ap' ? 'app' : 'ap'),
-          'AP/AP+ does not match the supplied achievement',
-        );
         const isUtage =
           video.chart.type === 'utage' || video.chart.difficulty_name.toUpperCase() === 'UTAGE';
-        if (!isUtage)
+        assert(document.fonts.check('800 52px "CoverNewRodin"'), 'Cover font is not loaded');
+        for (const [aspect, item] of [
+          ['16:9', receipt],
+          ['4:3', cropReceipt],
+        ]) {
+          const layout = cover.getCoverLayout(aspect);
+          const left = aspect === '4:3' ? 240 : 0;
+          const right = aspect === '4:3' ? 1680 : 1920;
           assert(
-            receipt.gameAssets.includes(video.chart.type === 'dx' ? 'dx' : 'standard'),
-            'Chart type image is missing',
+            item.version.key &&
+              item.version.asset?.status === 'ready' &&
+              item.version.asset?.background_png,
+            `${aspect}: unresolved or unavailable version background`,
           );
-        assert(
-          receipt.gameAssets.every((key) => ['standard', 'dx', 'ap', 'app'].includes(key)),
-          'Unexpected difficulty/level icon',
-        );
-        assert(
-          !receipt.bounds.some((box) => /signature|author|artist|level|difficulty/.test(box.role)),
-          'Removed cover element was rendered',
-        );
-        const score = receipt.bounds.find((box) => box.role === 'achievement'),
-          ap = receipt.bounds.find((box) => box.role === apKey),
-          jacket = receipt.bounds.find((box) => box.role === 'jacket');
-        assert(score && ap && jacket, 'Missing score, AP badge, or jacket');
-        const bottom = jacket.y + jacket.height;
-        assert(
-          near(score.y + score.height, bottom) && near(ap.y + ap.height, bottom),
-          'Score/AP bottom differs from jacket bottom',
-        );
-        assert(
-          near(score.height, ap.height) && near(ap.x - score.x - score.width, 30),
-          'Score/AP size or spacing differs',
-        );
+          assert(
+            item.bounds.some((box) => box.role === 'version_logo'),
+            `${aspect}: version logo is missing`,
+          );
+          assert(
+            !item.notices.some((notice) => /失败|不可用|系统字体/.test(notice)),
+            `${aspect}: required cover resource unavailable: ${item.notices.join('; ')}`,
+          );
+          assert(
+            item.title.lines.join('').replace(/\s+/gu, '') === title.replace(/\s+/gu, ''),
+            `${aspect}: title characters were lost`,
+          );
+          assert(
+            item.title.widths.every((width) => width <= layout.title.width) &&
+              item.title.lines.length * item.title.lineHeight <= layout.title.height,
+            `${aspect}: title exceeds available space`,
+          );
+          // Receipts use the original 1920x1080 coordinate space even for the 4:3 export.
+          for (const box of item.bounds) {
+            assert(
+              box.x >= left &&
+                box.x + box.width <= right &&
+                box.y >= 0 &&
+                box.y + box.height <= 1080,
+              `${aspect}: canvas bounds exceeded: ${box.role}`,
+            );
+          }
+          assert(item.achievementStyle === 'sprite', `${aspect}: gold score sprites unavailable`);
+          assert(
+            item.gameAssets.includes(apKey) &&
+              !item.gameAssets.includes(apKey === 'ap' ? 'app' : 'ap'),
+            `${aspect}: AP/AP+ does not match the supplied achievement`,
+          );
+          if (!isUtage)
+            assert(
+              item.gameAssets.includes(video.chart.type === 'dx' ? 'dx' : 'standard'),
+              `${aspect}: chart type image is missing`,
+            );
+          assert(
+            item.gameAssets.every((key) => ['standard', 'dx', 'ap', 'app'].includes(key)),
+            `${aspect}: unexpected difficulty/level icon`,
+          );
+          assert(
+            !item.bounds.some((box) => /signature|author|artist|level|difficulty/.test(box.role)),
+            `${aspect}: removed cover element was rendered`,
+          );
+          const score = item.bounds.find((box) => box.role === 'achievement');
+          const ap = item.bounds.find((box) => box.role === apKey);
+          const jacket = item.bounds.find((box) => box.role === 'jacket');
+          assert(score && ap && jacket, `${aspect}: missing score, AP badge, or jacket`);
+          const bottom = jacket.y + jacket.height;
+          assert(
+            near(score.y + score.height, bottom) && near(ap.y + ap.height, bottom),
+            `${aspect}: score/AP bottom differs from jacket bottom`,
+          );
+          assert(
+            near(score.height, ap.height) &&
+              near(ap.x - score.x - score.width, aspect === '4:3' ? 30 : 34),
+            `${aspect}: score/AP size or spacing differs`,
+          );
+        }
         assert(
           full.width === 1920 &&
             full.height === 1080 &&
@@ -354,13 +360,6 @@ try {
               bounds_coordinate_space: 'unmirrored_1920x1080_master',
             };
         }
-        const central = full.getContext('2d').getImageData(240, 0, 1440, 1080).data,
-          cropped = crop.getContext('2d').getImageData(0, 0, 1440, 1080).data;
-        assert(
-          central.length === cropped.length &&
-            central.every((value, index) => value === cropped[index]),
-          '4:3 is not the exact central crop',
-        );
         return {
           receipt,
           cropReceipt,
@@ -368,11 +367,11 @@ try {
           checks: {
             title_complete: true,
             title_fits: true,
-            safe_bounds: true,
+            both_aspect_bounds: true,
             achievement_sprite: true,
             ap_matches_achievement: true,
             source_score_unchanged: options.achievement === video.achievement,
-            exact_central_crop: true,
+            independent_aspect_layouts: true,
             visible_alignment: true,
             font_loaded: true,
             no_legacy_elements: true,

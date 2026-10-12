@@ -26,10 +26,6 @@ DIFFICULTIES = {"BAS": 0, "ADV": 1, "EXP": 2, "MAS": 3, "ReM": 4}
 DEFAULT_PREFERENCES = {"default_constant_min": 13.0, "default_constant_max": 13.9}
 
 
-class ManualConflictError(Exception):
-    """A form is based on an older version of the manual record."""
-
-
 class SyncBusyError(Exception):
     """Only one provider request may be in flight for this account."""
 
@@ -772,62 +768,6 @@ class Store(APRecords):
         if getattr(self.catalog, "schema_version", 1) >= 2:
             key = canonical_chart_key(key)
         return next((chart for chart in self.all_charts() if chart["chart_key"] == key), None)
-
-    def save_manual(self, key, data):
-        catalog = self.catalog
-        if getattr(catalog, "schema_version", 1) >= 2:
-            key = canonical_chart_key(key)
-        if key not in catalog:
-            raise KeyError(key)
-        venue = data["venue"].strip()
-        at = now()
-        with self.db() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            self._check_manual_revision(conn, key, data["expected_revision"])
-            legacy = conn.execute(
-                "SELECT group_name FROM legacy WHERE chart_key=?", (key,)
-            ).fetchone()
-            if data["ap"] and requires_venue(catalog[key], legacy) and not venue:
-                raise ValueError("请填写完成 AP 的机厅名称。")
-            conn.execute(
-                "INSERT INTO manual VALUES(?,?,?,?,?,?,?) ON CONFLICT(chart_key) DO UPDATE SET ap=excluded.ap,venue=excluded.venue,achievement=excluded.achievement,note=excluded.note,achieved_date=excluded.achieved_date,updated_at=excluded.updated_at",
-                (
-                    key,
-                    data["ap"],
-                    venue,
-                    data.get("achievement"),
-                    data["note"].strip(),
-                    data.get("date"),
-                    at,
-                ),
-            )
-            conn.execute(
-                "INSERT INTO events(chart_key,kind,created_at,data_json) VALUES(?,?,?,?)",
-                (key, "manual", at, json.dumps(data, ensure_ascii=False)),
-            )
-        return self.chart(key)
-
-    @staticmethod
-    def _check_manual_revision(conn, key, expected):
-        actual = conn.execute(
-            "SELECT COALESCE(MAX(id),0) FROM events WHERE chart_key=? AND kind IN ('manual','manual_reset')",
-            (key,),
-        ).fetchone()[0]
-        if actual != expected:
-            raise ManualConflictError()
-
-    def clear_manual(self, key, expected_revision):
-        if getattr(self.catalog, "schema_version", 1) >= 2:
-            key = canonical_chart_key(key)
-        with self.db() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            self._check_manual_revision(conn, key, expected_revision)
-            conn.execute("DELETE FROM manual WHERE chart_key=?", (key,))
-            conn.execute(
-                "INSERT INTO events(chart_key,kind,created_at,data_json) VALUES(?,?,?,?)",
-                (key, "manual_reset", now(), "{}"),
-            )
-        return self.chart(key)
 
     def token(self):
         token = os.environ.get("DIVINGFISH_IMPORT_TOKEN", "").strip()

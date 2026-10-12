@@ -46,9 +46,6 @@ class FakeUpdater:
     def retry_remy(self, recheck=False):
         return self.operation("recheck" if recheck else "remy")
 
-    def decide(self, value):
-        raise ValueError("旧裁决接口已停用，请一次提交全部冲突字段")
-
     def record_review(self):
         return {"records": [], "revision": "r1", "decision_revision": 0}
 
@@ -755,12 +752,12 @@ class AppTests(unittest.TestCase):
             "action": "set",
             "version": "DX",
         }
-        self.assertEqual(self.client.post("/api/catalog/decisions", json=payload).status_code, 422)
+        self.assertEqual(self.client.post("/api/catalog/decisions", json=payload).status_code, 410)
         self.assertEqual(
             self.client.post(
                 "/api/catalog/decisions", json=payload | {"date": "invalid"}
             ).status_code,
-            422,
+            410,
         )
         self.assertEqual(
             self.client.post(
@@ -951,9 +948,11 @@ class AppTests(unittest.TestCase):
         shutil.copy2(ROOT / "data/catalog/catalog.sqlite", base / "catalog.sqlite")
         self.store.catalog_root = base
         self.store.reload_catalog()
-        self.store.save_manual(
-            "30:standard:0", {"ap": True, "venue": "", "note": "keep", "expected_revision": 0}
-        )
+        with self.store.db() as conn:
+            conn.execute(
+                "INSERT INTO manual VALUES(?,?,?,?,?,?,?)",
+                ("30:standard:0", 1, "", None, "keep", None, "fixture"),
+            )
         self.store.import_provider(
             {"records": [{"song_id": 10030, "level_index": 0, "fc": "ap", "achievements": 100.5}]}
         )
@@ -1086,16 +1085,11 @@ class AppTests(unittest.TestCase):
 
     def test_legacy_manual_records_are_readable_but_http_writes_are_retired(self):
         key = "22:standard:4"
-        self.store.save_manual(
-            key,
-            {
-                "ap": True,
-                "venue": "测试机厅",
-                "achievement": 100.9876,
-                "note": "历史记录",
-                "expected_revision": 0,
-            },
-        )
+        with self.store.db() as conn:
+            conn.execute(
+                "INSERT INTO manual VALUES(?,?,?,?,?,?,?)",
+                (key, 1, "测试机厅", 100.9876, "历史记录", None, "fixture"),
+            )
         self.store.import_provider(
             {"records": [{"song_id": 22, "level_index": 4, "fc": "fc", "achievements": 100.2}]}
         )

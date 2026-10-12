@@ -17,7 +17,6 @@
     "verify:preferences": "node scripts/verify-preferences.mjs",
     "verify:catalog-review": "node scripts/verify-catalog-review.mjs",
     "verify:completion-export": "node scripts/verify-completion-export.mjs",
-    "verify:cover:legacy": "node scripts/verify-cover-v6.mjs",
     "test:ci": "npm run build && npm run verify:ui && npm run verify:venues && npm run verify:venue-map && npm run verify:matrix && npm run verify:preferences && npm run verify:catalog-review && npm run verify:completion-export && npm run verify:detail-concurrency && npm run verify:score-sync && npm run verify:ap-buffer && npm run verify:completion-loading && npm run verify:mobile-export && npm run verify:auth",
     "generate:icons": "node scripts/generate-icons.mjs",
     "verify:completion-loading": "node scripts/verify-completion-loading.mjs",
@@ -27,7 +26,8 @@
     "verify:auth": "node scripts/verify-auth.mjs",
     "verify:venues": "node scripts/verify-venue-summary.mjs",
     "verify:venue-map": "node scripts/verify-venue-map.mjs",
-    "verify:score-sync": "node scripts/verify-score-sync.mjs"
+    "verify:score-sync": "node scripts/verify-score-sync.mjs",
+    "render:covers": "node scripts/render-bilibili-covers.mjs"
   },
   "dependencies": {
     "jsqr": "1.4.0",

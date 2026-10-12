@@ -544,9 +544,6 @@ class CatalogUpdates:
                 lease.close()
             return self.decisions.snapshot()
 
-    def decide(self, request):
-        raise ValueError("旧的逐字段版本裁决接口已停用，请在谱面差异表中一次提交全部冲突字段")
-
     def reapply_decisions(self):
         with self._lock:
             ident, lease, epoch = self._reserve_main("decisions")

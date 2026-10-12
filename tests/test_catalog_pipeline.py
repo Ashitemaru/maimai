@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from scripts.build_catalog import build_v1 as build
-from scripts.build_catalog import jp_version_name, write_sqlite
+from scripts.build_catalog import build
+from scripts.catalog_chart_compiler import load_record_review, write_sqlite
 from scripts.catalog_pipeline import (
     SOURCES,
     atomic_json,
@@ -24,13 +24,10 @@ from scripts.catalog_pipeline import (
 )
 from scripts.catalog_policy import source_policy
 from scripts.catalog_record_review import (
-    apply_field_decisions,
     build_record_review,
-    load_record_review,
-    validate_field_decision,
 )
-from scripts.catalog_versions import resolve_versions, validate_decision
-from scripts.validate_catalog import validate_v1 as validate
+from scripts.catalog_versions import resolve_versions
+from scripts.validate_catalog import validate
 
 
 def song(sid=1, constant=13.0, remaster=False):
@@ -128,7 +125,7 @@ class PipelineTests(unittest.TestCase):
         report = self.prepare()
         build(self.stage)
         validation = validate(self.stage)
-        self.assertEqual(validation["songs_checked"], 3)
+        self.assertEqual(validation["total_charts"], 3)
         self.assertEqual(validation["charts_checked"], 3)
         raw = json.loads((self.stage / "raw/lxns_songs.json").read_text())
         self.assertEqual(raw, self.responses["lxns_songs.json"])
@@ -165,14 +162,13 @@ class PipelineTests(unittest.TestCase):
         result = self.prepare()
         self.assertEqual(result["sources"][2]["fetch_status"], "stale")
         self.assertEqual(result["sources"][2]["fetched_at"], "2020-01-01T00:00:00Z")
-        report = build(self.stage)
-        self.assertTrue(any(i["kind"] == "external_constant_difference" for i in report["issues"]))
-        self.assertEqual(
-            json.loads((self.stage / "catalog.json").read_text())["songs"][0]["charts"][0][
-                "constant"
-            ],
-            13.0,
-        )
+        build(self.stage)
+        review = load_record_review(self.stage)
+        pending = next(row for row in review["records"] if row["chart_key"] == "1:3")
+        constant = next(field for field in pending["fields"] if field["field_key"] == "constant")
+        self.assertEqual({option["value"] for option in constant["options"]}, {13.0, 14.9})
+        self.assertEqual(pending["status"], "pending")
+        self.assertNotIn("1:3", {row["chart_key"] for row in self.catalog()["charts"]})
         validate(self.stage)
 
     def test_authority_failure_leaves_inherited_files_unchanged(self):
@@ -197,7 +193,9 @@ class PipelineTests(unittest.TestCase):
             result = prepare_update(self.stage, self.previous)
         self.assertEqual(result["counts"]["jackets_missing"], 2)
         build(self.stage)
-        self.assertEqual(validate(self.stage)["jackets_missing"], [1, 2])
+        self.assertEqual(self.catalog()["counts"]["jackets_missing"], 2)
+        self.assertTrue(all(not chart["jacket_available"] for chart in self.catalog()["charts"]))
+        validate(self.stage)
 
     def test_supplement_is_cross_validation_only_and_remy_can_be_retired(self):
         record = {
@@ -217,10 +215,15 @@ class PipelineTests(unittest.TestCase):
         atomic_json(self.stage / "remy_release_overrides.json", {"overrides": [retired]})
         self.prepare()
         build(self.stage)
-        result = validate(self.stage)
-        self.assertEqual(result["remaster_unresolved"], 1)
-        self.assertEqual(result["remaster_verified"], 0)
-        self.assertEqual(result["retired_remy_records"], ["999:standard:4"])
+        validate(self.stage)
+        self.assertEqual(
+            load_record_review(self.stage)["remy_counts"], {"total": 1, "verified": 0, "pending": 1}
+        )
+        self.assertEqual(
+            json.loads((self.stage / "remy_release_overrides.json").read_text()),
+            {"overrides": [retired]},
+        )
+        self.assertNotIn("999:4", {chart["chart_key"] for chart in self.catalog()["charts"]})
 
     def test_unverified_remy_is_pending_not_promoted(self):
         atomic_json(
@@ -229,7 +232,8 @@ class PipelineTests(unittest.TestCase):
         )
         self.prepare()
         build(self.stage)
-        self.assertEqual(validate(self.stage)["remaster_unresolved"], 1)
+        self.assertEqual(load_record_review(self.stage)["remy_counts"]["pending"], 1)
+        validate(self.stage)
 
     def test_validator_detects_tampering(self):
         self.prepare()
@@ -246,11 +250,11 @@ class PipelineTests(unittest.TestCase):
         build(self.stage)
         original = (self.stage / "catalog.sqlite").read_bytes()
         for statement, column in (
-            ("UPDATE charts SET constant=99 WHERE chart_key='1:standard:3'", "charts.constant"),
-            ("UPDATE songs SET jacket_available=0 WHERE id=1", "songs.jacket_available"),
+            ("UPDATE charts SET constant=99 WHERE chart_key='1:3'", "constant"),
+            ("UPDATE charts SET jacket_available=0 WHERE id=1", "jacket_available"),
             (
-                "UPDATE charts SET notes_json='{}' WHERE chart_key='1:standard:3'",
-                "charts.notes_json",
+                "UPDATE charts SET notes_json='{}' WHERE chart_key='1:3'",
+                "notes_json",
             ),
         ):
             with self.subTest(column=column):
@@ -310,7 +314,6 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(
             effective["songs"][0]["difficulties"]["standard"][0]["upstream_status"], "present"
         )
-        self.assertIsNone(jp_version_name(27500))
 
     def catalog(self):
         return json.loads((self.stage / "catalog.json").read_text())
@@ -331,7 +334,7 @@ class PipelineTests(unittest.TestCase):
         ]
         atomic_json(self.stage / "build_report.json", report)
 
-    def test_policy_metadata_is_recorded_and_legacy_metadata_stays_readable(self):
+    def test_current_publication_requires_recorded_source_policy(self):
         self.prepare()
         report = build(self.stage)
         value = self.catalog()
@@ -339,7 +342,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(value["source_policy"], source_policy())
         value.pop("source_policy")
         self.rewrite_catalog(value)
-        self.assertEqual(validate(self.stage)["status"], "ok")
+        with self.assertRaisesRegex(ValueError, "source policy"):
+            validate(self.stage)
 
     def test_remy_only_verifies_standard_dx_remaster_not_ordinary_or_utage(self):
         utage = song(3)
@@ -361,15 +365,14 @@ class PipelineTests(unittest.TestCase):
         ]
         atomic_json(self.stage / "remy_release_overrides.json", {"overrides": records})
         self.prepare()
-        report = build(self.stage)
-        charts = {c["chart_key"]: c for s in self.catalog()["songs"] for c in s["charts"]}
+        build(self.stage)
+        charts = {c["legacy_chart_key"]: c for c in self.catalog()["charts"]}
         self.assertEqual(charts[keys[1]]["release_status"], "verified")
         for key in (keys[0], keys[2]):
             self.assertIsNone(charts[key]["jp_release_version"])
             self.assertIsNone(charts[key]["jp_release_date"])
-        self.assertEqual(report["counts"]["remaster_verified"], 1)
         self.assertEqual(
-            sum(r["kind"] == "release_override_outside_remaster_scope" for r in report["issues"]), 2
+            load_record_review(self.stage)["remy_counts"], {"total": 1, "verified": 1, "pending": 0}
         )
         validate(self.stage)
 
@@ -381,10 +384,10 @@ class PipelineTests(unittest.TestCase):
         self.responses["divingfish_music_data.json"] = [
             {
                 "id": str(sid),
-                "title": f"Other title {sid}",
+                "title": f"Song {sid}",
                 "type": "SD",
-                "basic_info": {"artist": "Waterfish artist", "from": "Waterfish CN version"},
-                "ds": [1, 2, 3, 14.9, 15],
+                "basic_info": {"artist": "Artist", "from": "Waterfish CN version"},
+                "ds": [1, 2, 3, 13.0, 13.0],
             }
             for sid in (1, 2)
         ]
@@ -393,18 +396,13 @@ class PipelineTests(unittest.TestCase):
         }
         self.prepare()
         build(self.stage)
-        songs = self.catalog()["songs"]
-        ordinary, remaster = (row["charts"][0] for row in songs)
-        self.assertIsNone(ordinary["jp_release_version_candidate"])
+        ordinary, remaster = self.catalog()["charts"]
         self.assertIsNone(ordinary["jp_release_version"])
-        self.assertIsNone(ordinary["type_release_version_candidate"])
-        self.assertIsNone(ordinary["type_release_version_region"])
         self.assertEqual(ordinary["constant"], 13.0)
-        self.assertEqual(songs[0]["title"], "Song 1")
-        self.assertEqual(songs[0]["artist"], "Artist")
-        self.assertEqual(songs[0]["aliases"], ["LXNS alias"])
-        self.assertEqual(remaster["release_status"], "unresolved")
-        self.assertIsNone(remaster["jp_release_version_candidate"])
+        self.assertEqual(ordinary["title"], "Song 1")
+        self.assertEqual(ordinary["artist"], "Artist")
+        self.assertEqual(ordinary["aliases"], ["LXNS alias"])
+        self.assertTrue(remaster["version_pending"])
         self.assertIsNone(remaster["jp_release_version"])
         validate(self.stage)
 
@@ -423,8 +421,8 @@ class PipelineTests(unittest.TestCase):
                 self.responses["sega_jp_songs.json"] = [record]
                 self.prepare()
                 build(self.stage)
-                for chart in self.catalog()["songs"][0]["charts"]:
-                    self.assertIsNone(chart["jp_release_version_candidate"])
+                for chart in self.catalog()["charts"]:
+                    self.assertIsNone(chart["jp_release_version"])
                 validate(self.stage)
 
     def test_non_remy_override_or_missing_date_stays_pending(self):
@@ -445,26 +443,27 @@ class PipelineTests(unittest.TestCase):
                 atomic_json(self.stage / "remy_release_overrides.json", {"overrides": [record]})
                 self.prepare()
                 build(self.stage)
-                self.assertEqual(validate(self.stage)["remaster_unresolved"], 1)
+                self.assertEqual(load_record_review(self.stage)["remy_counts"]["pending"], 1)
+                validate(self.stage)
 
     def test_validator_rejects_wrong_authority_even_with_consistent_hashes(self):
         self.prepare()
         build(self.stage)
         original = self.catalog()
         for field, value, message in (
-            ("jp_release_version_candidate", "PiNK", "legacy CN/SEGA version fallbacks"),
-            ("type_release_version_region", "JP", "legacy CN/SEGA version fallbacks"),
+            ("jp_release_version", "PiNK", "admitted charts differ"),
+            ("jp_release_provider", "sega", "admitted charts differ"),
         ):
             with self.subTest(field=field):
                 modified = copy.deepcopy(original)
-                modified["songs"][1]["charts"][0][field] = value
+                modified["charts"][1][field] = value
                 self.rewrite_catalog(modified)
                 with self.assertRaisesRegex(ValueError, message):
                     validate(self.stage)
         modified = copy.deepcopy(original)
-        modified["songs"][0]["aliases"] = ["not from LXNS"]
+        modified["charts"][0]["aliases"] = ["not from LXNS"]
         self.rewrite_catalog(modified)
-        with self.assertRaisesRegex(ValueError, "LXNS alias authority"):
+        with self.assertRaisesRegex(ValueError, "admitted charts differ"):
             validate(self.stage)
         modified = copy.deepcopy(original)
         modified["source_policy"]["waterfish"]["jp_release_authority"] = True
@@ -486,10 +485,8 @@ class PipelineTests(unittest.TestCase):
             {"songs": [], "marker": "unchanged prior"},
         )
         report = build(self.stage)
-        self.assertEqual(self.catalog()["songs"][0]["charts"][0]["jp_release_version"], "DX")
-        self.assertEqual(
-            self.catalog()["songs"][0]["charts"][0]["jp_release_provider"], "arcade_songs"
-        )
+        self.assertEqual(self.catalog()["charts"][0]["jp_release_version"], "DX")
+        self.assertEqual(self.catalog()["charts"][0]["jp_release_provider"], "arcade_songs")
         self.assertEqual(report["decision_revision"], 0)
         self.assertTrue((self.stage / "catalog_review.json").is_file())
         validate(self.stage)
@@ -531,11 +528,6 @@ class PipelineTests(unittest.TestCase):
             with self.subTest(value=bad), self.assertRaises(ValueError):
                 check_source("arcade_songs.json", bad)
 
-    def record(self, sid=1, **kwargs):
-        return next(
-            r for r in load_record_review(self.stage, **kwargs)["records"] if r["song_id"] == sid
-        )
-
     def with_comparable_sources(self):
         from tests.test_catalog_versions import arcade
 
@@ -559,20 +551,6 @@ class PipelineTests(unittest.TestCase):
         ]
         self.prepare()
         build(self.stage)
-
-    def choose_field(self, field_key, source="divingfish", sid=1):
-        review = load_record_review(self.stage)
-        field = next(
-            f
-            for r in review["records"]
-            if r["song_id"] == sid
-            for f in r["fields"]
-            if f["field_key"] == field_key
-        )
-        option = next(o for o in field["options"] if o["source"] == source)
-        return validate_field_decision(
-            review, sid, {"field_key": field_key, "option_id": option["option_id"]}
-        )
 
     def test_record_comparison_numeric_genre_missing_designer_and_region_boundaries(self):
         from tests.test_catalog_versions import arcade
@@ -619,7 +597,8 @@ class PipelineTests(unittest.TestCase):
         designer = next(
             f for f in changed["records"][0]["fields"] if f["field_key"].endswith(":note_designer")
         )
-        self.assertTrue(designer["has_difference"])
+        self.assertFalse(designer["has_difference"])
+        self.assertNotIn("arcade_songs", {option["source"] for option in designer["options"]})
 
     def link_records(self, *, unmatched=False):
         from tests.test_catalog_versions import arcade
@@ -665,9 +644,7 @@ class PipelineTests(unittest.TestCase):
                             for o in field["options"]
                             if o["source"] == "arcade_songs"
                         }
-                        self.assertTrue(ids <= {wanted})
-                        if field["field_key"] == "song.artist":
-                            self.assertEqual(ids, {wanted})
+                        self.assertEqual(ids, set())
                 audit = {
                     r["external_id"]: r
                     for r in record["source_records"]
@@ -676,96 +653,6 @@ class PipelineTests(unittest.TestCase):
                 self.assertTrue(audit[wanted]["comparison_eligible"])
                 self.assertFalse(audit[excluded]["comparison_eligible"])
                 self.assertEqual(audit[excluded]["record"]["title"], "Link")
-
-    def test_record_identity_select_reject_revoke_and_same_batch_field_choice(self):
-        original, raw = self.link_records(unmatched=True)
-        original["songs"] = original["songs"][:1]
-        before_versions = resolve_versions(original, raw, [])
-        before = build_record_review(original, [], raw, version_review=before_versions)
-        artist = next(f for f in before["records"][0]["fields"] if f["field_key"] == "song.artist")
-        choice = next(
-            o
-            for o in artist["options"]
-            if o["source"] == "arcade_songs" and o["external_id"] == "Link (2)"
-        )
-        field_decision = validate_field_decision(
-            before, 131, {"field_key": "song.artist", "option_id": choice["option_id"]}
-        )
-        candidate = next(
-            c for c in before_versions["items"][0]["candidates"] if c["external_id"] == "Link (2)"
-        )
-        identity = validate_decision(
-            before_versions,
-            {
-                "object_key": "131:standard:ordinary",
-                "kind": "identity",
-                "action": "select",
-                "candidate_id": candidate["candidate_id"],
-            },
-        )
-        decisions = {"revision": 1, "decisions": [field_decision, identity]}
-        after_versions = resolve_versions(original, raw, [], adjudications=decisions)
-        after = build_record_review(
-            original, [], raw, version_review=after_versions, adjudications=decisions
-        )
-        after_artist = next(
-            f for f in after["records"][0]["fields"] if f["field_key"] == "song.artist"
-        )
-        self.assertEqual(
-            {o["external_id"] for o in after_artist["options"] if o["source"] == "arcade_songs"},
-            {"Link (2)"},
-        )
-        # Filtering the UI after this same transaction does not invalidate unchanged raw evidence.
-        self.assertEqual(
-            validate_field_decision(after, 131, field_decision)["evidence_context_fingerprint"],
-            field_decision["evidence_context_fingerprint"],
-        )
-        base = copy.deepcopy(original["songs"][0])
-        base["charts"] = [
-            {**c, "chart_key": "131:standard:3", "constant": c["level_value"]}
-            for c in base["difficulties"]["standard"]
-        ]
-        applied = apply_field_decisions([base], after, decisions)
-        self.assertEqual(applied["songs"][0]["artist"], "Circle of friends")
-        self.assertEqual(
-            next(
-                f
-                for f in applied["review"]["records"][0]["fields"]
-                if f["field_key"] == "song.artist"
-            )["status"],
-            "manual",
-        )
-        rejected = validate_decision(before_versions, {**identity, "action": "reject"})
-        rejected_versions = resolve_versions(
-            original, raw, [], adjudications={"decisions": [rejected]}
-        )
-        rejected_report = build_record_review(original, [], raw, version_review=rejected_versions)
-        rejected_artist = next(
-            f for f in rejected_report["records"][0]["fields"] if f["field_key"] == "song.artist"
-        )
-        self.assertEqual(
-            {o["external_id"] for o in rejected_artist["options"] if o["source"] == "arcade_songs"},
-            {"Link"},
-        )
-        denied = apply_field_decisions(
-            [base], rejected_report, {"decisions": [field_decision, rejected]}
-        )
-        self.assertEqual(denied["songs"][0]["artist"], "Unmatched Author")
-        denied_field = next(
-            f for f in denied["review"]["records"][0]["fields"] if f["field_key"] == "song.artist"
-        )
-        self.assertEqual(denied_field["status"], "conflict")
-        self.assertEqual(denied_field["decision"], field_decision)
-        revoked = build_record_review(
-            original, [], raw, version_review=resolve_versions(original, raw, [])
-        )
-        revoked_artist = next(
-            f for f in revoked["records"][0]["fields"] if f["field_key"] == "song.artist"
-        )
-        self.assertEqual(
-            {o["external_id"] for o in revoked_artist["options"] if o["source"] == "arcade_songs"},
-            {"Link", "Link (2)"},
-        )
 
     def test_ambiguous_exact_arcade_records_do_not_reintroduce_other_authors(self):
         original, raw = self.link_records()
@@ -776,123 +663,23 @@ class PipelineTests(unittest.TestCase):
         report = build_record_review(
             original, [], raw, version_review=resolve_versions(original, raw, [])
         )
-        artist = next(f for f in report["records"][0]["fields"] if f["field_key"] == "song.artist")
+        record = report["records"][0]
         self.assertEqual(
-            {o["external_id"] for o in artist["options"] if o["source"] == "arcade_songs"},
+            {
+                source["external_id"]
+                for source in record["source_records"]
+                if source["source"] == "arcade_songs" and source["comparison_eligible"]
+            },
             {"Link", "Link exact duplicate"},
         )
-
-    def test_field_choices_overlay_and_author_does_not_change_jp_identity_next_build(self):
-        self.with_comparable_sources()
-        choices = [
-            self.choose_field("song.artist"),
-            self.choose_field("chart:1:standard:3:constant"),
-        ]
-        atomic_json(self.stage / "previous_catalog.json", self.catalog())
-        atomic_json(
-            self.stage / "catalog_adjudications.json", {"revision": 1, "decisions": choices}
-        )
-        build(self.stage)
-        validate(self.stage)
-        current = self.catalog()["songs"][0]
-        self.assertEqual(current["artist"], "Other Artist")
-        self.assertEqual(current["source_identity"]["artist"], "Artist")
-        chart = current["charts"][0]
-        self.assertEqual(chart["constant"], 14.4)
-        self.assertEqual(chart["constant_source"], "manual_divingfish")
-        self.assertEqual(chart["jp_release_version"], "ORANGE")
-        atomic_json(self.stage / "previous_catalog.json", self.catalog())
-        build(self.stage)
-        validate(self.stage)
-        self.assertEqual(self.catalog()["songs"][0]["charts"][0]["release_status"], "resolved")
-        self.assertNotIn("object_identity_changed", self.record()["identities"][0]["reasons"])
-
-    def test_field_selection_binds_identity_and_evidence_then_revoke_restores_lxns(self):
-        self.with_comparable_sources()
-        choice = self.choose_field("song.artist")
-        atomic_json(
-            self.stage / "catalog_adjudications.json", {"revision": 1, "decisions": [choice]}
-        )
-        build(self.stage)
-        changed = json.loads((self.stage / "raw/divingfish_music_data.json").read_text())
-        changed[0]["basic_info"]["artist"] = "Changed Artist"
-        atomic_json(self.stage / "raw/divingfish_music_data.json", changed)
-        receipts = json.loads((self.stage / "raw/sources.json").read_text())
-        content = (self.stage / "raw/divingfish_music_data.json").read_bytes()
-        for row in receipts:
-            if row["file"] == "divingfish_music_data.json":
-                row.update(sha256=hashlib.sha256(content).hexdigest(), bytes=len(content))
-        atomic_json(self.stage / "raw/sources.json", receipts)
-        build(self.stage)
-        validate(self.stage)
-        field = next(f for f in self.record()["fields"] if f["field_key"] == "song.artist")
-        self.assertEqual(field["status"], "conflict")
-        self.assertIn("decision_stale", field["reasons"])
-        self.assertEqual(field["decision"]["value"], "Other Artist")
-        self.assertEqual(self.catalog()["songs"][0]["artist"], "Artist")
-        atomic_json(self.stage / "catalog_adjudications.json", {"revision": 2, "decisions": []})
-        build(self.stage)
-        self.assertIsNone(
-            next(f for f in self.record()["fields"] if f["field_key"] == "song.artist")["decision"]
-        )
-
-    def test_unpublished_field_decision_never_changes_current(self):
-        self.with_comparable_sources()
-        choice = self.choose_field("song.artist")
-        record = self.record(adjudications={"revision": 1, "decisions": [choice]})
-        field = next(f for f in record["fields"] if f["field_key"] == "song.artist")
-        self.assertEqual(field["current"]["value"], "Artist")
-        self.assertTrue(field["decision_pending"])
-        self.assertEqual(field["requested_value"], "Other Artist")
-        self.assertEqual(self.catalog()["songs"][0]["artist"], "Artist")
-
-    def test_orphan_field_decisions_remain_visible_and_revocable(self):
-        self.with_comparable_sources()
-        decision = self.choose_field("chart:1:standard:3:constant")
-        missing = copy.deepcopy(decision)
-        missing.update(
-            song_id=999,
-            field_key="chart:999:standard:3:constant",
-            object_key="field:999:chart:999:standard:3:constant",
-        )
-        active = {"revision": 1, "decisions": [missing]}
-        report = load_record_review(self.stage, adjudications=active)
-        row = next(r for r in report["records"] if r["song_id"] == 999)
-        self.assertTrue(row["unavailable"])
-        self.assertEqual(row["fields"][0]["status"], "conflict")
-        self.assertIn("object_missing", row["fields"][0]["reasons"])
-        revoke = validate_field_decision(
-            report, 999, {"field_key": missing["field_key"], "action": "revoke"}
-        )
-        self.assertEqual(revoke["object_key"], missing["object_key"])
-        self.assertEqual(revoke["action"], "revoke")
-
-    def test_field_selector_rejects_cross_domain_and_mismatched_fingerprint(self):
-        self.with_comparable_sources()
-        review = load_record_review(self.stage)
-        field = next(f for f in review["records"][0]["fields"] if f["field_key"] == "song.artist")
-        with self.assertRaisesRegex(ValueError, "证据"):
-            validate_field_decision(
-                review,
-                1,
-                {
-                    "field_key": "song.artist",
-                    "option_id": field["options"][1]["option_id"],
-                    "object_fingerprint": "wrong",
-                },
+        self.assertFalse(
+            any(
+                option["source"] == "arcade_songs"
+                for field in record["fields"]
+                if field["semantic_domain"] != "jp_release"
+                for option in field["options"]
             )
-        version = next(
-            f for f in review["records"][0]["fields"] if f["semantic_domain"] == "jp_release"
         )
-        with self.assertRaisesRegex(ValueError, "语义域"):
-            validate_field_decision(
-                review,
-                1,
-                {
-                    "field_key": version["field_key"],
-                    "option_id": version["options"][0]["option_id"],
-                },
-            )
 
     def test_invalid_notes_and_nonfinite_constant_rejected(self):
         invalid = document([song()])

@@ -6,18 +6,15 @@ No source file is modified by this module.
 
 from __future__ import annotations
 
-import json
 import math
 from collections import defaultdict
 from copy import deepcopy
-from pathlib import Path
 
 try:
     from .catalog_versions import (
         fingerprint,
         identity_candidates,
         normalize,
-        resolve_versions,
         validate_bound_decision,
     )
 except ImportError:
@@ -25,7 +22,6 @@ except ImportError:
         fingerprint,
         identity_candidates,
         normalize,
-        resolve_versions,
         validate_bound_decision,
     )
 
@@ -46,7 +42,6 @@ GENRES = {
 GENRE_NAMES = {
     normalize(alias): canonical for canonical, aliases in GENRES.items() for alias in aliases
 }
-DIFFICULTIES = {"basic": 0, "advanced": 1, "expert": 2, "master": 3, "remaster": 4}
 LABELS = {
     "title": "曲名",
     "artist": "作者",
@@ -140,10 +135,6 @@ def _option(source, external_id, path, raw_value, value, identity, *, match="mat
         "identity_match": match,
         "selectable": True,
     }
-
-
-def _context(options):
-    return fingerprint(sorted({row["evidence_fingerprint"] for row in options}))
 
 
 def _field(song, field_key, field, raw_default, scope, *, chart=None):
@@ -244,12 +235,8 @@ def build_record_review(
     lxns,
     fish,
     arcade,
-    aliases=None,
-    catalog_songs=None,
     version_review=None,
     adjudications=None,
-    *,
-    arcade_metadata=True,
 ):
     """Compare complete local song records; retain distinct region/scope meanings."""
     fish_by_id, arcade_by_title = defaultdict(list), defaultdict(list)
@@ -275,7 +262,7 @@ def build_record_review(
                 "identity_match": "authority",
             }
         ]
-        fish_matches, arcade_matches = [], []
+        fish_matches = []
         for kind, charts in song["difficulties"].items():
             if not charts:
                 continue
@@ -314,7 +301,6 @@ def build_record_review(
                 continue
             selected_types = membership[row["songId"]]
             match = next(iter(selected_types.values()), "excluded_same_title")
-            arcade_matches.append((match, row, selected_types))
             source_records.append(
                 {
                     "source": "arcade_songs",
@@ -335,7 +321,6 @@ def build_record_review(
             identity,
             match="matched",
             *,
-            eligible=True,
             target_fields=fields,
         ):
             field = target_fields[field_key]
@@ -349,7 +334,7 @@ def build_record_review(
                 return
             option = _option(source, external_id, path, raw_value, value, identity, match=match)
             field["source_context_fingerprints"].append(option["evidence_fingerprint"])
-            if eligible and not any(
+            if not any(
                 existing["option_id"] == option["option_id"] for existing in field["options"]
             ):
                 field["options"].append(option)
@@ -393,45 +378,6 @@ def build_record_review(
                             identity,
                             "id_and_type",
                         )
-        for match, row, selected_types in arcade_matches:
-            if not arcade_metadata:
-                continue
-            identity = {"title": row["title"], "artist": row["artist"]}
-            for name in SONG_FIELDS:
-                source_name = "category" if name == "genre" else name
-                add(
-                    f"song.{name}",
-                    "arcade_songs",
-                    row["songId"],
-                    source_name,
-                    row.get(source_name),
-                    identity,
-                    match,
-                    eligible=bool(selected_types),
-                )
-            for sheet in row.get("sheets", []):
-                kind = {"std": "standard", "dx": "dx"}.get(sheet.get("type"))
-                index = DIFFICULTIES.get(sheet.get("difficulty"))
-                if kind is None or index is None:
-                    continue
-                key = f"{sid}:{kind}:{index}"
-                if f"chart:{key}:notes" not in fields:
-                    continue
-                for name, source_name in (
-                    ("note_designer", "noteDesigner"),
-                    ("notes", "noteCounts"),
-                ):
-                    add(
-                        f"chart:{key}:{name}",
-                        "arcade_songs",
-                        row["songId"],
-                        f"sheets.{sheet['type']}.{sheet['difficulty']}.{source_name}",
-                        sheet.get(source_name),
-                        {**identity, "type": kind, "difficulty_index": index},
-                        match,
-                        eligible=kind in selected_types,
-                    )
-                # JP level/constant/version/availability stay in source_records, never CN options.
         for field in fields.values():
             field["source_context_fingerprint"] = fingerprint(
                 sorted(set(field.pop("source_context_fingerprints")))
@@ -502,377 +448,3 @@ def build_record_review(
         "decision_revision": (adjudications or {}).get("revision", 0),
         "records": records,
     }
-
-
-def validate_field_decision(review, song_id, choice):
-    if not isinstance(choice, dict):
-        raise ValueError("字段选择格式无效")
-    record = next((r for r in review.get("records", []) if r["song_id"] == song_id), None)
-    field = (
-        next((f for f in record["fields"] if f["field_key"] == choice.get("field_key")), None)
-        if record
-        else None
-    )
-    if not field or field["semantic_domain"] == "jp_release":
-        raise ValueError("字段不存在或不允许此语义域的覆盖")
-    if choice.get("action") == "revoke":
-        if not field.get("decision"):
-            raise ValueError("该字段没有可撤销的决定")
-        return {
-            "object_key": field["object_key"],
-            "kind": "field",
-            "action": "revoke",
-            "song_id": song_id,
-            "field_key": field["field_key"],
-        }
-    if choice.get("action", "select") != "select" or not field["selectable"]:
-        raise ValueError("字段不可选择")
-    option = next(
-        (
-            o
-            for o in field["options"]
-            if o["option_id"] == choice.get("option_id", choice.get("candidate_id"))
-        ),
-        None,
-    )
-    if not option or not option["selectable"]:
-        raise ValueError("字段来源选项不存在")
-    expected = {
-        "object_fingerprint": field["object_fingerprint"],
-        "evidence_fingerprint": option["evidence_fingerprint"],
-        "evidence_context_fingerprint": field.get(
-            "source_context_fingerprint", _context(field["options"])
-        ),
-    }
-    for key, value in expected.items():
-        if choice.get(key) not in (None, value):
-            raise ValueError("字段身份或来源证据已变化，请重新选择")
-    return {
-        **deepcopy(choice),
-        **expected,
-        "object_key": field["object_key"],
-        "kind": "field",
-        "action": "select",
-        "song_id": song_id,
-        "field_key": field["field_key"],
-        "option_id": option["option_id"],
-        "candidate_id": option["option_id"],
-        "song_title": record.get("source_identity", {}).get("title", record["title"]),
-        "value": deepcopy(option["value"]),
-        "source": option["source"],
-        "semantic_domain": field["semantic_domain"],
-    }
-
-
-def _append_orphans(review, decisions):
-    records = {r["song_id"]: r for r in review["records"]}
-    for decision in decisions:
-        if (
-            decision.get("kind") != "field"
-            or type(decision.get("song_id")) is not int
-            or not isinstance(decision.get("field_key"), str)
-        ):
-            continue
-        sid, key = decision["song_id"], decision["field_key"]
-        if sid not in records:
-            record = {
-                "song_id": sid,
-                "title": decision.get("song_title", f"ID {sid}"),
-                "artist": "",
-                "status": "conflict",
-                "fields": [],
-                "identities": [],
-                "source_records": [],
-                "unavailable": True,
-            }
-            review["records"].append(record)
-            records[sid] = record
-        record = records[sid]
-        if any(f["field_key"] == key for f in record["fields"]):
-            continue
-        field_name = key.rsplit(":", 1)[-1] if key.startswith("chart:") else key.rsplit(".", 1)[-1]
-        record["fields"].append(
-            {
-                "field_key": key,
-                "label": LABELS.get(field_name, field_name),
-                "scope": "chart" if key.startswith("chart:") else "song",
-                "chart_key": key[len("chart:") :].rsplit(":", 1)[0]
-                if key.startswith("chart:")
-                else None,
-                "semantic_domain": decision.get(
-                    "semantic_domain", "cn_chart" if key.startswith("chart:") else "shared_metadata"
-                ),
-                "object_key": decision["object_key"],
-                "object_fingerprint": decision.get("object_fingerprint"),
-                "current": {"value": None, "source": None, "status": "unresolved"},
-                "automatic": {"value": None, "source": None},
-                "current_option_id": None,
-                "recommended_option_id": None,
-                "options": [],
-                "unavailable": True,
-                "selectable": False,
-                "status": "conflict",
-                "has_difference": True,
-                "decision": deepcopy(decision),
-                "reasons": ["object_missing"],
-            }
-        )
-        record["status"] = "conflict"
-
-
-def apply_field_decisions(songs, review, adjudications=None):
-    """Apply only still-bound field decisions; stale exceptions return to LXNS."""
-    result, review = deepcopy(songs), deepcopy(review)
-    song_by_id = {s["id"]: s for s in result}
-    chart_by_key = {c["chart_key"]: c for s in result for c in s.get("charts", [])}
-    decisions = defaultdict(list)
-    for decision in (adjudications or {}).get("decisions", []):
-        if decision.get("kind") == "field":
-            decisions[decision.get("object_key")].append(decision)
-    _append_orphans(review, (adjudications or {}).get("decisions", []))
-    issues = []
-    for record in review["records"]:
-        song = song_by_id.get(record["song_id"])
-        if song is None:
-            continue
-        song.pop("field_overrides", None)
-        for chart in song.get("charts", []):
-            chart.pop("field_overrides", None)
-        for field in record["fields"]:
-            if field["semantic_domain"] == "jp_release":
-                continue
-            if field.get("unavailable"):
-                issues.append(
-                    {
-                        "kind": "record_field_conflict",
-                        "song_id": record["song_id"],
-                        "field_key": field["field_key"],
-                        "reasons": ["object_missing"],
-                    }
-                )
-                continue
-            name = (
-                field["field_key"].rsplit(":", 1)[-1]
-                if field["scope"] == "chart"
-                else field["field_key"].split(".")[-1]
-            )
-            target = chart_by_key[field["chart_key"]] if field["scope"] == "chart" else song
-            target[name] = deepcopy(field["automatic"]["value"])
-            if name == "constant":
-                target["constant_source"] = "lxns_current_cn"
-            active = decisions[field["object_key"]]
-            if active:
-                field["decision"] = deepcopy(active[0])
-                try:
-                    if len(active) != 1:
-                        raise ValueError("duplicate field decision")
-                    decision = validate_field_decision(review, record["song_id"], active[0])
-                    if any(
-                        active[0].get(k) != decision[k]
-                        for k in (
-                            "object_fingerprint",
-                            "evidence_fingerprint",
-                            "evidence_context_fingerprint",
-                        )
-                    ):
-                        raise ValueError("unbound field decision")
-                    # Missing designers normalize to absent; selecting LXNS preserves its original spelling.
-                    value = (
-                        field["automatic"]["value"]
-                        if decision["source"] == "lxns"
-                        else decision["value"]
-                    )
-                    target[name] = deepcopy(value)
-                    if name == "constant":
-                        target["constant_source"] = "manual_" + decision["source"]
-                    target.setdefault("field_overrides", {})[name] = deepcopy(decision)
-                    field["current"] = {
-                        "value": deepcopy(value),
-                        "source": decision["source"],
-                        "status": "manual",
-                    }
-                    field["current_option_id"] = decision["option_id"]
-                    field["status"] = "manual"
-                except ValueError:
-                    field["status"] = "conflict"
-                    field["current"]["status"] = "conflict"
-                    field["reasons"].append("decision_stale")
-            if field["status"] in ("pending", "conflict"):
-                issues.append(
-                    {
-                        "kind": "record_field_" + field["status"],
-                        "song_id": record["song_id"],
-                        "field_key": field["field_key"],
-                        "reasons": field["reasons"],
-                    }
-                )
-        states = {field["status"] for field in record["fields"]}
-        record["status"] = (
-            "conflict"
-            if "conflict" in states
-            else "pending"
-            if "pending" in states
-            else "manual"
-            if "manual" in states
-            else "resolved"
-        )
-        record["title"], record["artist"] = song["title"], song["artist"]
-    return {"songs": result, "review": review, "issues": issues}
-
-
-def prepare_record_review(lxns, fish, arcade, aliases, songs, version_review, adjudications=None):
-    review = build_record_review(lxns, fish, arcade, aliases, songs, version_review, adjudications)
-    return apply_field_decisions(songs, review, adjudications)
-
-
-def load_record_review(directory, adjudications=None):
-    directory = Path(directory)
-
-    def read(name, default=None):
-        path = directory / name
-        return json.loads(path.read_text()) if path.exists() else default
-
-    applied = read("catalog_adjudications.json", {"revision": 0, "decisions": []})
-    if (directory / "catalog_record_review.json").is_file():
-        review = read("catalog_record_review.json")
-    else:
-        lxns = read("effective_lxns_songs.json", read("raw/lxns_songs.json"))
-        arcade = read("raw/arcade_songs.json", {"songs": []})
-        try:
-            from .build_catalog import override_index
-        except ImportError:
-            from build_catalog import override_index
-        overrides, _ = override_index(directory / "remy_release_overrides.json")
-        versions = resolve_versions(
-            lxns,
-            arcade,
-            list(overrides.values()),
-            read("previous_catalog.json"),
-            applied,
-            read("remy_conflicts.json"),
-        )
-        catalog = read("catalog.json")
-        review = prepare_record_review(
-            lxns,
-            read("raw/divingfish_music_data.json", []),
-            arcade,
-            read("raw/lxns_aliases.json", {"aliases": []}),
-            catalog["songs"],
-            versions,
-            applied,
-        )["review"]
-        actual_songs = {s["id"]: s for s in catalog["songs"]}
-        for record in review["records"]:
-            song = actual_songs.get(record["song_id"])
-            if not song:
-                continue
-            record["title"], record["artist"] = song["title"], song["artist"]
-            charts = {c["chart_key"]: c for c in song["charts"]}
-            for field in record["fields"]:
-                if field.get("unavailable"):
-                    continue
-                if field["semantic_domain"] == "jp_release":
-                    chart = next(
-                        (
-                            c
-                            for c in song["charts"]
-                            if c["type"] == field["type"]
-                            and (
-                                c["difficulty_index"] == 4
-                                if field["scope"] == "chart"
-                                else c["difficulty_index"] < 4
-                            )
-                        ),
-                        None,
-                    )
-                    if chart:
-                        field["current"] = {
-                            "value": {
-                                "version": chart["jp_release_version"],
-                                "date": chart["jp_release_date"],
-                            },
-                            "source": chart["jp_release_provider"],
-                            "status": chart["release_status"],
-                        }
-                else:
-                    target = charts.get(field["chart_key"]) if field["scope"] == "chart" else song
-                    name = (
-                        field["field_key"].rsplit(":", 1)[-1]
-                        if field["scope"] == "chart"
-                        else field["field_key"].split(".")[-1]
-                    )
-                    if target is not None:
-                        field["current"]["value"] = deepcopy(target[name])
-                        field["current"]["source"] = (
-                            target.get("field_overrides", {}).get(name, {}).get("source", "lxns")
-                        )
-    review["applied_decision_revision"] = applied.get("revision", 0)
-    if adjudications is None:
-        return review
-    review["decision_revision"] = adjudications.get("revision", 0)
-    active_by_key = {(d["object_key"], d["kind"]): d for d in adjudications.get("decisions", [])}
-    applied_by_key = {(d["object_key"], d["kind"]): d for d in applied.get("decisions", [])}
-    _append_orphans(review, adjudications.get("decisions", []))
-    changed = {
-        key
-        for key in active_by_key.keys() | applied_by_key.keys()
-        if active_by_key.get(key) != applied_by_key.get(key)
-    }
-    for record in review["records"]:
-        for field in record["fields"]:
-            is_version = field["semantic_domain"] == "jp_release"
-            key = (
-                (field["version_object_key"], "version")
-                if is_version
-                else (field["object_key"], "field")
-            )
-            identity_pending = is_version and (field["version_object_key"], "identity") in changed
-            if key not in changed and not identity_pending:
-                continue
-            active = active_by_key.get(key)
-            field["applied_decision"] = deepcopy(applied_by_key.get(key))
-            field["decision"] = deepcopy(active)
-            field["pending_decision"] = deepcopy(active)
-            field["decision_pending"] = True
-            field["pending_action"] = (
-                active["action"] if active else "revoke" if key in changed else "identity"
-            )
-            if active:
-                selected = next(
-                    (
-                        o
-                        for o in field["options"]
-                        if o["option_id"] == active.get("option_id", active.get("candidate_id"))
-                    ),
-                    None,
-                )
-                field["requested_value"] = deepcopy(
-                    selected["value"]
-                    if selected
-                    else {"version": active.get("version"), "date": active.get("date")}
-                    if is_version
-                    else active.get("value")
-                )
-            elif not is_version:
-                field["requested_value"] = deepcopy(field["automatic"]["value"])
-            field["status"] = "conflict" if field.get("unavailable") else "pending"
-            field["reasons"] = sorted(set(field["reasons"] + ["decision_pending"]))
-        for identity in record["identities"]:
-            keys = [(identity["object_key"], kind) for kind in ("identity", "version")]
-            if any(key in changed for key in keys):
-                identity["applied_decisions"] = deepcopy(identity["decisions"])
-                identity["decisions"] = [
-                    deepcopy(active_by_key[key]) for key in keys if key in active_by_key
-                ]
-                identity["decision_pending"] = True
-        states = {field["status"] for field in record["fields"]}
-        record["status"] = (
-            "conflict"
-            if "conflict" in states
-            else "pending"
-            if "pending" in states
-            else "manual"
-            if "manual" in states
-            else "resolved"
-        )
-    return review

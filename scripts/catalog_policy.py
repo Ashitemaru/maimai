@@ -72,11 +72,3 @@ SOURCE_POLICY = {
 
 def source_policy():
     return deepcopy(SOURCE_POLICY)
-
-
-def remaster_scope(chart_type, difficulty_index):
-    return chart_type in ("standard", "dx") and difficulty_index == 4
-
-
-def ordinary_scope(chart_type, difficulty_index):
-    return chart_type in ("standard", "dx") and difficulty_index in (0, 1, 2, 3)

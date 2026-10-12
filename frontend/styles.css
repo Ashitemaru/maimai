@@ -24,7 +24,6 @@
   --surface-page: #f5f7fa;
   --surface-muted: #f8fafc;
   --green: #237c66;
-  --purple: #79509d;
   --warning: #946321;
   --warning-soft: #fff7e8;
   --font-root: 16px;
@@ -185,8 +184,7 @@ textarea {
 }
 .btn,
 .pager-buttons button,
-.close,
-.layout-option {
+.close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -219,11 +217,6 @@ textarea {
 .btn.primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
-}
-.btn.dark {
-  background: var(--text);
-  border-color: var(--text);
-  color: #fff;
 }
 .btn.quiet {
   background: transparent;
@@ -265,7 +258,6 @@ textarea {
   border-radius: 50%;
   background: var(--green);
 }
-.boot,
 .empty-state,
 .review-empty {
   padding: var(--space-8) var(--space-4);
@@ -278,26 +270,6 @@ textarea {
   display: block;
   color: var(--text-secondary);
   font-size: var(--font-body);
-}
-.empty-icon {
-  font-size: var(--font-stat);
-  margin-bottom: var(--space-3);
-}
-.subtle-note,
-.footnote {
-  margin: var(--space-4) 0;
-  color: var(--muted);
-  font-size: var(--font-sm);
-  line-height: 1.6;
-}
-.footnote {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.footnote svg {
-  width: 16px;
-  height: 16px;
 }
 
 /* App shell */
@@ -375,13 +347,6 @@ textarea {
   color: var(--accent);
   font-weight: 650;
 }
-.nav-item .soon {
-  margin-left: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 0 var(--space-1);
-  font-size: var(--font-xs);
-}
 .nav-sep {
   height: 1px;
   margin: var(--space-5) var(--space-3);
@@ -390,14 +355,6 @@ textarea {
 .sidebar-bottom {
   margin-top: auto;
   padding-top: var(--space-6);
-}
-.local-status {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin: 0 var(--space-3) var(--space-4);
-  font-size: var(--font-sm);
-  color: var(--muted);
 }
 .profile {
   display: flex;
@@ -577,8 +534,7 @@ textarea {
 }
 .workspace,
 .settings-panel,
-.cover-controls,
-.venue-card {
+.cover-controls {
   min-width: 0;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -1347,11 +1303,6 @@ textarea {
   font-size: var(--font-sm);
   line-height: 1.5;
 }
-.form-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-}
 .drawer-actions {
   display: flex;
   align-items: center;
@@ -1569,8 +1520,7 @@ textarea {
   border-radius: var(--radius-panel);
   background: #edf1f6;
 }
-.preview-label,
-.preview-bottom {
+.preview-label {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1580,10 +1530,6 @@ textarea {
 }
 .preview-label {
   margin-bottom: var(--space-3);
-}
-.preview-bottom {
-  margin-top: var(--space-3);
-  flex-wrap: wrap;
 }
 .canvas-frame {
   background: #faf8f3;
@@ -1635,62 +1581,6 @@ textarea {
 .cover-song small {
   color: var(--muted);
   font-size: var(--font-sm);
-}
-.layout-picker {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.layout-option {
-  flex: 1;
-}
-.layout-option.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.cover-meta {
-  margin-top: var(--space-4);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: var(--font-sm);
-  line-height: 1.6;
-}
-.safe-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--control-height);
-  color: var(--text-secondary);
-  font-size: var(--font-control);
-  cursor: pointer;
-}
-.venue-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-.venue-card {
-  padding: var(--panel-padding);
-}
-.venue-card strong {
-  font-size: var(--font-body);
-  overflow-wrap: anywhere;
-}
-.venue-card span {
-  display: block;
-  margin-top: var(--space-3);
-  color: var(--accent);
-  font-size: var(--font-title);
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-}
-.venue-card small {
-  margin-left: var(--space-2);
-  color: var(--muted);
-  font-size: var(--font-sm);
-  font-weight: 400;
 }
 
 .venue-summary-toolbar {
@@ -1819,11 +1709,6 @@ textarea {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.settings-divider {
-  height: 1px;
-  margin: var(--space-5) 0;
-  background: var(--line);
-}
 .preferences-panel {
   margin-bottom: var(--space-4);
 }
@@ -1860,21 +1745,8 @@ textarea {
   justify-content: space-between;
   gap: var(--space-3);
 }
-.preferences-load-error > span {
-  min-width: 0;
-}
 .preferences-load-error > .btn {
   flex-shrink: 0;
-}
-.sync-info {
-  margin: var(--space-4) 0;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  font-size: var(--font-control);
-  line-height: 1.7;
 }
 .catalog-main-status {
   display: flex;
@@ -2359,9 +2231,6 @@ textarea {
 .matrix-filters .matrix-error {
   margin-inline: 0;
 }
-.matrix-error > span {
-  min-width: 0;
-}
 .matrix-error > .btn {
   flex-shrink: 0;
 }
@@ -2643,9 +2512,6 @@ textarea {
   .catalog-verification-actions {
     justify-content: flex-start;
   }
-  .venue-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
   .matrix-filter-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
@@ -2879,8 +2745,7 @@ textarea {
   .preview-panel {
     padding: var(--space-3);
   }
-  .preview-label,
-  .preview-bottom {
+  .preview-label {
     flex-wrap: wrap;
   }
   .catalog-diff {
@@ -2946,10 +2811,6 @@ textarea {
   }
   .completion-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-  .venue-grid,
-  .form-row {
-    grid-template-columns: minmax(0, 1fr);
   }
   .chart-table th:nth-child(5) {
     width: 78px;
@@ -3122,289 +2983,6 @@ textarea {
   }
   .auth-heading p {
     max-width: 220px;
-  }
-}
-
-/* Local venue location review draft. */
-.venue-location-review-page {
-  width: min(100%, 1120px);
-  min-width: 0;
-  margin: 0 auto;
-  padding: var(--space-8) var(--space-6);
-}
-.venue-location-review-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-5);
-  margin-bottom: var(--space-6);
-}
-.venue-location-review-header h1 {
-  margin-bottom: var(--space-2);
-  font-size: var(--font-title);
-}
-.venue-location-review-header p {
-  margin-bottom: 0;
-  color: var(--muted);
-  font-size: var(--font-ui);
-}
-.venue-location-review-header .venue-location-review-eyebrow {
-  margin-bottom: var(--space-2);
-  color: var(--accent);
-  font-size: var(--font-ui);
-  font-weight: 600;
-}
-.venue-location-review-progress {
-  flex-shrink: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  padding: var(--space-3) var(--space-4);
-  background: var(--surface);
-  font-size: var(--font-ui);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.venue-location-review-toolbar,
-.venue-location-review-filter {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-.venue-location-review-toolbar {
-  flex-wrap: wrap;
-  gap: var(--space-4);
-}
-.venue-location-review-search {
-  flex: 1 1 220px;
-  max-width: 400px;
-}
-.venue-location-review-search input {
-  width: 100%;
-}
-.venue-location-review-filter {
-  font-size: var(--font-ui);
-  cursor: pointer;
-}
-.venue-location-review-muted,
-.venue-location-review-storage {
-  color: var(--muted);
-  font-size: var(--font-ui);
-}
-.venue-location-review-storage {
-  margin: var(--space-3) 0 var(--space-6);
-}
-.venue-location-review-storage[data-state='error'],
-.venue-location-review-error {
-  color: var(--warning);
-}
-.venue-location-review-city > h2 {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin: var(--space-8) 0 var(--space-3);
-  font-size: var(--font-section);
-}
-.venue-location-review-city-count {
-  color: var(--muted);
-  font-size: var(--font-ui);
-  font-weight: 400;
-}
-.venue-location-review-entry {
-  min-width: 0;
-  padding: var(--space-5);
-  margin-bottom: var(--space-4);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  background: var(--surface);
-}
-.venue-location-review-entry-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-.venue-location-review-entry-header h3 {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin: 0;
-  font-size: var(--font-body);
-  overflow-wrap: anywhere;
-}
-.venue-location-review-number {
-  color: var(--muted);
-  font-size: var(--font-ui);
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-}
-.venue-location-review-status {
-  flex-shrink: 0;
-  border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-2);
-  color: var(--warning);
-  background: var(--warning-soft);
-  font-size: var(--font-xs);
-}
-.venue-location-review-question {
-  margin-bottom: var(--space-3);
-  color: var(--warning);
-  font-size: var(--font-ui);
-}
-.venue-location-review-candidates {
-  min-width: 0;
-  padding: 0;
-  margin: 0;
-  border: 0;
-}
-.venue-location-review-candidate {
-  padding: var(--space-3);
-  margin-bottom: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-  background: var(--surface-muted);
-}
-.venue-location-review-candidate:has(input:checked) {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-.venue-location-review-choice {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  font-size: var(--font-ui);
-  cursor: pointer;
-}
-.venue-location-review-choice input {
-  margin-top: var(--space-1);
-}
-.venue-location-review-choice-content {
-  display: grid;
-  gap: var(--space-1);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.venue-location-review-address {
-  color: var(--text-secondary);
-}
-.venue-location-review-sources {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2) var(--space-3);
-  margin-top: var(--space-2);
-  padding-left: calc(18px + var(--space-3));
-  font-size: var(--font-ui);
-}
-.venue-location-review-sources a {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  overflow-wrap: anywhere;
-}
-.venue-location-review-evidence {
-  margin-top: var(--space-2);
-  padding-left: calc(18px + var(--space-3));
-  color: var(--muted);
-  font-size: var(--font-ui);
-  overflow-wrap: anywhere;
-}
-.venue-location-review-evidence summary {
-  cursor: pointer;
-}
-.venue-location-review-evidence p {
-  margin: var(--space-2) 0 0;
-}
-.venue-location-review-supplements {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  align-items: end;
-  gap: var(--space-3);
-  margin-top: var(--space-4);
-}
-.venue-location-review-supplements label {
-  display: grid;
-  gap: var(--space-2);
-  min-width: 0;
-  font-size: var(--font-ui);
-  color: var(--text-secondary);
-}
-.venue-location-review-supplements input {
-  width: 100%;
-}
-.venue-location-review-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding-top: var(--space-5);
-  margin-top: var(--space-5);
-  border-top: 1px solid var(--line);
-}
-.venue-location-review-empty {
-  padding: var(--space-8) 0;
-  color: var(--muted);
-  text-align: center;
-}
-.venue-location-review-dialog {
-  width: min(680px, calc(100% - var(--space-6)));
-  max-height: calc(100dvh - var(--space-6));
-  padding: var(--space-5);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-overlay);
-  color: var(--text);
-  background: var(--surface);
-  font-size: var(--font-ui);
-  overflow-wrap: anywhere;
-}
-.venue-location-review-dialog::backdrop {
-  background: #18243966;
-}
-.venue-location-review-dialog h2 {
-  margin-bottom: var(--space-3);
-  font-size: var(--font-section);
-}
-.venue-location-review-export-list {
-  max-height: 45dvh;
-  overflow-y: auto;
-  overscroll-behavior-y: contain;
-}
-.venue-location-review-export-item {
-  padding: var(--space-3) 0;
-  border-top: 1px solid var(--line);
-}
-.venue-location-review-export-item p {
-  margin: var(--space-1) 0 0;
-}
-.venue-location-review-dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-top: var(--space-5);
-}
-@media (max-width: 640px) {
-  .venue-location-review-page {
-    padding: var(--space-5) var(--space-3);
-  }
-  .venue-location-review-header {
-    flex-wrap: wrap;
-    gap: var(--space-3);
-  }
-  .venue-location-review-entry {
-    padding: var(--space-3);
-  }
-  .venue-location-review-entry-header {
-    flex-wrap: wrap;
-  }
-  .venue-location-review-supplements {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .venue-location-review-supplements .btn {
-    justify-self: start;
-  }
-  .venue-location-review-footer {
-    flex-wrap: wrap;
   }
 }
 

@@ -1,5 +1,5 @@
 export type Page = 'ap' | 'statistics' | 'pending' | 'cover' | 'venues' | 'settings';
-export interface PendingRecord {
+interface PendingRecord {
   id: string;
   venue: string;
   created_at: string;

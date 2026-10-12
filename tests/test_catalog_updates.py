@@ -573,10 +573,6 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(service.decisions.snapshot()["decisions"], [])
             self.assertEqual(service.decisions.history(), [])
             self.assertIsNone(service._main_future)
-        with self.assertRaisesRegex(ValueError, "旧的逐字段"):
-            service.decide(
-                {"object_key": "1:dx:4", "kind": "version", "action": "set", "version": "Splash"}
-            )
 
     def test_complete_chart_choices_save_one_batch_rebuild_once_and_reject_stale_repeat(self):
         service = self.service()

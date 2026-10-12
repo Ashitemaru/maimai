@@ -1,12 +1,12 @@
 import type { SyncResult } from './types';
 
-export interface WahlapSyncResult extends SyncResult {
+interface WahlapSyncResult extends SyncResult {
   source: 'wahlap';
   notice?: string | null;
   logout_status?: string | null;
   logout_confirmed?: boolean;
 }
-export interface DivingFishUploadResult {
+interface DivingFishUploadResult {
   ok: boolean;
   source: 'divingfish_upload';
   uploaded_at?: string;

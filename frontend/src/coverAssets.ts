@@ -1,6 +1,6 @@
-export const BACKGROUND_MANIFEST_URL = '/cover-assets/version-backgrounds/manifest.json';
+const BACKGROUND_MANIFEST_URL = '/cover-assets/version-backgrounds/manifest.json';
 export const GAME_UI_MANIFEST_URL = '/cover-assets/game-ui/manifest.json';
-export interface VersionAsset {
+interface VersionAsset {
   family_key: string;
   version_name: string;
   logo_file: string;
@@ -16,7 +16,7 @@ export interface ImageAsset {
   crop?: { x: number; y: number; width: number; height: number };
   [key: string]: unknown;
 }
-export interface Glyph {
+interface Glyph {
   file?: string;
   x?: number;
   y?: number;
@@ -32,11 +32,11 @@ export interface NumberSet {
   line_height?: number;
   [key: string]: unknown;
 }
-export interface GameUIManifest {
+interface GameUIManifest {
   assets: Record<string, ImageAsset>;
   number_sets: Record<string, NumberSet>;
 }
-export interface VersionChart {
+interface VersionChart {
   difficulty_index: number;
   jp_release_version?: string | null;
   jp_release_version_candidate?: string | null;

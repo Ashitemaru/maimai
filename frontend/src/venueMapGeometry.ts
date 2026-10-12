@@ -21,7 +21,7 @@ export function isMapPoint(point: MapPoint | null | undefined): point is MapPoin
   );
 }
 
-export function projectPoint(point: MapPoint, zoom: number): MapPixel {
+function projectPoint(point: MapPoint, zoom: number): MapPixel {
   const world = TILE_SIZE * 2 ** zoom;
   const latitude = (clamp(point.latitude, -MAX_LATITUDE, MAX_LATITUDE) * Math.PI) / 180;
   return {
@@ -30,7 +30,7 @@ export function projectPoint(point: MapPoint, zoom: number): MapPixel {
   };
 }
 
-export function unprojectPoint(point: MapPixel, zoom: number): MapPoint {
+function unprojectPoint(point: MapPixel, zoom: number): MapPoint {
   const world = TILE_SIZE * 2 ** zoom;
   return {
     longitude: (wrap(point.x, world) / world) * 360 - 180,
@@ -103,7 +103,7 @@ export function fitMapPoints(points: MapPoint[], size: MapSize, padding = 80): M
   };
 }
 
-export type MapTile = {
+type MapTile = {
   key: string;
   z: number;
   x: number;

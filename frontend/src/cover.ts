@@ -6,7 +6,7 @@ import {
   resolveVersion,
 } from './coverAssets';
 import type { ImageAsset, NumberSet, ResolvedVersion } from './coverAssets';
-export const PALETTE: Record<number, string> = {
+const PALETTE: Record<number, string> = {
   0: '#65b04b',
   1: '#e3a137',
   2: '#ef424d',
@@ -14,9 +14,8 @@ export const PALETTE: Record<number, string> = {
   4: '#b870e0',
   5: '#dd629b',
 };
-export const COVER_SIZE = { width: 1920, height: 1080, safeLeft: 240, safeRight: 1680 };
 export type CoverAspect = '16:9' | '4:3';
-export const COVER_LAYOUT_4_3 = {
+const COVER_LAYOUT_4_3 = {
   card: { x: 278, y: 306, width: 1364, height: 652 },
   jacket: { x: 320, y: 382, width: 470, height: 470 },
   logo: { x: 650, y: 68, width: 620, height: 182 },
@@ -25,7 +24,7 @@ export const COVER_LAYOUT_4_3 = {
   constant: { x: 838, y: 382, width: 760, height: 93 },
   achievement: { x: 838, y: 758, width: 760, height: 94 },
 };
-export const COVER_LAYOUT_16_9 = {
+const COVER_LAYOUT_16_9 = {
   card: { x: 64, y: 36, width: 1792, height: 1008 },
   jacket: { x: 128, y: 156, width: 760, height: 760 },
   type: { x: 114, y: 142, width: 250, height: 70 },
@@ -34,11 +33,10 @@ export const COVER_LAYOUT_16_9 = {
   achievement: { x: 944, y: 798, width: 848, height: 118 },
   logo: { x: 1390, y: 100, width: 380, height: 180 },
 };
-export const COVER_LAYOUTS: Record<CoverAspect, typeof COVER_LAYOUT_4_3> = {
+const COVER_LAYOUTS: Record<CoverAspect, typeof COVER_LAYOUT_4_3> = {
   '16:9': COVER_LAYOUT_16_9,
   '4:3': COVER_LAYOUT_4_3,
 };
-export const COVER_LAYOUT = COVER_LAYOUT_4_3;
 export function getCoverLayout(aspect: CoverAspect = '16:9') {
   return COVER_LAYOUTS[aspect];
 }
@@ -59,23 +57,21 @@ export interface CoverChart {
   jp_release_provider?: string | null;
   release_status?: string;
 }
-export interface CoverOptions {
+interface CoverOptions {
   achievement: string;
-  creator?: string;
   versionOverride?: string;
   aspect?: CoverAspect;
-  safeGuides?: boolean;
   backgroundUrl?: string;
   versionLogoUrl?: string;
 }
-export interface Bounds {
+interface Bounds {
   role: string;
   x: number;
   y: number;
   width: number;
   height: number;
 }
-export interface TitleLayout {
+interface TitleLayout {
   lines: string[];
   fontSize: number;
   lineHeight: number;
@@ -132,7 +128,7 @@ const graphemes = (value: string) =>
   [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)].map(
     (item) => item.segment,
   );
-export function wrapMeasured(ctx: CanvasRenderingContext2D, text: string, width: number) {
+function wrapMeasured(ctx: CanvasRenderingContext2D, text: string, width: number) {
   const result: string[] = [];
   let line = '';
   const parts = text.match(/\S+\s*|\s+/gu) || [''];
@@ -156,11 +152,11 @@ export function wrapMeasured(ctx: CanvasRenderingContext2D, text: string, width:
   if (line.trim()) result.push(line.trimEnd());
   return result.length ? result : ['　'];
 }
-export function fitTitle(
+function fitTitle(
   ctx: CanvasRenderingContext2D,
   text: string,
-  width = COVER_LAYOUT.title.width,
-  height = COVER_LAYOUT.title.height,
+  width = COVER_LAYOUT_4_3.title.width,
+  height = COVER_LAYOUT_4_3.title.height,
   maxFontSize = 76,
 ): TitleLayout {
   const normalized = text.replace(/\s+/gu, ' ').trim() || '　';
@@ -315,7 +311,7 @@ function visibleText(
     height: metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent,
   };
 }
-export function spriteNumberLayout(set: NumberSet, text: string, height: number) {
+function spriteNumberLayout(set: NumberSet, text: string, height: number) {
   const glyphs = [...text].map((character) => ({ character, glyph: set.glyphs[character] }));
   if (glyphs.some(({ glyph }) => !glyph)) return null;
   let pen = 0,
@@ -344,7 +340,7 @@ export function spriteNumberLayout(set: NumberSet, text: string, height: number)
     advanceWidth: pen * scale,
   };
 }
-export function drawSpriteNumber(
+function drawSpriteNumber(
   ctx: CanvasRenderingContext2D,
   image: HTMLImageElement | null,
   set: NumberSet,

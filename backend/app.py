@@ -4,7 +4,6 @@ import json
 import os
 import re
 from contextlib import asynccontextmanager
-from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
@@ -232,26 +231,6 @@ class PreferencesInput(BaseModel):
         if self.default_constant_min > self.default_constant_max:
             raise ValueError("默认定数下限不能高于上限")
         return self
-
-
-class CatalogDecisionInput(BaseModel):
-    base_catalog_revision: str = Field(min_length=1, max_length=150)
-    base_decision_revision: int = Field(ge=0)
-    object_key: str = Field(min_length=1, max_length=150)
-    kind: Literal["identity", "version"]
-    action: Literal["select", "reject", "set", "keep", "revoke"]
-    candidate_id: str | None = Field(default=None, max_length=500)
-    version: str | None = Field(default=None, max_length=100)
-    date: str | None = None
-    note: str = Field(default="", max_length=2000)
-
-    @field_validator("date")
-    @classmethod
-    def valid_date(cls, value):
-        if not value:
-            return None
-        date.fromisoformat(value)
-        return value
 
 
 class CatalogRecordFieldChoice(BaseModel):
@@ -569,9 +548,9 @@ def create_app(store=None, updater=None):
     def catalog_record_revoke(value: CatalogRecordRevokeInput):
         return begin_catalog_operation(lambda: updater.revoke_record(value.model_dump()))
 
-    @app.post("/api/catalog/decisions", status_code=202)
-    def catalog_decide(value: CatalogDecisionInput):
-        return begin_catalog_operation(lambda: updater.decide(value.model_dump()))
+    @app.post("/api/catalog/decisions")
+    def catalog_decide():
+        raise HTTPException(410, "逐字段裁决已停用，请在谱面差异表中统一提交选择。")
 
     @app.post("/api/catalog/decisions/reapply", status_code=202)
     def reapply_catalog_decisions():

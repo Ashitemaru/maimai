@@ -15,7 +15,6 @@ export interface CoverState {
   score: string;
   version: string;
   aspect: CoverAspect;
-  safeGuides: boolean;
 }
 const validScore = (value: string) =>
   /^\d{1,3}(\.\d{1,4})?$/.test(value) && Number(value) >= 0 && Number(value) <= 101;
@@ -120,7 +119,6 @@ export function CoverPage({
         achievement: value.score,
         versionOverride: value.version,
         aspect: value.aspect,
-        safeGuides: false,
       });
       const blob = await new Promise<Blob>((resolve, reject) =>
         output.toBlob(
