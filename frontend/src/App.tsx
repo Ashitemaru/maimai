@@ -17,6 +17,7 @@ import type {
 import { PendingRecords } from './PendingRecords';
 import { CompletionTable } from './CompletionTable';
 import { CompletionMatrix } from './CompletionMatrix';
+import { VenueSummary } from './VenueSummary';
 import { PreferencesPanel, PreferencesStatus } from './Preferences';
 import { CoverPage } from './CoverWorkshop';
 import type { CoverState } from './CoverWorkshop';
@@ -1530,17 +1531,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               {page === 'venues' && (
                 <>
                   <Heading eyebrow="PLACES & PERFECTS" title="我的机厅" actions={recordButton} />
-                  <div className="venue-grid">
-                    {venues.map((v) => (
-                      <div className="venue-card" key={v.name}>
-                        <strong>{v.name}</strong>
-                        <span>
-                          {num(v.count)}
-                          <small>条记录</small>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                  <VenueSummary revision={revision} />
                 </>
               )}
               {page === 'settings' && (

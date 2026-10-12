@@ -5,6 +5,12 @@ a Secure, HttpOnly session cookie; GET /api/auth/session reports authentication;
 POST /api/auth/logout revokes the session. Personal APIs require authentication.
 
 GET /api/health -> {ok, catalog_charts, imported_charts}
+GET /api/venues/summary -> {levels,items,totals,total,pending_count}
+  Rows contain exact venue name, city, counts by current catalog level and total AP.
+  Columns are 12+, 13, 13+, 14 and combined 14+/15; other levels add an explicit
+  "other" column so the totals never silently omit a confirmed venue-associated AP.
+  Pending claims are counted separately and do not replace the previous confirmed venue.
+  This summary does not inherit the AP page's default constant range. Cache-Control: no-store.
 GET /api/catalog/update -> catalog updater status, current snapshot and last result
 GET /api/catalog/update/report -> {diff,issues,sources,source_policy} from the active snapshot
   Reads catalog_diff.json, build_report.json and raw/sources.json on demand.

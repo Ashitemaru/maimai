@@ -40,6 +40,7 @@ from .store import (
     now,
     summarize,
 )
+from .venue_summary import summarize_venues
 
 VERSION_ORDER = (
     "maimai",
@@ -766,6 +767,14 @@ def create_app(store=None, updater=None):
     @app.get("/api/venues")
     def venues():
         return store.venue_list()
+
+    @app.get("/api/venues/summary")
+    def venue_summary():
+        with store.db() as conn:
+            conn.execute("BEGIN")
+            names = [row["name"] for row in conn.execute("SELECT name FROM venues")]
+            pending_records = [dict(row) for row in conn.execute("SELECT venue FROM ap_pending")]
+        return summarize_venues(store.all_charts(), names, pending_records)
 
     @app.get("/api/settings/divingfish")
     def settings():

@@ -75,6 +75,7 @@ class AuthenticationTests(unittest.TestCase):
                 self.assertEqual(self.client.get(path).status_code, 200)
         for path in (
             "/api/summary",
+            "/api/venues/summary",
             "/api/catalog/data",
             "/api/health",
             "/api/ready",

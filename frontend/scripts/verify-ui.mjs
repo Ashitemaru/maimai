@@ -386,6 +386,36 @@ async function mock(context, { completionItems } = {}) {
           { name: '测试很长的机厅名字 — 城市购物中心店', count: 7 },
         ],
       };
+    else if (pathname === '/api/venues/summary')
+      value = {
+        levels: ['12+', '13', '13+', '14', '14+/15'].map((value) => ({ value, label: value })),
+        items: [
+          {
+            name: '【上海】星光游乐城',
+            city: '上海',
+            counts: { 13: 23 },
+            total: 23,
+            pending_count: 0,
+          },
+          {
+            name: '【广州】动漫星城',
+            city: '广州',
+            counts: { 13: 108 },
+            total: 108,
+            pending_count: 0,
+          },
+          {
+            name: '测试很长的机厅名字 — 城市购物中心店',
+            city: '未分类',
+            counts: { 13: 7 },
+            total: 7,
+            pending_count: 0,
+          },
+        ],
+        totals: { 13: 138 },
+        total: 138,
+        pending_count: 0,
+      };
     else if (pathname === '/api/settings/divingfish')
       value = { configured: false, source: null, sync: null };
     else if (pathname === '/api/catalog/update') value = status;
@@ -578,7 +608,7 @@ async function audit(page, label) {
     );
     const primary = [
       ...document.querySelectorAll(
-        '.song-title,.nav-item,.btn,.field>label,.record-option>span,input:not([type=radio]),select,.venue-card>strong',
+        '.song-title,.nav-item,.btn,.field>label,.record-option>span,input:not([type=radio]),select,.venue-summary-entry>th',
       ),
     ].filter(visible);
     const tiny = text
@@ -1840,7 +1870,7 @@ try {
     await badges(page.locator('.cover-song'), `${name}-cover selection`);
     await audit(page, `${name}-cover`);
     await page.goto(origin + '/#venues', { waitUntil: 'networkidle' });
-    await page.locator('.venue-card').first().waitFor();
+    await page.locator('.venue-summary-entry').first().waitFor();
     await audit(page, `${name}-venues`);
     await page.goto(origin + '/#settings', { waitUntil: 'networkidle' });
     await page.locator('.record-review-entry').first().waitFor();

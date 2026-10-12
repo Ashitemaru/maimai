@@ -91,6 +91,36 @@ class AppTests(unittest.TestCase):
         self.client.close()
         self.tmp.cleanup()
 
+    def test_venue_summary_is_a_personal_no_store_read(self):
+        saved = self.put_record("22:standard:4", json={"venue": "【测试】新机厅"})
+        self.assertEqual(saved.status_code, 200)
+        charts = [
+            {"venue": "【测试】机厅", "is_ap": True, "level": "13+"},
+            {"venue": "【测试】机厅", "is_ap": False, "level": "13+"},
+            {"pending_record": {"venue": "【测试】新机厅"}, "is_ap": False},
+        ]
+        with patch.object(self.store, "all_charts", return_value=charts):
+            response = self.client.get("/api/venues/summary")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        result = response.json()
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["totals"]["13+"], 1)
+        self.assertEqual(result["pending_count"], 1)
+
+    def test_venue_summary_keeps_pending_when_chart_leaves_catalog(self):
+        saved = self.put_record("22:standard:4", json={"venue": "【测试】待核准机厅"})
+        self.assertEqual(saved.status_code, 200)
+        with patch.object(self.store, "all_charts", return_value=[]):
+            result = self.client.get("/api/venues/summary").json()
+            buffer = self.client.get("/api/ap-records").json()
+        self.assertEqual(buffer["count"], 1)
+        self.assertEqual(result["pending_count"], 1)
+        self.assertEqual(result["total"], 0)
+        rows = {item["name"]: item for item in result["items"]}
+        self.assertEqual(rows["【测试】待核准机厅"]["pending_count"], 1)
+        self.assertEqual(rows["【测试】待核准机厅"]["total"], 0)
+
     def put_record(self, key, *, json=None, **kwargs):
         chart = self.store.chart(key)
         payload = {
