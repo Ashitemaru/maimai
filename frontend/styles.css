@@ -286,17 +286,17 @@ textarea {
 .error-box,
 .form-message,
 .review-pending {
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid #e9cf9e;
-  border-radius: var(--radius-control);
-  color: var(--warning);
-  background: var(--warning-soft);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-secondary);
+  background: transparent;
   font-size: var(--font-control);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
 .form-message {
-  margin-bottom: var(--space-4);
+  margin: var(--space-3) 0 var(--space-4);
 }
 .subtle-note,
 .footnote,
@@ -3167,8 +3167,8 @@ textarea {
   position: relative;
   z-index: 11;
   padding: var(--space-3) var(--space-5);
-  color: var(--warning);
-  background: var(--warning-soft);
+  color: var(--text-secondary);
+  background: transparent;
   text-align: center;
   font-size: var(--font-ui);
 }
