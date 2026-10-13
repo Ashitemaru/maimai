@@ -113,7 +113,11 @@ GET /api/sync/status -> {wahlap,job,divingfish}
   fetching, validating, uploading, completed or failed. error is null or {code,message},
   with retry_at and retry_after_seconds also present for maintenance rejection.
   A worker failure may also include stage (configuration, authorization, preview,
-  login, scores) and http_status (100-599). These diagnostic values are validated;
+  login, scores) and http_status (100-599). Pagination failures may also include
+  pagination_reason (cursor_type, cursor_range, cursor_cycle, group_limit,
+  record_limit, page_limit). Score failures include logout_status
+  (confirmed, unverified, failed, not_attempted) and logout_confirmed when known.
+  These diagnostic values are validated;
   no raw upstream response, URL query, token or player identifier is returned.
 POST /api/sync/wahlap/probe (no body) -> {ok:true,probe:"network",account_access:false}
   Explicit uncached connectivity check through the same sandbox and proxy as score

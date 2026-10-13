@@ -168,7 +168,7 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
             ),
             [],
         )
-        for payload in ({}, {"userMusicList": []}, {"userMusicList": [], "nextIndex": 50}):
+        for payload in ({}, {"userMusicList": []}):
             with self.subTest(payload=payload), self.assertRaises(wahlap.WahlapError):
                 await wahlap_worker.read_all_scores(Pages([payload]), 123)
 
@@ -177,7 +177,6 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
             [page(detail(), cursor=50), page(detail())],
             [page(detail(), cursor=50), page(detail(musicId=2), cursor=50)],
             [page(detail(), userId=999)],
-            [page(detail(), cursor="0")],
             [page(detail(), cursor=-1)],
         ]
         for pages in scenarios:
@@ -194,10 +193,100 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, "incomplete_scores")
 
     async def test_page_and_record_caps_terminate(self):
-        with patch.object(wahlap_worker, "MAX_PAGES", 1), self.assertRaises(wahlap.WahlapError):
+        with (
+            patch.object(wahlap_worker, "MAX_PAGES", 1),
+            self.assertRaises(wahlap.WahlapError) as raised,
+        ):
             await wahlap_worker.read_all_scores(Pages([page(detail(), cursor=50)]), 123)
-        with patch.object(wahlap_worker, "MAX_RECORDS", 1), self.assertRaises(wahlap.WahlapError):
+        self.assertEqual(raised.exception.pagination_reason, "page_limit")
+        with (
+            patch.object(wahlap_worker, "MAX_RECORDS", 1),
+            self.assertRaises(wahlap.WahlapError) as raised,
+        ):
             await wahlap_worker.read_all_scores(Pages([page(detail(), detail(musicId=2))]), 123)
+        self.assertEqual(raised.exception.pagination_reason, "record_limit")
+
+    async def test_wide_and_nonmonotonic_cursors_are_echoed_without_offset_arithmetic(self):
+        wide = 50_000_000_050
+        client = Pages(
+            [
+                page(detail(), cursor=wide),
+                page(detail(musicId=2), cursor=100),
+                page(detail(musicId=3), cursor=str(wahlap_worker.MAX_CURSOR)),
+                page(detail(musicId=4), cursor="0"),
+            ]
+        )
+        records = await wahlap_worker.read_all_scores(client, 123)
+        self.assertEqual(len(records), 4)
+        self.assertEqual(
+            [call[2]["nextIndex"] for call in client.calls],
+            [0, wide, 100, wahlap_worker.MAX_CURSOR],
+        )
+
+    async def test_empty_intermediate_page_is_not_mistaken_for_completion(self):
+        client = Pages(
+            [
+                page(detail(), cursor=50_000_000_050),
+                {"userMusicList": [], "nextIndex": "50"},
+                page(detail(musicId=2), cursor="0"),
+            ]
+        )
+        records = await wahlap_worker.read_all_scores(client, 123)
+        self.assertEqual([record["song_id"] for record in records], [10001, 2])
+        self.assertEqual(len(client.calls), 3)
+
+    async def test_string_and_integer_aliases_cannot_bypass_cursor_cycle_detection(self):
+        client = Pages(
+            [
+                {"userMusicList": [], "nextIndex": "50"},
+                {"userMusicList": [], "nextIndex": 60},
+                {"userMusicList": [], "nextIndex": 50},
+            ]
+        )
+        with self.assertRaises(wahlap.WahlapError) as raised:
+            await wahlap_worker.read_all_scores(client, 123)
+        self.assertEqual(raised.exception.pagination_reason, "cursor_cycle")
+        self.assertEqual(len(client.calls), 3)
+
+    async def test_cursor_rejects_coercions_overflow_and_private_arbitrary_text(self):
+        invalid = (
+            None,
+            True,
+            False,
+            1.0,
+            -1,
+            "-1",
+            "00",
+            "01",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e3",
+            "١",
+            "１",
+            QR,
+            [],
+            {},
+            wahlap_worker.MAX_CURSOR + 1,
+            str(wahlap_worker.MAX_CURSOR + 1),
+            "1" * 1000,
+        )
+        for value in invalid:
+            with (
+                self.subTest(value_type=type(value).__name__),
+                self.assertRaises(wahlap.WahlapError) as raised,
+            ):
+                await wahlap_worker.read_all_scores(Pages([page(detail(), cursor=value)]), 123)
+            self.assertEqual(raised.exception.code, "pagination_invalid")
+            self.assertIn(raised.exception.pagination_reason, {"cursor_type", "cursor_range"})
+            self.assertNotIn(QR, str(raised.exception))
+
+    async def test_oversized_page_remains_bounded(self):
+        payload = {"userMusicList": [{}] * (wahlap_worker.PAGE_SIZE + 1), "nextIndex": 0}
+        with self.assertRaises(wahlap.WahlapError) as raised:
+            await wahlap_worker.read_all_scores(Pages([payload]), 123)
+        self.assertEqual(raised.exception.pagination_reason, "group_limit")
 
 
 class LifecycleClient:
@@ -531,6 +620,52 @@ class ProcessBoundaryTests(unittest.TestCase):
                 self.assertEqual(error.http_status, expected_status)
                 self.assertNotIn(QR, json.dumps(wahlap.error_response(error)))
 
+    def test_pagination_diagnostics_roundtrip_allowlist_never_reflects_arbitrary_values(self):
+        for reason in (
+            "cursor_type",
+            "cursor_range",
+            "cursor_cycle",
+            "group_limit",
+            "record_limit",
+            "page_limit",
+            QR,
+            {"private": QR},
+            None,
+        ):
+            payload = {
+                "error": "pagination_invalid",
+                "stage": "scores",
+                "pagination_reason": reason,
+                "logout_status": "confirmed",
+                "logout_confirmed": True,
+            }
+            error = wahlap._response_error(payload)
+            reply = wahlap.error_response(error)
+            self.assertEqual(
+                reply.get("pagination_reason"),
+                reason if isinstance(reason, str) and reason in wahlap.PAGINATION_REASONS else None,
+            )
+            self.assertTrue(reply["logout_confirmed"])
+            self.assertEqual(reply["stage"], "scores")
+            self.assertNotIn(QR, json.dumps(reply))
+        wrong_code = wahlap._response_error(
+            {"error": "worker_failed", "pagination_reason": "cursor_range"}
+        )
+        self.assertNotIn("pagination_reason", wahlap.error_response(wrong_code))
+
+    def test_contradictory_logout_error_receipt_is_never_confirmed(self):
+        for flag in (False, None, "true", 1):
+            error = wahlap._response_error(
+                {
+                    "error": "pagination_invalid",
+                    "pagination_reason": "cursor_range",
+                    "logout_status": "confirmed",
+                    "logout_confirmed": flag,
+                }
+            )
+            self.assertFalse(error.logout_confirmed)
+            self.assertEqual(error.logout_status, "unverified")
+
     def test_network_probe_uses_sandbox_and_exclusive_worker_lock(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
@@ -698,6 +833,18 @@ class SocketBrokerTests(unittest.TestCase):
         self.assertEqual(reply["stage"], "configuration")
         self.assertEqual(reply["http_status"], 403)
         self.assertEqual(reply["error"], "upstream_http_error")
+
+    def test_broker_preserves_pagination_reason_and_post_logout_evidence(self):
+        error = wahlap.WahlapError(
+            "pagination_invalid", stage="scores", pagination_reason="cursor_range"
+        )
+        error.logout_status, error.logout_confirmed = "confirmed", True
+        with patch.object(wahlap, "_fetch_scores_local", side_effect=error):
+            reply = self.exchange({"kind": "fetch", "sgid": QR})
+        self.assertEqual(reply["pagination_reason"], "cursor_range")
+        self.assertEqual(reply["logout_status"], "confirmed")
+        self.assertTrue(reply["logout_confirmed"])
+        self.assertNotIn(QR, json.dumps(reply))
 
     def test_broker_rejects_oversized_invalid_and_extra_request_fields(self):
         with patch.object(wahlap, "_fetch_scores_local") as fetch:

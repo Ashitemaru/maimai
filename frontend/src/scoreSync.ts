@@ -29,6 +29,15 @@ export interface ScoreSyncJob {
     message: string;
     stage?: 'configuration' | 'authorization' | 'preview' | 'login' | 'scores';
     http_status?: number;
+    pagination_reason?:
+      | 'cursor_type'
+      | 'cursor_range'
+      | 'cursor_cycle'
+      | 'group_limit'
+      | 'record_limit'
+      | 'page_limit';
+    logout_status?: 'confirmed' | 'unverified' | 'failed' | 'not_attempted';
+    logout_confirmed?: boolean;
   } | null;
   result: WahlapSyncResult | DivingFishUploadResult | null;
 }

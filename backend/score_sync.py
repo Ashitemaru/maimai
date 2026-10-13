@@ -13,6 +13,7 @@ import httpx
 from .ap_records import ScoreAccountError, ScoreSourceError, timestamp
 from .maintenance import maintenance_status, utc_now
 from .store import SyncBusyError, SyncTokenChangedError
+from .wahlap import PAGINATION_REASONS
 
 DIVINGFISH_ROOT = "https://www.diving-fish.com/api/maimaidxprober"
 UPLOAD_ENDPOINT = DIVINGFISH_ROOT + "/player/update_records"
@@ -31,6 +32,9 @@ class ScoreSyncError(Exception):
         retry_after_seconds=None,
         stage=None,
         http_status=None,
+        pagination_reason=None,
+        logout_status=None,
+        logout_confirmed=False,
     ):
         self.status = status
         self.code = code
@@ -39,6 +43,9 @@ class ScoreSyncError(Exception):
         self.retry_after_seconds = retry_after_seconds
         self.stage = stage
         self.http_status = http_status
+        self.pagination_reason = pagination_reason
+        self.logout_status = logout_status
+        self.logout_confirmed = logout_confirmed
         super().__init__(message)
 
     def detail(self):
@@ -49,6 +56,25 @@ class ScoreSyncError(Exception):
             result["stage"] = self.stage
         if type(self.http_status) is int and 100 <= self.http_status <= 599:
             result["http_status"] = self.http_status
+        if (
+            self.code == "pagination_invalid"
+            and isinstance(self.pagination_reason, str)
+            and self.pagination_reason in PAGINATION_REASONS
+        ):
+            result["pagination_reason"] = self.pagination_reason
+        if isinstance(self.logout_status, str) and self.logout_status in {
+            "confirmed",
+            "unverified",
+            "failed",
+            "not_attempted",
+        }:
+            confirmed = self.logout_status == "confirmed" and self.logout_confirmed is True
+            result["logout_confirmed"] = confirmed
+            result["logout_status"] = (
+                "unverified"
+                if self.logout_status == "confirmed" and not confirmed
+                else self.logout_status
+            )
         return result
 
     def headers(self):
@@ -75,11 +101,15 @@ def fetch_wahlap_scores(qr_text):
         message = str(exc)
         if exc.logout_status == "failed":
             message += "；华立退出请求未成功，请勿立即重复同步。"
-        elif exc.logout_status == "unverified" and exc.code in (
-            "invalid_response",
-            "invalid_scores",
-            "incomplete_scores",
-            "pagination_invalid",
+        elif exc.logout_status == "unverified" and (
+            exc.stage == "scores"
+            or exc.code
+            in (
+                "invalid_response",
+                "invalid_scores",
+                "incomplete_scores",
+                "pagination_invalid",
+            )
         ):
             message += "；华立退出会话尚未确认，请勿立即重复同步。"
         raise ScoreSyncError(
@@ -88,6 +118,9 @@ def fetch_wahlap_scores(qr_text):
             message,
             stage=exc.stage,
             http_status=exc.http_status,
+            pagination_reason=exc.pagination_reason,
+            logout_status=exc.logout_status,
+            logout_confirmed=exc.logout_confirmed,
         ) from None
 
 

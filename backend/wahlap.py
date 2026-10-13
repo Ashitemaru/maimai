@@ -59,12 +59,15 @@ LOGOUT_NOTICES = {
     "unverified": "成绩已读取，华立退出会话尚未确认；请勿立即重复同步。",
     "failed": "成绩已读取，但华立退出请求未成功；请勿立即重复同步。",
 }
+PAGINATION_REASONS = frozenset(
+    {"cursor_type", "cursor_range", "cursor_cycle", "group_limit", "record_limit", "page_limit"}
+)
 
 
 class WahlapError(RuntimeError):
     """Only fixed messages may cross the process/API boundary."""
 
-    def __init__(self, code: str, *, stage=None, http_status=None):
+    def __init__(self, code: str, *, stage=None, http_status=None, pagination_reason=None):
         self.code = code if isinstance(code, str) and code in ERROR_MESSAGES else "worker_failed"
         self.stage = stage if isinstance(stage, str) and stage in ERROR_STAGES else None
         self.http_status = (
@@ -72,6 +75,13 @@ class WahlapError(RuntimeError):
         )
         self.logout_status = "unverified"
         self.logout_confirmed = False
+        self.pagination_reason = (
+            pagination_reason
+            if self.code == "pagination_invalid"
+            and isinstance(pagination_reason, str)
+            and pagination_reason in PAGINATION_REASONS
+            else None
+        )
         super().__init__(ERROR_MESSAGES[self.code])
 
 
@@ -86,6 +96,13 @@ def error_response(error: WahlapError) -> dict:
         response["stage"] = error.stage
     if error.http_status is not None:
         response["http_status"] = error.http_status
+    reason = error.pagination_reason
+    if (
+        error.code == "pagination_invalid"
+        and isinstance(reason, str)
+        and reason in PAGINATION_REASONS
+    ):
+        response["pagination_reason"] = reason
     return response
 
 
@@ -167,11 +184,14 @@ def _response_error(result: dict) -> WahlapError:
         result.get("error", "worker_failed"),
         stage=result.get("stage"),
         http_status=result.get("http_status"),
+        pagination_reason=result.get("pagination_reason"),
     )
     status = result.get("logout_status")
     if isinstance(status, str) and status in (*LOGOUT_NOTICES, "not_attempted"):
         error.logout_status = status
         error.logout_confirmed = status == "confirmed" and result.get("logout_confirmed") is True
+        if status == "confirmed" and not error.logout_confirmed:
+            error.logout_status = "unverified"
     return error
 
 

@@ -394,6 +394,78 @@ class ScoreSyncTests(unittest.TestCase):
         self.assertIn("退出请求未成功", failure.exception.message)
         self.assertNotIn(TEST_QR, str(failure.exception))
 
+    def test_pagination_failure_keeps_safe_diagnostics_without_importing_scores(self):
+        from backend.wahlap import WahlapError
+
+        error = WahlapError("pagination_invalid", stage="scores", pagination_reason="cursor_range")
+        error.logout_status = "confirmed"
+        error.logout_confirmed = True
+        jobs = self.job()
+        before = self.state()
+        with patch("backend.wahlap.fetch_scores", side_effect=error):
+            jobs.start_wahlap(TEST_QR)
+            result = self.finish(jobs)
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["error"]["stage"], "scores")
+        self.assertEqual(result["error"]["pagination_reason"], "cursor_range")
+        self.assertEqual(result["error"]["logout_status"], "confirmed")
+        self.assertTrue(result["error"]["logout_confirmed"])
+        self.assertNotIn(TEST_QR, json.dumps(jobs.status()))
+        self.assertEqual(self.state(), before)
+
+    def test_network_error_after_login_keeps_unconfirmed_logout_visible(self):
+        from backend.wahlap import WahlapError
+
+        for code in (
+            "upstream_timeout",
+            "upstream_transport_error",
+            "upstream_empty_response",
+            "upstream_decode_error",
+            "upstream_http_error",
+        ):
+            with self.subTest(code=code):
+                error = WahlapError(code, stage="scores")
+                with patch("backend.wahlap.fetch_scores", side_effect=error):
+                    with self.assertRaises(ScoreSyncError) as failure:
+                        fetch_wahlap_scores(TEST_QR)
+                self.assertIn("退出会话尚未确认", failure.exception.message)
+                self.assertEqual(failure.exception.detail()["logout_status"], "unverified")
+                error.stage = "configuration"
+                error.logout_status = "not_attempted"
+                with patch("backend.wahlap.fetch_scores", side_effect=error):
+                    with self.assertRaises(ScoreSyncError) as failure:
+                        fetch_wahlap_scores(TEST_QR)
+                self.assertNotIn("退出会话尚未确认", failure.exception.message)
+
+    def test_score_error_diagnostics_exclude_unknown_values(self):
+        error = ScoreSyncError(
+            502,
+            "pagination_invalid",
+            "成绩分页异常",
+            pagination_reason=TEST_QR,
+            logout_status=TEST_QR,
+        )
+        self.assertEqual(error.detail(), {"code": "pagination_invalid", "message": "成绩分页异常"})
+        for invalid in ([], {}, True):
+            error.pagination_reason = invalid
+            error.logout_status = invalid
+            self.assertNotIn("pagination_reason", error.detail())
+            self.assertNotIn("logout_status", error.detail())
+        error.code = "invalid_scores"
+        error.pagination_reason = "cursor_range"
+        self.assertNotIn("pagination_reason", error.detail())
+
+    def test_score_error_does_not_claim_unconfirmed_logout(self):
+        error = ScoreSyncError(
+            502,
+            "pagination_invalid",
+            "成绩分页异常",
+            logout_status="confirmed",
+            logout_confirmed=False,
+        )
+        self.assertEqual(error.detail()["logout_status"], "unverified")
+        self.assertFalse(error.detail()["logout_confirmed"])
+
     def test_status_restart_has_receipt_but_no_job_or_credential(self):
         jobs = self.job()
         with patch("backend.score_sync.fetch_wahlap_scores", return_value=payload()):

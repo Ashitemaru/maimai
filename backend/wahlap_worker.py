@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import resource
 import subprocess
 import sys
@@ -30,6 +31,7 @@ from backend.wahlap import (  # noqa: E402
 
 MAX_PAGES = 400
 PAGE_SIZE = 50
+MAX_CURSOR = (1 << 64) - 1
 FC = {0: "", 1: "fc", 2: "fcp", 3: "ap", 4: "app"}
 FS = {0: "", 1: "fs", 2: "fsp", 3: "fsd", 4: "fsdp", 5: "sync"}
 
@@ -93,6 +95,23 @@ def require_idle(preview: object):
         raise WahlapError("session_state_unknown")
 
 
+def pagination_error(reason: str) -> WahlapError:
+    return WahlapError("pagination_invalid", pagination_reason=reason)
+
+
+def pagination_cursor(value: object) -> int:
+    """Echo an opaque server cursor; it is not a bounded or increasing row offset."""
+    if isinstance(value, str):
+        if not re.fullmatch(r"(?:0|[1-9][0-9]{0,19})", value):
+            raise pagination_error("cursor_type")
+        value = int(value)
+    if type(value) is not int:
+        raise pagination_error("cursor_type")
+    if not 0 <= value <= MAX_CURSOR:
+        raise pagination_error("cursor_range")
+    return value
+
+
 async def read_all_scores(client, player_id: int) -> list[dict]:
     cursor = 0
     cursors = set()
@@ -100,7 +119,7 @@ async def read_all_scores(client, player_id: int) -> list[dict]:
     records = []
     for _ in range(MAX_PAGES):
         if cursor in cursors:
-            raise WahlapError("pagination_invalid")
+            raise pagination_error("cursor_cycle")
         cursors.add(cursor)
         page = await client.post(
             "GetUserMusicApi",
@@ -113,7 +132,7 @@ async def read_all_scores(client, player_id: int) -> list[dict]:
             raise WahlapError("invalid_scores")
         groups = page["userMusicList"]
         if len(groups) > PAGE_SIZE:
-            raise WahlapError("pagination_invalid")
+            raise pagination_error("group_limit")
         for group in groups:
             if not isinstance(group, dict) or not isinstance(
                 group.get("userMusicDetailList"), list
@@ -130,16 +149,12 @@ async def read_all_scores(client, player_id: int) -> list[dict]:
                 keys.add(key)
                 records.append(record)
                 if len(records) > MAX_RECORDS:
-                    raise WahlapError("pagination_invalid")
-        next_cursor = page.get("nextIndex")
-        if type(next_cursor) is not int or not 0 <= next_cursor <= 10_000_000:
-            raise WahlapError("pagination_invalid")
+                    raise pagination_error("record_limit")
+        next_cursor = pagination_cursor(page.get("nextIndex"))
         if next_cursor == 0:
             return records
-        if not groups or next_cursor <= cursor:
-            raise WahlapError("pagination_invalid")
         cursor = next_cursor
-    raise WahlapError("pagination_invalid")
+    raise pagination_error("page_limit")
 
 
 async def end_session(client, session, login: dict, owner) -> str:
