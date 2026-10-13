@@ -1,4 +1,4 @@
-export type Page = 'ap' | 'statistics' | 'pending' | 'cover' | 'venues' | 'settings';
+export type Page = 'ap' | 'statistics' | 'pending' | 'cover' | 'publishing' | 'venues' | 'settings';
 interface PendingRecord {
   id: string;
   venue: string;

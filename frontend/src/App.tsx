@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { api, ApiError, messageOf } from './api';
 import type {
@@ -29,6 +29,10 @@ import { ScoreSyncPanel } from './ScoreSyncPanel';
 import { useScoreSync, type ScoreSyncControl } from './useScoreSync';
 import { useNotify, useToastMessage } from './Toast';
 
+const PublishingPage = lazy(() =>
+  import('./PublishingPage').then((module) => ({ default: module.PublishingPage })),
+);
+
 const paths: Record<string, string> = {
   clock: 'M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
   grid: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
@@ -48,6 +52,7 @@ const pageLabels: Record<Page, string> = {
   statistics: '完成统计',
   pending: '待核记录',
   cover: '封面工坊',
+  publishing: '投稿整理',
   venues: '我的机厅',
   settings: '数据与同步',
 };
@@ -56,6 +61,7 @@ const mobilePageLabels: Record<Page, string> = {
   statistics: '统计',
   pending: '待核',
   cover: '封面',
+  publishing: '投稿',
   venues: '机厅',
   settings: '设置',
 };
@@ -916,6 +922,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               ['statistics', 'table'],
               ['pending', 'clock'],
               ['cover', 'image'],
+              ['publishing', 'sync'],
               ['venues', 'pin'],
             ] as const
           ).map(([p, icon]) => (
@@ -1391,6 +1398,11 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
                   onPick={() => openPicker('cover')}
                   notify={notify}
                 />
+              )}
+              {page === 'publishing' && (
+                <Suspense fallback={<div className="empty-state">加载投稿整理…</div>}>
+                  <PublishingPage />
+                </Suspense>
               )}
               {page === 'venues' && (
                 <>

@@ -3536,3 +3536,204 @@ textarea {
 .score-sync-panels .form-actions {
   flex-wrap: wrap;
 }
+
+/* Bilibili publishing uses the same controls and spacing as the other pages. */
+.publishing-page {
+  display: grid;
+  gap: var(--space-4);
+}
+.publishing-page .settings-panel {
+  margin: 0;
+  min-width: 0;
+}
+.publishing-panel-heading,
+.publishing-account,
+.publishing-pagination,
+.publishing-submit,
+.publishing-history > div {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.publishing-panel-heading,
+.publishing-account {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.publishing-account h2,
+.publishing-panel-heading h2 {
+  margin: 0;
+}
+.publishing-account > div > span,
+.publishing-video > span > span,
+.publishing-title-comparison dt,
+.publishing-preview figcaption,
+.publishing-history time {
+  color: var(--muted);
+  font-size: var(--font-ui);
+}
+.publishing-login {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+.publishing-login img {
+  width: 240px;
+  max-width: 100%;
+  aspect-ratio: 1;
+}
+.publishing-login .form-actions {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.publishing-video-input {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+.publishing-video-input input {
+  min-width: 0;
+  flex: 1;
+}
+.publishing-videos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--space-2);
+}
+.publishing-video,
+.publishing-chart {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  text-align: left;
+}
+.publishing-video[aria-pressed='true'],
+.publishing-chart[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.publishing-video > img {
+  width: 96px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+}
+.publishing-video > span,
+.publishing-chart-label {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+}
+.publishing-video strong {
+  font-size: var(--font-ui);
+}
+.publishing-pagination {
+  justify-content: center;
+  margin-top: var(--space-4);
+}
+.publishing-original-title {
+  display: block;
+  margin-bottom: var(--space-4);
+  overflow-wrap: anywhere;
+}
+.publishing-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.publishing-fields .field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+}
+.publishing-wide {
+  grid-column: 1 / -1;
+}
+.publishing-chart-results {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 360px;
+  overflow-y: auto;
+}
+.publishing-chart img {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+}
+.publishing-chart .chart-meta {
+  flex-wrap: wrap;
+}
+.publishing-mirror {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.publishing-mirror input {
+  width: 20px;
+  height: 20px;
+}
+.publishing-title-comparison {
+  display: grid;
+  gap: var(--space-3);
+}
+.publishing-title-comparison dd {
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+.publishing-cover-previews {
+  display: grid;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 3fr);
+  align-items: start;
+  gap: var(--space-4);
+  margin: var(--space-4) 0;
+}
+.publishing-preview figure {
+  margin: 0;
+}
+.publishing-preview img {
+  width: 100%;
+  display: block;
+  border-radius: var(--radius-control);
+}
+.publishing-preview figcaption {
+  margin-top: var(--space-2);
+}
+.publishing-history > div {
+  flex-wrap: wrap;
+  padding: var(--space-2) 0;
+}
+.publishing-history time {
+  margin-left: auto;
+}
+@media (max-width: 600px) {
+  .publishing-videos,
+  .publishing-cover-previews {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .publishing-fields input,
+  .publishing-fields select,
+  .publishing-video-input input {
+    font-size: var(--font-body);
+  }
+  .sidebar {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+  .sidebar .nav-item {
+    width: auto;
+    flex: 1 0 44px;
+  }
+}

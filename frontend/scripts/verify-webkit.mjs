@@ -9,7 +9,7 @@ await fs.mkdir(output, { recursive: true });
 const probe = await webkit.launch({ headless: true });
 const version = probe.version();
 await probe.close();
-const suites = ['auth', 'score-sync', 'ap-buffer', 'venue-map', 'mobile-export'];
+const suites = ['auth', 'score-sync', 'ap-buffer', 'venue-map', 'mobile-export', 'publishing'];
 const results = [];
 for (const suite of suites) {
   const result = spawnSync(
@@ -25,6 +25,7 @@ for (const suite of suites) {
         BUFFER_AUDIT_OUTPUT: path.join(output, 'ap-buffer'),
         VENUE_MAP_AUDIT_OUTPUT: path.join(output, 'venue-map'),
         MOBILE_EXPORT_AUDIT_OUTPUT: path.join(output, 'mobile-export'),
+        PUBLISHING_AUDIT_OUTPUT: path.join(output, 'publishing'),
       },
     },
   );

@@ -8,6 +8,7 @@ from contextlib import closing
 from pathlib import Path
 
 from deploy.backup_data import (
+    BILIBILI_SESSION_PATH,
     LEGACY_OPTIONAL_PATHS,
     WAHLAP_PROXY_PATHS,
     WAHLAP_PROXY_SYSTEM_PATHS,
@@ -191,7 +192,12 @@ class BackupDataTests(unittest.TestCase):
         self.assertEqual(
             manifest["optional_absent"],
             sorted(
-                ["shared/runtime/auth.sqlite3", "shared/runtime/secrets.json", *WAHLAP_PROXY_PATHS]
+                [
+                    "shared/runtime/auth.sqlite3",
+                    "shared/runtime/secrets.json",
+                    BILIBILI_SESSION_PATH,
+                    *WAHLAP_PROXY_PATHS,
+                ]
             ),
         )
 
@@ -212,7 +218,7 @@ class BackupDataTests(unittest.TestCase):
         ):
             write(self.system / relative, "unrelated-secret-must-not-copy")
         manifest = self.capture()
-        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["schema_version"], 3)
         self.assertEqual(verify(self.destination), manifest)
         self.assertFalse(any(path in manifest["optional_absent"] for path in WAHLAP_PROXY_PATHS))
         for source_path, saved_path in zip(
@@ -258,6 +264,26 @@ class BackupDataTests(unittest.TestCase):
             path for path in LEGACY_OPTIONAL_PATHS if path not in manifest["entries"]
         )
         self.save_manifest(manifest)
+        self.assertEqual(verify(self.destination), manifest)
+
+    def test_previous_schema_two_backups_remain_verifiable(self):
+        manifest = self.capture()
+        manifest["schema_version"] = 2
+        manifest["optional_absent"].remove(BILIBILI_SESSION_PATH)
+        self.save_manifest(manifest)
+        self.assertEqual(verify(self.destination), manifest)
+
+    def test_bilibili_session_is_backed_up_privately_without_neighboring_files(self):
+        source = self.source / BILIBILI_SESSION_PATH
+        document(source, {"cookies": {"fixture": "private"}, "mid": 1})
+        source.chmod(0o600)
+        write(self.runtime / "bilibili-session.tmp", "transient")
+        manifest = self.capture()
+        saved = self.destination / BILIBILI_SESSION_PATH
+        self.assertEqual(saved.read_bytes(), source.read_bytes())
+        self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn(BILIBILI_SESSION_PATH, manifest["optional_absent"])
+        self.assertFalse(any(path.endswith("bilibili-session.tmp") for path in manifest["entries"]))
         self.assertEqual(verify(self.destination), manifest)
 
     def test_sqlite_backup_includes_committed_wal_rows_without_copying_sidecars(self):

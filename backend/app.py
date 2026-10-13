@@ -26,6 +26,7 @@ from .auth import (
     local_probe,
     public_paths,
 )
+from .bilibili import BilibiliService, bilibili_router
 from .catalog_decisions import StaleDecisionError
 from .catalog_updates import BusyError, CatalogUpdates
 from .completion_exports import completion_export_router
@@ -282,6 +283,7 @@ def create_app(store=None, updater=None):
     store = store or Store()
     initialize_locations(store)
     score_sync = ScoreSync(store)
+    bilibili = BilibiliService(store)
     updater = updater if updater is not None else CatalogUpdates(store)
     previews = JacketPreviews(
         store.runtime / "jacket-thumbnails",
@@ -295,6 +297,7 @@ def create_app(store=None, updater=None):
         finally:
             updater.close()
             score_sync.close()
+            bilibili.close()
             store.close()
 
     app = FastAPI(title="Ashitemaru · maimai", version="0.1.0", lifespan=lifespan)
@@ -306,6 +309,8 @@ def create_app(store=None, updater=None):
     app.state.catalog_updates = updater
     app.state.jacket_previews = previews
     app.state.score_sync = score_sync
+    app.state.bilibili = bilibili
+    app.include_router(bilibili_router(bilibili))
     app.include_router(completion_export_router(store.runtime / "completion-exports"))
     allowed_hosts = ["127.0.0.1", "localhost", "::1", "testserver"]
     allowed_hosts += [
@@ -316,6 +321,8 @@ def create_app(store=None, updater=None):
 
     @app.exception_handler(RequestValidationError)
     async def safe_validation(request: Request, exc):
+        if request.url.path.startswith("/api/bilibili/"):
+            return JSONResponse({"detail": "投稿参数无效，请检查后重试。"}, status_code=422)
         if request.url.path == "/api/sync/wahlap":
             return JSONResponse({"detail": "二维码内容无效，请重新扫描。"}, status_code=422)
         if request.url.path == "/api/auth/login":

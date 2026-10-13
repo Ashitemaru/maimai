@@ -42,6 +42,7 @@ WAHLAP_PROXY_SYSTEM_PATHS = (
 )
 WAHLAP_PROXY_PATHS = tuple("config/system/" + path for path in WAHLAP_PROXY_SYSTEM_PATHS)
 OPTIONAL_PATHS = (*LEGACY_OPTIONAL_PATHS, *WAHLAP_PROXY_PATHS)
+BILIBILI_SESSION_PATH = "shared/runtime/bilibili-session.json"
 
 
 class BackupDataError(ValueError):
@@ -331,6 +332,11 @@ def capture(source_root, config_root, destination, *, system_root=Path("/")):
         _copy_file(secret, destination / "shared/runtime/secrets.json")
     else:
         absent.append("shared/runtime/secrets.json")
+    bilibili_session = _path(source_root, BILIBILI_SESSION_PATH, missing=True)
+    if bilibili_session.exists():
+        _copy_file(bilibili_session, destination / BILIBILI_SESSION_PATH)
+    else:
+        absent.append(BILIBILI_SESSION_PATH)
     _copy_tree(
         _path(source_root, "shared/catalog"),
         destination / "shared/catalog",
@@ -374,7 +380,7 @@ def capture(source_root, config_root, destination, *, system_root=Path("/")):
         relative = directory + "/catalog.sqlite"
         databases[relative] = _database_report(destination / relative)
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "created_at": datetime.now(UTC).isoformat(),
         "release_sha": release_sha,
         "catalog": catalog,
@@ -409,7 +415,7 @@ def verify(destination):
             "entries",
         }
         and type(manifest.get("schema_version")) is int
-        and manifest["schema_version"] in {1, 2},
+        and manifest["schema_version"] in {1, 2, 3},
         "Unsupported backup manifest",
     )
     try:
@@ -427,7 +433,11 @@ def verify(destination):
             _relative(entry.get("target"))
     # Inventory never follows links; exact equality rejects missing, altered and extra files.
     _require(_inventory(destination) == entries, "Backup inventory or checksum mismatch")
-    optional_paths = OPTIONAL_PATHS if manifest["schema_version"] == 2 else LEGACY_OPTIONAL_PATHS
+    optional_paths = LEGACY_OPTIONAL_PATHS
+    if manifest["schema_version"] >= 2:
+        optional_paths = OPTIONAL_PATHS
+    if manifest["schema_version"] >= 3:
+        optional_paths = (*optional_paths, BILIBILI_SESSION_PATH)
     _require(
         manifest["optional_absent"]
         == sorted(relative for relative in optional_paths if relative not in entries),

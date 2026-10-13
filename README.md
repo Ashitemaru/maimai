@@ -61,6 +61,14 @@ Python 测试使用临时曲库、合成 TSV 和 Remy 页面，禁止外网；�
 
 华立取分运行库需要单独安装，不包含在网站 release 中。当前适配 [AstrBot maimai updater](https://github.com/XiaoLan9999/astrbot_plugin_maimai_updater) 的固定版本，Linux 使用 Wine 和 Bubblewrap。部署详情见 [取分运行环境](deploy/wahlap-runtime.md)。运行环境就绪不等于真实账号取分已验证；网页分别显示环境与同步状态。
 
+## Bilibili 投稿整理
+
+录像继续在 B 站剪辑并首次投稿。在本站「投稿整理」扫码连接 B 站后，选择自己的稿件，指定谱面、录像达成率、录像定数和目标合集，预览后一次提交封面、标题及合集修改。不会重新编码或上传视频，也不会在后台批量修改历史稿件。
+
+标题采用 `【maimai】曲名 Expert13.0 AP` 的格式，保留已有制式后缀与镜像特例。成绩使用本次填写的录像成绩，不自动替换为当前个人最佳。封面继续使用同一个渲染器：16:9 使用 v8、4:3 使用原版布局，分别上传原始 PNG 并更新 `cover`、`cover43`。
+
+任务与回执存入个人 SQLite，B 站登录凭据仅保存在运行目录的私有文件中，并纳入加密备份。登录过期时重新扫码；没有登录的开发环境可以用 mock API 验证页面，测试不需要真实 Cookie。真实稿件修改只由页面的确认按钮触发。
+
 ## 持续集成
 
 推送、Pull Request 或手动触发 [CI](../../actions/workflows/ci.yml) 时执行：

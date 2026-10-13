@@ -311,3 +311,32 @@ POST /api/catalog/remy/recheck -> CatalogUpdateState (202)
 State includes decision_revision,applied_decision_revision,decisions_pending.
 Rollback rebuilds prior raw data with current permanent choices.
 Personal records for pending charts remain stored and can reattach after admission.
+
+Bilibili post-upload organization (existing own videos only):
+GET /api/bilibili/status -> {connected,account:{mid,name}|null}
+POST /api/bilibili/login -> {login_id,url,expires_at}; QR authorization URL only.
+GET /api/bilibili/login/{login_id} -> {state,account?}
+DELETE /api/bilibili/session -> removes the locally saved Bilibili session.
+GET /api/bilibili/videos?page=1 -> {items,has_more,page}
+GET /api/bilibili/videos/{bvid} -> existing title, both covers and revision.
+GET /api/bilibili/collections -> {items:[{id,title,sections:[{id,title}]}]}
+POST /api/bilibili/prepare
+  {bvid,chart_key,achievement,combo,constant,section_id,mirror_horizontal?,
+   title_override?,include_type?,version_override?} -> frozen plan with plan_id.
+  The score is supplied explicitly for this video; a current personal best is never
+  substituted. Plans expire after one hour. Existing STD/DX suffixes, Utage notation
+  and the historical mirrored-title exception are preserved by default.
+POST /api/bilibili/apply {plan_id,cover16,cover43} -> persistent job receipt.
+  cover16 and cover43 are PNG data URLs, exactly 1920x1080 and 1440x1080.
+  Rechecks ownership and the frozen revision before updating covers/title/section.
+  The existing archive metadata and video files are preserved. Unsupported archive
+  configurations are rejected before editing. This does not upload a new video.
+GET /api/bilibili/jobs -> recent account-owned jobs.
+GET /api/bilibili/jobs/{job_id} -> job, frozen plan and saved PNGs when unfinished.
+POST /api/bilibili/jobs/{job_id}/retry -> resumes with those exact saved PNGs.
+  An uncertain write is read back before retrying, never blindly submitted again.
+  Unresolved writes block a competing job on the same video; safely superseded jobs
+  cannot retry. No external mutation occurs while listing videos or preparing a plan.
+  Session credentials stay in a private runtime file, covered by encrypted backup.
+  All routes require the site's authenticated session; upstream login errors do not
+  invalidate that session. Error responses never include credentials or raw payloads.
