@@ -40,6 +40,8 @@ let configured = false,
   postError = '',
   statusError = '',
   tokenError = '',
+  probeError = '',
+  finishProbe = null,
   failJob = false,
   pollReady = false,
   jobSequence = 0;
@@ -92,6 +94,19 @@ try {
     const pathname = new URL(request.url()).pathname;
     requests.push({ path: pathname, method: request.method(), body: request.postData() });
     const send = (json, status = 200) => route.fulfill({ status, json });
+    if (pathname === '/api/sync/wahlap/probe') {
+      assert.equal(request.method(), 'POST');
+      assert.equal(request.postData(), null);
+      if (syncStatus.wahlap.maintenance.active)
+        return send({ detail: { code: 'maintenance', message: maintenanceMessage } }, 503);
+      if (probeError)
+        return send({ detail: { code: 'upstream_empty_response', message: probeError } }, 502);
+      await new Promise((resolve) => {
+        finishProbe = resolve;
+      });
+      finishProbe = null;
+      return send({ ok: true, probe: 'network', account_access: false });
+    }
     if (pathname === '/api/sync/wahlap') {
       assert.equal(request.method(), 'POST');
       const data = request.postDataJSON();
@@ -432,6 +447,57 @@ try {
   assert.equal(await toast().filter({ hasText: receipt.notice }).count(), 0);
   checks.push(
     'Reload and repeated status refresh preserve receipt data without replaying historical job errors or logout notices',
+  );
+  const networkCheck = () => panel.getByRole('button', { name: '检查连接', exact: true });
+  const receiptBeforeProbe = structuredClone(syncStatus.wahlap.last_sync);
+  await panel.getByLabel('或粘贴二维码内容').fill('fixture-probe-keeps-qr-local');
+  const beforeProbe = requests.length;
+  await networkCheck().click();
+  await panel.getByRole('button', { name: '正在检查…', exact: true }).waitFor();
+  assert(await panel.getByRole('button', { name: '正在检查…', exact: true }).isDisabled());
+  assert(await submit().isDisabled());
+  assert(await upload().isDisabled());
+  assert.equal(
+    await panel.getByLabel('或粘贴二维码内容').inputValue(),
+    'fixture-probe-keeps-qr-local',
+  );
+  assert.equal(requests.filter((item) => item.path === '/api/sync/wahlap/probe').length, 1);
+  assert.equal(requests.at(-1).body, null);
+  assert(finishProbe, 'Manual network check must be held until the mock responds');
+  finishProbe();
+  await showToast('华立连接正常');
+  await page.waitForLoadState('networkidle');
+  assert(await networkCheck().isEnabled());
+  assert.deepEqual(syncStatus.wahlap.last_sync, receiptBeforeProbe);
+  assert.deepEqual(
+    requests
+      .slice(beforeProbe)
+      .filter((item) => item.method === 'POST')
+      .map((item) => item.path),
+    ['/api/sync/wahlap/probe'],
+  );
+  probeError = '华立返回空响应，请检查取分代理出口';
+  await networkCheck().click();
+  await showToast(probeError);
+  await page.waitForLoadState('networkidle');
+  assert.equal(await panel.getByText(probeError, { exact: true }).count(), 0);
+  await noInlinePrompts();
+  probeError = '';
+  setMaintenance(true);
+  await networkCheck().click();
+  await showToast(maintenanceMessage);
+  await page.waitForLoadState('networkidle');
+  assert.equal(await panel.getByText(maintenanceMessage, { exact: true }).count(), 0);
+  setMaintenance(false);
+  const probeCount = requests.filter((item) => item.path === '/api/sync/wahlap/probe').length;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForLoadState('networkidle');
+  assert.equal(
+    requests.filter((item) => item.path === '/api/sync/wahlap/probe').length,
+    probeCount,
+  );
+  checks.push(
+    'Manual network check sends no QR, disables overlapping actions, preserves scores, and reports success, network errors and maintenance only through toast; status refresh never probes',
   );
   assert.deepEqual(errors, []);
   await fs.writeFile(

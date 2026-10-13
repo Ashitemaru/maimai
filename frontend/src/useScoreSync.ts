@@ -5,7 +5,7 @@ import type { ScoreSyncJob, ScoreSyncStatus } from './scoreSync';
 export function useScoreSync(onChanged: () => Promise<void>, notify: (message: string) => void) {
   const [state, setState] = useState<ScoreSyncStatus | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [action, setAction] = useState<ScoreSyncJob['kind'] | null>(null);
+  const [action, setAction] = useState<ScoreSyncJob['kind'] | 'wahlap_probe' | null>(null);
   const current = useRef<ScoreSyncStatus | null>(null);
   const active = useRef(true);
   const writing = useRef(false);
@@ -96,7 +96,7 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
     };
   }, [reload]);
   useEffect(() => {
-    if (state?.job?.state !== 'running' || action) return;
+    if ((state?.job?.state !== 'running' && !state?.wahlap.checking) || action) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -108,11 +108,16 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
       controller.abort();
       clearTimeout(timer);
     };
-  }, [state?.job?.id, state?.job?.state, action, reload]);
+  }, [state?.job?.id, state?.job?.state, state?.wahlap.checking, action, reload]);
 
   const run = useCallback(
     async (kind: ScoreSyncJob['kind'], qrText?: string) => {
-      if (writing.current || current.current?.job?.state === 'running') return false;
+      if (
+        writing.current ||
+        current.current?.job?.state === 'running' ||
+        current.current?.wahlap.checking
+      )
+        return false;
       writing.current = true;
       setAction(kind);
       generation.current += 1;
@@ -126,7 +131,7 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
           lastLoadError.current = '';
           setLoadError('');
           accept(status);
-          if (status.job?.state === 'running') return false;
+          if (status.job?.state === 'running' || status.wahlap.checking) return false;
         }
         let prerequisite = '';
         if (!status) prerequisite = '同步状态尚未取得，请重试';
@@ -169,11 +174,35 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
     },
     [accept, reload, notify],
   );
+  const probe = useCallback(async () => {
+    if (
+      writing.current ||
+      current.current?.job?.state === 'running' ||
+      current.current?.wahlap.checking
+    )
+      return false;
+    writing.current = true;
+    setAction('wahlap_probe');
+    generation.current += 1;
+    try {
+      await api('/sync/wahlap/probe', { method: 'POST' });
+      if (active.current) notify('华立连接正常');
+      return true;
+    } catch (error) {
+      if (active.current) notify(messageOf(error));
+      return false;
+    } finally {
+      if (active.current) await reload();
+      writing.current = false;
+      if (active.current) setAction(null);
+    }
+  }, [notify, reload]);
   return {
     state,
     loadError,
     action,
-    busy: action !== null || state?.job?.state === 'running',
+    busy: action !== null || state?.job?.state === 'running' || state?.wahlap.checking === true,
+    probe,
     reload,
     start: (qrText: string) => run('wahlap', qrText),
     upload: () => run('divingfish_upload'),

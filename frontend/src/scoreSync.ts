@@ -24,12 +24,18 @@ export interface ScoreSyncJob {
   state: 'running' | 'succeeded' | 'failed';
   stage: string;
   message?: string;
-  error: { code: string; message: string } | null;
+  error: {
+    code: string;
+    message: string;
+    stage?: 'configuration' | 'authorization' | 'preview' | 'login' | 'scores';
+    http_status?: number;
+  } | null;
   result: WahlapSyncResult | DivingFishUploadResult | null;
 }
 export interface ScoreSyncStatus {
   wahlap: {
     available: boolean;
+    checking?: boolean;
     reason: string | null;
     verified: boolean;
     last_sync: WahlapSyncResult | null;

@@ -131,6 +131,12 @@ their evidence. A runtime probe validates local dependencies only; an authentica
 full score fetch and confirmed game logout are still required for end-to-end
 verification. Do not simulate those using unrelated accounts.
 
+For a cloud egress rejected by Wahlap, provision the [dedicated proxy namespace](../docs/WAHLAP_PROXY.md).
+It routes both Python and Wine through one selected node, without changing the
+web service's network. The manual network probe requests game configuration
+without a QR or player login; the ordinary status poll remains an imports check.
+Proxy credentials and binaries stay outside application releases.
+
 ## Venue map and place lookup
 
 Venue locations live in the private `venue_locations` table in `personal.sqlite3`.

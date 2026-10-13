@@ -25,6 +25,8 @@ LOCK_PATH = REPO / "deploy" / "wahlap-runtime.lock.json"
 MAX_RECORDS = 20000
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 WORKER_TIMEOUT = 180
+NETWORK_PROBE_TIMEOUT = 30
+ERROR_STAGES = frozenset({"configuration", "authorization", "preview", "login", "scores"})
 ERROR_MESSAGES = {
     "disabled": "华立同步尚未启用",
     "runtime_unavailable": "华立取分运行环境尚未就绪",
@@ -45,6 +47,12 @@ ERROR_MESSAGES = {
     "login_failed": "华立未确认本次登录，未读取成绩或强制退出",
     "login_state_unknown": "本次登录结果未确认，请勿立即重复同步",
     "network_error": "华立暂时不可访问，请稍后重试",
+    "upstream_empty_response": "华立返回空响应，请检查取分代理出口",
+    "upstream_http_error": "华立接口返回 HTTP 错误，请稍后重试",
+    "upstream_decode_error": "华立接口返回内容无法解析，未导入成绩",
+    "upstream_timeout": "华立接口连接超时，请检查取分代理出口",
+    "upstream_transport_error": "华立接口连接失败，请检查取分代理出口",
+    "invalid_endpoint": "华立返回的接口地址未通过校验",
 }
 LOGOUT_NOTICES = {
     "confirmed": None,
@@ -56,11 +64,29 @@ LOGOUT_NOTICES = {
 class WahlapError(RuntimeError):
     """Only fixed messages may cross the process/API boundary."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, stage=None, http_status=None):
         self.code = code if isinstance(code, str) and code in ERROR_MESSAGES else "worker_failed"
+        self.stage = stage if isinstance(stage, str) and stage in ERROR_STAGES else None
+        self.http_status = (
+            http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+        )
         self.logout_status = "unverified"
         self.logout_confirmed = False
         super().__init__(ERROR_MESSAGES[self.code])
+
+
+def error_response(error: WahlapError) -> dict:
+    response = {
+        "ok": False,
+        "error": error.code,
+        "logout_status": error.logout_status,
+        "logout_confirmed": error.logout_confirmed,
+    }
+    if error.stage is not None:
+        response["stage"] = error.stage
+    if error.http_status is not None:
+        response["http_status"] = error.http_status
+    return response
 
 
 def validate_sgid(value: object) -> str:
@@ -137,7 +163,11 @@ def _socket_path() -> str:
 
 
 def _response_error(result: dict) -> WahlapError:
-    error = WahlapError(result.get("error", "worker_failed"))
+    error = WahlapError(
+        result.get("error", "worker_failed"),
+        stage=result.get("stage"),
+        http_status=result.get("http_status"),
+    )
     status = result.get("logout_status")
     if isinstance(status, str) and status in (*LOGOUT_NOTICES, "not_attempted"):
         error.logout_status = status
@@ -202,6 +232,46 @@ def available() -> dict:
     if os.environ.get("MAIMAI_WAHLAP_ENABLED") != "1":
         return {"available": False, "reason": ERROR_MESSAGES["disabled"]}
     return dict(_service_available(_socket_path(), int(time.monotonic() // 60)))
+
+
+def _validate_network_probe(result: dict) -> dict:
+    if result.get("probe") != "network" or result.get("account_access") is not False:
+        raise WahlapError("invalid_response")
+    return {"ok": True, "probe": "network", "account_access": False}
+
+
+def _probe_failure(error: WahlapError) -> WahlapError:
+    if error.code == "worker_timeout":
+        error = WahlapError("upstream_timeout", stage="configuration")
+    error.logout_status = "not_attempted"
+    error.logout_confirmed = False
+    return error
+
+
+def probe_network() -> dict:
+    """Explicit, uncached configuration check; never reads or resolves a player's QR."""
+    if os.environ.get("MAIMAI_WAHLAP_ENABLED") != "1":
+        raise WahlapError("disabled")
+    try:
+        return _validate_network_probe(
+            _socket_request({"kind": "network_probe"}, timeout=NETWORK_PROBE_TIMEOUT + 5)
+        )
+    except WahlapError as exc:
+        raise _probe_failure(exc) from None
+
+
+def _probe_network_local() -> dict:
+    try:
+        runtime, state, wine, bwrap = _configured_paths()
+        with _single_worker(state):
+            result = _run_worker(
+                _sandbox_command(runtime, state, wine, bwrap) + ["--probe-network"],
+                {},
+                timeout=NETWORK_PROBE_TIMEOUT,
+            )
+        return _validate_network_probe(result)
+    except WahlapError as exc:
+        raise _probe_failure(exc) from None
 
 
 @functools.lru_cache(maxsize=4)

@@ -1,0 +1,13 @@
+[Unit]
+Description=mai journal private Wahlap network
+Before=mai-journal-wahlap-egress.service mai-journal-wahlap-tun.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/mai-journal-wahlap-proxy/wahlap_proxy.py network-up
+ExecStop=/usr/bin/python3 /opt/mai-journal-wahlap-proxy/wahlap_proxy.py network-down
+TimeoutStartSec=30
+TimeoutStopSec=30
+UMask=0077
+LimitCORE=0

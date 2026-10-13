@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import threading
 import time
 import unittest
@@ -115,6 +116,147 @@ class ScoreSyncTests(unittest.TestCase):
         jobs._thread.join(timeout=4)
         self.assertFalse(jobs._thread.is_alive(), "fixture worker did not finish")
         return jobs.status()["job"]
+
+    def test_network_probe_preserves_scores_and_does_not_create_a_sync_job(self):
+        jobs = self.job()
+        self.save_claim()
+        before = self.state()
+        result = {"ok": True, "probe": "network", "account_access": False}
+        with patch("backend.wahlap.probe_network", return_value=result) as probe:
+            self.assertEqual(jobs.probe_wahlap(), result)
+        probe.assert_called_once_with()
+        self.assertEqual(self.state(), before)
+        self.assertIsNone(jobs.status()["job"])
+        self.assertFalse(jobs.status()["wahlap"]["checking"])
+        self.assertFalse(jobs.status()["wahlap"]["verified"])
+
+    def test_network_probe_serializes_sync_and_other_probes_without_blocking_status(self):
+        jobs = self.job()
+        started, release = threading.Event(), threading.Event()
+        result = []
+
+        def probe():
+            started.set()
+            self.assertTrue(release.wait(3))
+            return {"ok": True, "probe": "network", "account_access": False}
+
+        with patch("backend.wahlap.probe_network", side_effect=probe):
+            thread = threading.Thread(target=lambda: result.append(jobs.probe_wahlap()))
+            thread.start()
+            try:
+                self.assertTrue(started.wait(2))
+                with patch("backend.score_sync.wahlap_available") as imports_probe:
+                    self.assertTrue(jobs.status()["wahlap"]["checking"])
+                imports_probe.assert_not_called()
+                for action in (jobs.probe_wahlap, lambda: jobs.start_wahlap(TEST_QR)):
+                    with self.assertRaises(ScoreSyncError) as failure:
+                        action()
+                    self.assertEqual(failure.exception.code, "sync_busy")
+                with self.assertRaises(SyncBusyError), self.store.sync_lease():
+                    self.fail("Legacy score sync must not overlap the connectivity check")
+            finally:
+                release.set()
+                thread.join(timeout=3)
+        self.assertEqual(len(result), 1)
+        self.assertFalse(jobs.status()["wahlap"]["checking"])
+        with self.store.sync_lease():
+            pass
+
+    def test_network_probe_refuses_running_sync_maintenance_shutdown_and_cooldown(self):
+        jobs = self.job()
+        with patch("backend.wahlap.probe_network") as probe:
+            jobs._job = {"state": "running"}
+            with self.assertRaises(ScoreSyncError) as failure:
+                jobs.probe_wahlap()
+            self.assertEqual(failure.exception.code, "sync_busy")
+            jobs._job = None
+            jobs._clock = lambda: DURING_MAINTENANCE
+            with self.assertRaises(ScoreSyncError) as failure:
+                jobs.probe_wahlap()
+            self.assertEqual(failure.exception.code, "maintenance")
+            jobs._clock = lambda: OUTSIDE_MAINTENANCE
+            jobs._last_started = time.monotonic()
+            with patch("backend.score_sync.JOB_COOLDOWN_SECONDS", 3):
+                with self.assertRaises(ScoreSyncError) as failure:
+                    jobs.probe_wahlap()
+                self.assertEqual(failure.exception.code, "sync_cooldown")
+            jobs.close()
+            with self.assertRaises(ScoreSyncError) as failure:
+                jobs.probe_wahlap()
+            self.assertEqual(failure.exception.code, "shutting_down")
+        probe.assert_not_called()
+
+    def test_network_probe_error_releases_lease_and_preserves_safe_diagnostics(self):
+        from backend.wahlap import WahlapError
+
+        jobs = self.job()
+        before = self.state()
+        with patch(
+            "backend.wahlap.probe_network",
+            side_effect=WahlapError(
+                "upstream_empty_response", stage="configuration", http_status=200
+            ),
+        ):
+            with self.assertRaises(ScoreSyncError) as failure:
+                jobs.probe_wahlap()
+        self.assertEqual(
+            failure.exception.detail(),
+            {
+                "code": "upstream_empty_response",
+                "message": "华立返回空响应，请检查取分代理出口",
+                "stage": "configuration",
+                "http_status": 200,
+            },
+        )
+        self.assertFalse(jobs.status()["wahlap"]["checking"])
+        self.assertEqual(self.state(), before)
+        with self.store.sync_lease():
+            pass
+
+    def test_network_probe_requires_session_and_same_origin(self):
+        from backend.auth import hash_master_key
+
+        key = "synthetic-network-probe-master-key"
+        with (
+            patch.dict(
+                os.environ,
+                {"MAIMAI_AUTH_DISABLED": "0", "MAIMAI_MASTER_KEY_HASH": hash_master_key(key)},
+            ),
+            patch("backend.wahlap.probe_network") as probe,
+            TestClient(
+                create_app(self.store, updater=FakeUpdater()), base_url="https://testserver"
+            ) as client,
+        ):
+            self.assertEqual(client.post("/api/sync/wahlap/probe").status_code, 401)
+            self.assertEqual(
+                client.post("/api/auth/login", json={"master_key": key}).status_code, 200
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/sync/wahlap/probe", headers={"Origin": "https://other.invalid"}
+                ).status_code,
+                403,
+            )
+        probe.assert_not_called()
+
+    def test_network_probe_api_success_and_maintenance(self):
+        result = {"ok": True, "probe": "network", "account_access": False}
+        with (
+            patch("backend.wahlap.probe_network", return_value=result) as probe,
+            TestClient(create_app(self.store, updater=FakeUpdater())) as client,
+        ):
+            response = client.post("/api/sync/wahlap/probe")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), result)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            probe.assert_called_once_with()
+            with patch("backend.score_sync.utc_now", return_value=DURING_MAINTENANCE):
+                client.app.state.score_sync._clock = lambda: DURING_MAINTENANCE
+                response = client.post("/api/sync/wahlap/probe")
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.headers["Retry-After"], "5400")
+            self.assertEqual(response.json()["detail"]["code"], "maintenance")
+            probe.assert_called_once_with()
 
     def test_game_matches_official_id_without_divingfish_mapping_and_keeps_source(self):
         catalog, _ = self.store._catalog_snapshot

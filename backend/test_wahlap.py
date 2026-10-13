@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from backend import wahlap, wahlap_service, wahlap_worker
 from scripts import setup_wahlap_runtime
 
@@ -207,9 +209,19 @@ class LifecycleClient:
         self.login = {"returnCode": 1, "_loginDateTime": 123456}
         self.music = page(detail())
         self.logout = {}
+        self.configuration = {"gameSetting": {"movieServerUri": self.base_url}}
 
-    async def resolve_runtime_base_url(self, **kwargs):
-        return self.base_url
+    async def get_game_setting(self, **kwargs):
+        self.calls.append("configuration")
+        if isinstance(self.configuration, Exception):
+            raise self.configuration
+        return self.configuration
+
+    def with_base_url(self, url):
+        other = LifecycleClient()
+        other.base_url = url
+        other.calls = self.calls
+        return other
 
     async def get_user_preview(self, session):
         self.calls.append("preview")
@@ -248,6 +260,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 pass
 
             async def resolve_session_async(self, sgid):
+                transport.calls.append("authorization")
                 return SimpleNamespace(user_id=123, token="fixture-not-a-secret")
 
         self.modules = SimpleNamespace(
@@ -256,6 +269,8 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 DEFAULT_OFFICIAL_TITLE_ENDPOINTS=[
                     SimpleNamespace(base_url=transport.base_url, host_header="", verify_tls=True)
                 ],
+                DEFAULT_RUNTIME_SERVER_URI="/Maimai2Servlet/",
+                OfficialTitleServerError=OfficialTitleError,
                 OfficialTitleClient=lambda **kwargs: transport,
             ),
         )
@@ -265,7 +280,16 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(output["logout_confirmed"])
         self.assertEqual(
             self.transport.calls,
-            ["preview", "login", "GetUserMusicApi", "UserLogoutApi", "preview", "close"],
+            [
+                "configuration",
+                "authorization",
+                "preview",
+                "login",
+                "GetUserMusicApi",
+                "UserLogoutApi",
+                "preview",
+                "close",
+            ],
         )
 
     async def test_active_or_unknown_preview_never_logs_in_or_out(self):
@@ -309,7 +333,8 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.transport.logout = RuntimeError("logout failure")
         with self.assertRaises(wahlap.WahlapError) as raised:
             await wahlap_worker.collect_scores(QR, self.modules)
-        self.assertEqual(raised.exception.code, "network_error")
+        self.assertEqual(raised.exception.code, "worker_failed")
+        self.assertEqual(raised.exception.stage, "scores")
         self.assertEqual(raised.exception.logout_status, "failed")
         self.assertFalse(raised.exception.logout_confirmed)
 
@@ -328,6 +353,99 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["logout_status"], "failed")
         self.assertFalse(output["logout_confirmed"])
         self.assertNotIn("credentials", json.dumps(output))
+
+    async def test_network_probe_only_reads_configuration(self):
+        self.assertEqual(
+            await wahlap_worker.probe_network(self.modules),
+            {"ok": True, "probe": "network", "account_access": False},
+        )
+        self.assertEqual(self.transport.calls, ["configuration", "close"])
+
+    async def test_preflight_errors_never_process_qr_or_access_account(self):
+        cases = [
+            (OfficialTitleError("empty official title response"), "upstream_empty_response"),
+            (OfficialTitleError("invalid official title response"), "upstream_decode_error"),
+            (TimeoutError(QR), "upstream_timeout"),
+            (httpx.ConnectError(QR), "upstream_transport_error"),
+            (RuntimeError(QR), "worker_failed"),
+            ({}, "upstream_decode_error"),
+            ({"gameSetting": {}}, "upstream_decode_error"),
+            ({"gameSetting": "private"}, "upstream_decode_error"),
+            ({"gameSetting": {"movieServerUri": 123}}, "upstream_decode_error"),
+            (
+                {"gameSetting": {"movieServerUri": "https://untrusted.invalid/" + QR}},
+                "invalid_endpoint",
+            ),
+        ]
+        for configuration, code in cases:
+            with self.subTest(code=code):
+                self.transport.configuration = configuration
+                self.transport.calls = []
+                with self.assertRaises(wahlap.WahlapError) as raised:
+                    await wahlap_worker.collect_scores(QR, self.modules)
+                error = raised.exception
+                self.assertEqual(error.code, code)
+                self.assertEqual(error.stage, "configuration")
+                self.assertEqual(error.logout_status, "not_attempted")
+                self.assertEqual(self.transport.calls, ["configuration", "close"])
+                self.assertNotIn(QR, json.dumps(wahlap.error_response(error)))
+
+    async def test_authorization_failure_closes_settings_and_runtime_clients(self):
+        self.transport.configuration = {"gameSetting": {"movieServerUri": "/different/"}}
+
+        async def fail_authorization(owner, sgid):
+            self.transport.calls.append("authorization")
+            raise RuntimeError(QR)
+
+        with (
+            patch.object(
+                self.modules.client.MaimaiOfficialClient,
+                "resolve_session_async",
+                fail_authorization,
+            ),
+            self.assertRaises(wahlap.WahlapError) as raised,
+        ):
+            await wahlap_worker.collect_scores(QR, self.modules)
+        self.assertEqual(raised.exception.code, "authorization_failed")
+        self.assertEqual(raised.exception.stage, "authorization")
+        self.assertEqual(self.transport.calls, ["configuration", "authorization", "close", "close"])
+
+    async def test_known_http_exception_retains_only_status_and_stage(self):
+        self.transport.configuration = httpx.HTTPStatusError(
+            QR,
+            request=httpx.Request("POST", "https://example.invalid/" + QR),
+            response=httpx.Response(403, content=QR.encode()),
+        )
+        with self.assertRaises(wahlap.WahlapError) as raised:
+            await wahlap_worker.probe_network(self.modules)
+        error = raised.exception
+        self.assertEqual(error.code, "upstream_http_error")
+        self.assertEqual(error.http_status, 403)
+        self.assertEqual(error.stage, "configuration")
+        self.assertNotIn(QR, json.dumps(wahlap.error_response(error)))
+
+    async def test_unknown_server_error_is_not_classified_using_partial_text(self):
+        self.transport.configuration = OfficialTitleError("empty official title response " + QR)
+        with self.assertRaises(wahlap.WahlapError) as raised:
+            await wahlap_worker.probe_network(self.modules)
+        self.assertEqual(raised.exception.code, "worker_failed")
+
+    async def test_cleanup_error_does_not_erase_primary_error(self):
+        self.transport.configuration = OfficialTitleError("empty official title response")
+
+        async def fail_close():
+            raise RuntimeError(QR)
+
+        with (
+            patch.object(self.transport, "close", fail_close),
+            self.assertRaises(wahlap.WahlapError) as raised,
+        ):
+            await wahlap_worker.probe_network(self.modules)
+        self.assertEqual(raised.exception.code, "upstream_empty_response")
+
+
+class OfficialTitleError(RuntimeError):
+    pass
 
 
 class ProcessBoundaryTests(unittest.TestCase):
@@ -390,6 +508,50 @@ class ProcessBoundaryTests(unittest.TestCase):
             wahlap._run_worker([sys.executable, "-c", code], {}, timeout=5)
         self.assertEqual(raised.exception.logout_status, "failed")
         self.assertFalse(raised.exception.logout_confirmed)
+
+    def test_error_diagnostics_are_allowlisted_at_child_boundary(self):
+        for stage, status, expected_stage, expected_status in (
+            ("configuration", 200, "configuration", 200),
+            ("scores", 503, "scores", 503),
+            (QR, QR, None, None),
+            ({"value": QR}, True, None, None),
+            ("configuration", 99, "configuration", None),
+            ("configuration", 600, "configuration", None),
+        ):
+            with self.subTest(stage=expected_stage, status=expected_status):
+                error = wahlap._response_error(
+                    {
+                        "error": "upstream_http_error",
+                        "stage": stage,
+                        "http_status": status,
+                        "raw": QR,
+                    }
+                )
+                self.assertEqual(error.stage, expected_stage)
+                self.assertEqual(error.http_status, expected_status)
+                self.assertNotIn(QR, json.dumps(wahlap.error_response(error)))
+
+    def test_network_probe_uses_sandbox_and_exclusive_worker_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            paths = (Path("/opt/runtime"), state, "/usr/bin/wine", "/usr/bin/bwrap")
+            with (
+                patch.object(wahlap, "_configured_paths", return_value=paths),
+                patch.object(
+                    wahlap,
+                    "_run_worker",
+                    return_value={"probe": "network", "account_access": False},
+                ) as run,
+            ):
+                self.assertEqual(wahlap._probe_network_local()["probe"], "network")
+                self.assertEqual(run.call_args.args[0][0], "/usr/bin/bwrap")
+                self.assertEqual(run.call_args.args[0][-1], "--probe-network")
+                self.assertEqual(run.call_args.args[1], {})
+                self.assertEqual(run.call_args.kwargs["timeout"], 30)
+                with wahlap._single_worker(state), self.assertRaises(wahlap.WahlapError) as raised:
+                    wahlap._probe_network_local()
+                self.assertEqual(raised.exception.code, "busy")
+                self.assertEqual(run.call_count, 1)
 
     def test_single_worker_lock_rejects_overlap(self):
         with tempfile.TemporaryDirectory() as directory, wahlap._single_worker(Path(directory)):
@@ -471,6 +633,71 @@ class SocketBrokerTests(unittest.TestCase):
         remote.assert_not_called()
         self.assertTrue(response["ok"])
         self.assertEqual(response["logout_status"], "unverified")
+
+    def test_broker_network_probe_never_fetches_and_rejects_credentials(self):
+        clean = {"ok": True, "probe": "network", "account_access": False}
+        with (
+            patch.object(wahlap, "_probe_network_local", return_value=clean) as probe,
+            patch.object(wahlap, "_fetch_scores_local") as fetch,
+        ):
+            self.assertEqual(self.exchange({"kind": "network_probe"}), clean)
+            self.assertEqual(
+                self.exchange({"kind": "network_probe", "sgid": QR})["error"], "invalid_response"
+            )
+        probe.assert_called_once_with()
+        fetch.assert_not_called()
+
+    def test_network_probe_uncached_response_drops_extra_metadata(self):
+        with (
+            patch.dict(os.environ, {"MAIMAI_WAHLAP_ENABLED": "1"}),
+            patch.object(
+                wahlap,
+                "_socket_request",
+                return_value={"ok": True, "probe": "network", "account_access": False, "raw": QR},
+            ) as request,
+        ):
+            self.assertEqual(
+                wahlap.probe_network(), {"ok": True, "probe": "network", "account_access": False}
+            )
+            wahlap.probe_network()
+            self.assertEqual(request.call_count, 2)
+            request.assert_called_with({"kind": "network_probe"}, timeout=35)
+
+    def test_network_probe_does_not_accept_imports_only_or_account_access_receipt(self):
+        for reply in (
+            {"ok": True, "probe": "imports", "account_access": False},
+            {"ok": True, "probe": "network", "account_access": True},
+            {"ok": True, "probe": "network", "account_access": 0},
+        ):
+            with (
+                patch.dict(os.environ, {"MAIMAI_WAHLAP_ENABLED": "1"}),
+                patch.object(wahlap, "_socket_request", return_value=reply),
+                self.assertRaises(wahlap.WahlapError) as raised,
+            ):
+                wahlap.probe_network()
+            self.assertEqual(raised.exception.code, "invalid_response")
+
+    def test_network_probe_timeout_does_not_claim_uncertain_game_session(self):
+        with (
+            patch.dict(os.environ, {"MAIMAI_WAHLAP_ENABLED": "1"}),
+            patch.object(
+                wahlap, "_socket_request", side_effect=wahlap.WahlapError("worker_timeout")
+            ),
+            self.assertRaises(wahlap.WahlapError) as raised,
+        ):
+            wahlap.probe_network()
+        self.assertEqual(raised.exception.code, "upstream_timeout")
+        self.assertEqual(raised.exception.stage, "configuration")
+        self.assertEqual(raised.exception.logout_status, "not_attempted")
+        self.assertNotIn("会话", str(raised.exception))
+
+    def test_broker_preserves_safe_failure_stage_and_status(self):
+        error = wahlap.WahlapError("upstream_http_error", stage="configuration", http_status=403)
+        with patch.object(wahlap, "_probe_network_local", side_effect=error):
+            reply = self.exchange({"kind": "network_probe"})
+        self.assertEqual(reply["stage"], "configuration")
+        self.assertEqual(reply["http_status"], 403)
+        self.assertEqual(reply["error"], "upstream_http_error")
 
     def test_broker_rejects_oversized_invalid_and_extra_request_fields(self):
         with patch.object(wahlap, "_fetch_scores_local") as fetch:

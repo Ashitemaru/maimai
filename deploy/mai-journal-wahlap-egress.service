@@ -1,0 +1,32 @@
+[Unit]
+Description=mai journal private Wahlap proxy gateway
+Requires=mai-journal-wahlap-netns.service
+After=network-online.target mai-journal-wahlap-netns.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=mai-wahlap-proxy
+Group=mai-wahlap-proxy
+ExecStart=/opt/mai-journal-wahlap-proxy/mihomo -d /var/lib/mai-journal-wahlap-egress -f /etc/mai-journal/wahlap-proxy/egress.json
+StateDirectory=mai-journal-wahlap-egress
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+LimitCORE=0
+MemoryMax=192M
+TasksMax=64
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

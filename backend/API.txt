@@ -94,7 +94,7 @@ GET /api/settings/divingfish -> {configured,source:"environment"|"local"|null,sy
 PUT /api/settings/divingfish {token:"Import-Token"} -> same public settings.
   Empty token clears local saved token. Token is never returned or logged.
 GET /api/sync/status -> {wahlap,job,divingfish}
-  wahlap={available,reason,verified,last_sync,has_snapshot,maintenance}. available
+  wahlap={available,checking,reason,verified,last_sync,has_snapshot,maintenance}. available
   describes whether the adapter/runtime can currently be invoked; it is not proof
   of a live protocol check. During maintenance it is false, reason is the maintenance
   message, and no adapter/runtime probe is issued. last_sync is the latest successful
@@ -112,6 +112,18 @@ GET /api/sync/status -> {wahlap,job,divingfish}
   divingfish_upload; state is running, succeeded or failed; stage is starting,
   fetching, validating, uploading, completed or failed. error is null or {code,message},
   with retry_at and retry_after_seconds also present for maintenance rejection.
+  A worker failure may also include stage (configuration, authorization, preview,
+  login, scores) and http_status (100-599). These diagnostic values are validated;
+  no raw upstream response, URL query, token or player identifier is returned.
+POST /api/sync/wahlap/probe (no body) -> {ok:true,probe:"network",account_access:false}
+  Explicit uncached connectivity check through the same sandbox and proxy as score
+  sync. Fetches and validates game configuration only, without QR authorization,
+  account lookup, login, score reads or personal-data changes. Requires a session
+  and same-origin request. Uses the shared sync lease and submission cooldown;
+  overlapping probes, running score jobs and service shutdown reject the request.
+  Daily maintenance rejects with HTTP 503 and Retry-After. Runtime errors return
+  safe code/message plus optional stage/http_status as above. checking is true while
+  this bounded request is running; normal status polling never runs a network check.
 POST /api/sync/wahlap {qr_text} -> HTTP 202, job object
   New jobs during daily maintenance are rejected with HTTP 503 and Retry-After in
   seconds. detail={code:"maintenance",message,retry_at,retry_after_seconds}.

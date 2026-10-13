@@ -147,9 +147,23 @@ export function ScoreSyncPanel({
               }}
             />
           </div>
-          <button className="btn primary" disabled={busy || reading}>
-            {busy && !uploading ? '正在同步…' : '同步华立成绩'}
-          </button>
+          <div className="form-actions">
+            <button className="btn primary" disabled={busy || reading}>
+              {control.action === 'wahlap' || (job?.state === 'running' && !uploading)
+                ? '正在同步…'
+                : '同步华立成绩'}
+            </button>
+            <button
+              className="btn"
+              type="button"
+              disabled={busy || reading}
+              onClick={() => void control.probe()}
+            >
+              {control.action === 'wahlap_probe' || state?.wahlap.checking
+                ? '正在检查…'
+                : '检查连接'}
+            </button>
+          </div>
         </form>
         {job?.state === 'running' && job.kind === 'wahlap' && (
           <div className="score-sync-progress" role="status">

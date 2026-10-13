@@ -21,18 +21,34 @@ SHUTDOWN_GRACE_SECONDS = 190
 
 
 class ScoreSyncError(Exception):
-    def __init__(self, status, code, message, *, retry_at=None, retry_after_seconds=None):
+    def __init__(
+        self,
+        status,
+        code,
+        message,
+        *,
+        retry_at=None,
+        retry_after_seconds=None,
+        stage=None,
+        http_status=None,
+    ):
         self.status = status
         self.code = code
         self.message = message
         self.retry_at = retry_at
         self.retry_after_seconds = retry_after_seconds
+        self.stage = stage
+        self.http_status = http_status
         super().__init__(message)
 
     def detail(self):
         result = {"code": self.code, "message": self.message}
         if self.retry_at is not None:
             result.update(retry_at=self.retry_at, retry_after_seconds=self.retry_after_seconds)
+        if self.stage in {"configuration", "authorization", "preview", "login", "scores"}:
+            result["stage"] = self.stage
+        if type(self.http_status) is int and 100 <= self.http_status <= 599:
+            result["http_status"] = self.http_status
         return result
 
     def headers(self):
@@ -47,7 +63,7 @@ def wahlap_available():
 
         return available()
     except (ImportError, OSError):
-        return {"available": False, "reason": "华立直连尚未配置，请稍后再试。"}
+        return {"available": False, "reason": "华立取分服务尚未配置，请稍后再试。"}
 
 
 def fetch_wahlap_scores(qr_text):
@@ -66,7 +82,13 @@ def fetch_wahlap_scores(qr_text):
             "pagination_invalid",
         ):
             message += "；华立退出会话尚未确认，请勿立即重复同步。"
-        raise ScoreSyncError(502, exc.code, message) from None
+        raise ScoreSyncError(
+            502,
+            exc.code,
+            message,
+            stage=exc.stage,
+            http_status=exc.http_status,
+        ) from None
 
 
 def session_outcome(payload):
@@ -140,6 +162,9 @@ class ScoreSync:
         self._lock = threading.Lock()
         self._thread = None
         self._closed = False
+        self._probing = False
+        self._probe_finished = threading.Event()
+        self._probe_finished.set()
         self._job = None
         self._last_started = None
         with store.db() as conn:
@@ -151,17 +176,21 @@ class ScoreSync:
 
     def status(self):
         maintenance = maintenance_status(self._clock())
-        capability = (
-            {"available": False, "reason": maintenance["message"]}
-            if maintenance["active"]
-            else wahlap_available()
-        )
-        last_sync = self.store.meta("last_wahlap_sync")
         with self._lock:
             job = copy.deepcopy(self._job)
+            checking = self._probing
+        if maintenance["active"]:
+            capability = {"available": False, "reason": maintenance["message"]}
+        elif checking:
+            # The explicit check owns the worker; polling must not launch another.
+            capability = {"available": True, "reason": None}
+        else:
+            capability = wahlap_available()
+        last_sync = self.store.meta("last_wahlap_sync")
         return {
             "wahlap": {
                 "available": capability.get("available") is True,
+                "checking": checking,
                 "reason": capability.get("reason"),
                 "verified": bool(last_sync and last_sync.get("logout_confirmed")),
                 "last_sync": last_sync,
@@ -188,7 +217,7 @@ class ScoreSync:
             ) from None
         capability = wahlap_available()
         if capability.get("available") is not True:
-            raise ScoreSyncError(503, "wahlap_unavailable", "华立直连尚不可用，请稍后再试。")
+            raise ScoreSyncError(503, "wahlap_unavailable", "华立取分服务尚不可用，请稍后再试。")
         return self._start("wahlap", qr_text)
 
     def _assert_start_allowed(self):
@@ -209,17 +238,55 @@ class ScoreSync:
             raise ScoreSyncError(409, "no_token", "请先保存水鱼 Import-Token。")
         return self._start("divingfish_upload", None)
 
+    def probe_wahlap(self):
+        """Check the game configuration endpoint without consuming a login QR."""
+        from .wahlap import WahlapError, probe_network
+
+        self._assert_start_allowed()
+        with self._lock:
+            self._assert_idle()
+            lease = self.store.sync_lease()
+            try:
+                lease.__enter__()
+            except SyncBusyError:
+                raise ScoreSyncError(409, "sync_busy", "成绩任务正在进行，请等待完成。") from None
+            self._probing = True
+            self._probe_finished.clear()
+            self._last_started = time.monotonic()
+        try:
+            self._assert_start_allowed()
+            return probe_network()
+        except WahlapError as exc:
+            raise ScoreSyncError(
+                502,
+                exc.code,
+                str(exc),
+                stage=exc.stage,
+                http_status=exc.http_status,
+            ) from None
+        finally:
+            lease.__exit__(None, None, None)
+            with self._lock:
+                self._probing = False
+                self._probe_finished.set()
+
+    def _assert_idle(self):
+        # Called with _lock held by both sync and connectivity-check submissions.
+        if self._closed:
+            raise ScoreSyncError(503, "shutting_down", "服务正在重启，请稍后重试。")
+        if self._probing:
+            raise ScoreSyncError(409, "sync_busy", "正在检查华立连接，请等待完成。")
+        if self._job and self._job["state"] == "running":
+            raise ScoreSyncError(409, "sync_busy", "成绩任务正在进行，请等待完成。")
+        if (
+            self._last_started is not None
+            and time.monotonic() - self._last_started < JOB_COOLDOWN_SECONDS
+        ):
+            raise ScoreSyncError(429, "sync_cooldown", "操作过于频繁，请稍后再试。")
+
     def _start(self, kind, credential):
         with self._lock:
-            if self._closed:
-                raise ScoreSyncError(503, "shutting_down", "服务正在重启，请稍后重试。")
-            if self._job and self._job["state"] == "running":
-                raise ScoreSyncError(409, "sync_busy", "成绩任务正在进行，请等待完成。")
-            if (
-                self._last_started is not None
-                and time.monotonic() - self._last_started < JOB_COOLDOWN_SECONDS
-            ):
-                raise ScoreSyncError(429, "sync_cooldown", "操作过于频繁，请稍后再试。")
+            self._assert_idle()
             lease = self.store.sync_lease()
             try:
                 token, generation = lease.__enter__()
@@ -425,3 +492,4 @@ class ScoreSync:
         if thread and thread is not threading.current_thread():
             # Let the bounded game worker attempt logout before process shutdown.
             thread.join(timeout=SHUTDOWN_GRACE_SECONDS)
+        self._probe_finished.wait(timeout=40)

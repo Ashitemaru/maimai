@@ -906,6 +906,13 @@ def create_app(store=None, updater=None):
     def score_sync_status():
         return score_sync.status()
 
+    @app.post("/api/sync/wahlap/probe")
+    def probe_wahlap_network():
+        try:
+            return score_sync.probe_wahlap()
+        except ScoreSyncError as exc:
+            raise HTTPException(exc.status, exc.detail(), headers=exc.headers()) from None
+
     @app.post("/api/sync/wahlap", status_code=202)
     def start_wahlap_sync(value: WahlapSyncInput):
         try:
