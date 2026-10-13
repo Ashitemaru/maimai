@@ -109,6 +109,41 @@ class ScoreValidationTests(unittest.TestCase):
             120,
         )
 
+    def test_official_utage_level_and_duet_achievement_survive_child_boundary(self):
+        record = wahlap_worker.normalize_detail(
+            detail(musicId=100123, level=10, achievement=2004565, comboStatus=4)
+        )
+        clean = wahlap.validate_result(result(records=[record]))["records"][0]
+        self.assertEqual(clean["song_id"], 100123)
+        self.assertEqual(clean["level_index"], 10)
+        self.assertEqual(clean["achievements"], 200.4565)
+        self.assertEqual(clean["fc"], "app")
+
+    def test_legacy_difficulties_remain_valid_for_all_chart_types(self):
+        for music_id in (1, 10001, 100001):
+            for level in range(6):
+                with self.subTest(music_id=music_id, level=level):
+                    record = wahlap_worker.normalize_detail(detail(musicId=music_id, level=level))
+                    clean = wahlap.validate_result(result(records=[record]))["records"][0]
+                    self.assertEqual(clean["level_index"], level)
+
+    def test_unknown_or_mistyped_levels_are_rejected_at_both_boundaries(self):
+        for music_id in (1, 10001, 99999, 100000, 100001):
+            invalid_levels = [True, False, None, "10", 10.0, -1, 6, 7, 8, 9, 11]
+            if music_id < 100000:
+                invalid_levels.append(10)
+            for level in invalid_levels:
+                with self.subTest(music_id=music_id, level=level):
+                    self.assertFalse(wahlap.valid_score_level(music_id, level))
+                    with self.assertRaises(wahlap.WahlapError) as raised:
+                        wahlap_worker.normalize_detail(detail(musicId=music_id, level=level))
+                    self.assertEqual(raised.exception.code, "invalid_scores")
+                    record = wahlap_worker.normalize_detail(detail(musicId=music_id))
+                    record["level_index"] = level
+                    with self.assertRaises(wahlap.WahlapError) as raised:
+                        wahlap.validate_result(result(records=[record]))
+                    self.assertEqual(raised.exception.code, "invalid_scores")
+
     def test_outer_identity_and_dx_aliases_must_agree(self):
         value = detail()
         del value["musicId"]

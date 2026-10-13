@@ -164,6 +164,7 @@ def upload_records(records, music_data):
         difficulty = record["level_index"]
         if (
             not song
+            or not 0 <= difficulty <= 5
             or not isinstance(song.get("title"), str)
             or not song["title"]
             or song.get("type") not in ("SD", "DX")

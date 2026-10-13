@@ -115,6 +115,15 @@ def validate_sgid(value: object) -> str:
     return value
 
 
+def valid_score_level(song_id: object, level: object) -> bool:
+    """Keep the official UTAGE level 10 distinct from the legacy level 5."""
+    return (
+        type(song_id) is int
+        and type(level) is int
+        and (0 <= level <= 5 or song_id >= 100000 and level == 10)
+    )
+
+
 def _runtime_dir() -> Path:
     return Path(os.environ.get("MAIMAI_WAHLAP_RUNTIME_DIR", "/opt/mai-journal-wahlap"))
 
@@ -470,8 +479,7 @@ def validate_result(result: dict) -> dict:
         if (
             type(song) is not int
             or not 0 < song < 10_000_000
-            or type(level) is not int
-            or not 0 <= level <= 5
+            or not valid_score_level(song, level)
             or type(dx) is not int
             or not 0 <= dx <= 100_000_000
             or type(achievement) not in (int, float)

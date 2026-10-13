@@ -9,6 +9,8 @@ from collections import Counter
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from .wahlap import valid_score_level
+
 
 class RecordConflictError(Exception):
     """The venue claim changed since the client loaded it."""
@@ -84,14 +86,16 @@ def read_record_state(conn):
     }
 
 
-def validate_score(record, *, ordinary):
+def validate_score(record, *, ordinary, source="divingfish"):
     """Validate before starting a transaction; unknown/宴 rows remain auditable."""
     if not isinstance(record, dict):
         raise ValueError("invalid record")
     song_id, difficulty = record["song_id"], record["level_index"]
     if isinstance(song_id, bool) or not str(song_id).isdigit() or int(song_id) <= 0:
         raise ValueError("invalid song id")
-    if isinstance(difficulty, bool) or not isinstance(difficulty, int) or not 0 <= difficulty <= 5:
+    # Preserve Wahlap's native 宴 level (10) in snapshots and unmatched rows.
+    # Diving-Fish uses its own difficulty indices, so it keeps the existing range.
+    if not valid_score_level(int(song_id), difficulty) or (source != "wahlap" and difficulty == 10):
         raise ValueError("invalid difficulty")
     fc = record.get("fc", "")
     if not isinstance(fc, str) or fc.lower() not in ("", "fc", "fcp", "ap", "app"):
@@ -408,7 +412,7 @@ class APRecords:
                         else f"{ext['song_id']}:{ext['type']}:{record['level_index']}"
                     )
                 ordinary = key in known
-                achievement, fc, raw = validate_score(record, ordinary=ordinary)
+                achievement, fc, raw = validate_score(record, ordinary=ordinary, source=source)
                 source_key = f"{int(record['song_id'])}:{record['level_index']}"
                 if source_key in seen:
                     raise ValueError("duplicate record")

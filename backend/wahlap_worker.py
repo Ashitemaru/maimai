@@ -24,6 +24,7 @@ from backend.wahlap import (  # noqa: E402
     MAX_RECORDS,
     WahlapError,
     error_response,
+    valid_score_level,
     validate_result,
     validate_sgid,
     verify_runtime,
@@ -51,7 +52,9 @@ def normalize_detail(detail: dict, outer_id=None) -> dict:
     music_id = _integer(detail.get("musicId", outer_id), 1, 9_999_999)
     if outer_id is not None and _integer(outer_id, 1, 9_999_999) != music_id:
         raise WahlapError("invalid_scores")
-    level = _integer(detail["level"], 0, 5)
+    level = detail["level"]
+    if not valid_score_level(music_id, level):
+        raise WahlapError("invalid_scores")
     achievement = _integer(
         detail["achievement"], 0, 10_000_000 if music_id >= 100000 else 1_010_000
     )

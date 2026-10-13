@@ -298,6 +298,9 @@ class ScoreSyncTests(unittest.TestCase):
             [score(fs="bogus")],
             [score(fc="unknown")],
             [score(achievements="100.9")],
+            [score(), score(song_id=10002, level_index=10)],
+            [score(), score(song_id=120000, level_index=6)],
+            [score(), score(song_id=120000, level_index=True)],
             [{key: value for key, value in score().items() if key != "fs"}],
             [score(title="untrusted extra field")],
         ]
@@ -311,13 +314,27 @@ class ScoreSyncTests(unittest.TestCase):
             self.assertEqual(self.state(), before)
 
     def test_unmatched_and_utage_remain_in_full_snapshot_without_fabricated_ap(self):
-        records = [score(), score(song_id=120000, level_index=5, achievements=120)]
+        records = [
+            score(),
+            score(song_id=120000, level_index=5, achievements=120),
+            score(song_id=111359, level_index=10, achievements=200.6284),
+        ]
         receipt = self.import_game(records)
-        self.assertEqual((receipt["records"], receipt["matched"], receipt["unmatched"]), (2, 1, 1))
+        self.assertEqual((receipt["records"], receipt["matched"], receipt["unmatched"]), (3, 1, 2))
         with self.store.db() as conn:
             raw = conn.execute("SELECT records_json FROM provider_syncs").fetchone()[0]
             self.assertEqual(json.loads(raw), records)
+            unmatched = conn.execute(
+                "SELECT raw_json FROM provider_unmatched WHERE source_key='111359:10'"
+            ).fetchone()
+            self.assertEqual(json.loads(unmatched[0]), records[2])
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM ap_evidence").fetchone()[0], 1)
+
+    def test_game_utage_level_does_not_change_divingfish_contract(self):
+        before = self.state()
+        with self.assertRaises(ValueError):
+            self.store.import_provider({"records": [score(song_id=111359, level_index=10)]})
+        self.assertEqual(self.state(), before)
 
     def test_observed_ap_survives_missing_and_reduced_game_records(self):
         self.save_claim()
@@ -611,6 +628,19 @@ class ScoreSyncTests(unittest.TestCase):
                 receipt = self.store.meta("last_divingfish_upload")
                 self.assertFalse(receipt["ok"])
                 self.assertNotIn(TEST_TOKEN, json.dumps(receipt))
+
+    def test_upload_keeps_native_utage_level_out_of_divingfish_indices(self):
+        utage = score(song_id=111359, level_index=10, achievements=200.6284)
+        catalog = [
+            *music_data(),
+            {"id": "111359", "title": "Utage", "type": "DX", "charts": [{}] * 11},
+        ]
+        uploaded, skipped = upload_records([score(), utage], catalog)
+        self.assertEqual([item["song_id"] for item in uploaded], [10001])
+        self.assertEqual(
+            [(item["song_id"], item["level_index"]) for item in skipped], [(111359, 10)]
+        )
+        self.assertEqual(utage["level_index"], 10)
 
     def test_upload_mapping_rejects_all_unknown_and_ambiguous_title(self):
         for catalog in ([], {"invalid": True}):
