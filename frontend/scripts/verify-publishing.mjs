@@ -169,7 +169,8 @@ try {
           revision: '1',
           mirror_horizontal: false,
         });
-      if (pathname === '/api/bilibili/collections')
+      if (pathname === '/api/bilibili/collections') {
+        if (ambiguous) await new Promise((resolve) => setTimeout(resolve, 900));
         return send({
           items: [
             {
@@ -182,6 +183,7 @@ try {
             },
           ],
         });
+      }
       if (pathname === '/api/bilibili/collections/order') {
         assert.equal(request.method(), 'GET');
         orderChecks += 1;
@@ -463,8 +465,26 @@ try {
         'Mobile navigation must remain tappable',
       );
     await page.screenshot({ path: path.join(output, `${width}.png`), fullPage: true });
+    await page.getByRole('button', { name: /Our Wrenally old title/ }).click();
+    await page.getByLabel('谱面', { exact: true }).fill('Our Wrenally');
+    await page.getByRole('button', { name: /Our Wrenally STD/ }).click();
+    assert.equal(await page.getByLabel('合集', { exact: true }).inputValue(), '8');
     ambiguous = true;
     await page.getByRole('button', { name: '刷新', exact: true }).click();
+    assert(
+      await page.getByRole('button', { name: /Our Wrenally old title/ }).isDisabled(),
+      'Stale video selections must be disabled while collections refresh',
+    );
+    assert(
+      await page.getByLabel('合集', { exact: true }).isDisabled(),
+      'Stale collection choices must not be editable during refresh',
+    );
+    await page.getByRole('button', { name: '刷新', exact: true }).click({ trial: true });
+    assert.equal(
+      await page.getByLabel('合集', { exact: true }).inputValue(),
+      '',
+      'Automatic collection choice must recompute from the refreshed list',
+    );
     await page.getByRole('button', { name: /Our Wrenally old title/ }).click();
     await page.getByLabel('谱面', { exact: true }).fill('Our Wrenally');
     await page.getByRole('button', { name: /Our Wrenally STD/ }).click();
@@ -506,6 +526,15 @@ try {
   console.log(
     'Publishing UI verified: QR login, explicit video score, strict assets, frozen dual PNGs, full mirror, single apply, mobile layout.',
   );
+} catch (error) {
+  if (process.env.GITHUB_ACTIONS) {
+    const message = String(error?.stack || error)
+      .replaceAll('%', '%25')
+      .replaceAll('\r', '%0D')
+      .replaceAll('\n', '%0A');
+    console.error(`::error title=Publishing UI verification::${message}`);
+  }
+  throw error;
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

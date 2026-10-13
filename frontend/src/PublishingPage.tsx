@@ -216,6 +216,7 @@ export function PublishingPage() {
   const [combo, setCombo] = useState<'ap' | 'app'>('ap');
   const [mirror, setMirror] = useState(false);
   const [section, setSection] = useState('');
+  const [automaticSection, setAutomaticSection] = useState(true);
   const [version, setVersion] = useState('');
   const [manifest, setManifest] = useState<BackgroundManifest | null>(null);
   const [prepared, setPrepared] = useState<{
@@ -227,6 +228,13 @@ export function PublishingPage() {
   const videoRequest = useRef(0);
   const loginId = login?.login_id;
   const loginExpired = login?.state === 'expired';
+  const selectedSection = automaticSection
+    ? matchingCollectionSection(collections, constant)
+    : collections.some((collection) =>
+          collection.sections.some((item) => String(item.id) === section),
+        )
+      ? section
+      : '';
 
   useEffect(() => {
     const controller = new AbortController();
@@ -247,6 +255,7 @@ export function PublishingPage() {
     if (!session?.connected) return;
     const controller = new AbortController();
     setLoading(true);
+    setCollections([]);
     Promise.all([
       api<{ items: PublishingVideo[]; has_more: boolean }>(`/bilibili/videos?page=${page}`, {
         signal: controller.signal,
@@ -337,7 +346,7 @@ export function PublishingPage() {
 
   function changeConstant(value: string) {
     setConstant(value);
-    setSection(matchingCollectionSection(collections, value));
+    setAutomaticSection(true);
   }
 
   async function checkOrder() {
@@ -385,6 +394,7 @@ export function PublishingPage() {
   }
 
   async function selectVideo(value: string) {
+    if (busy || loading) return;
     const bvid = parseBvid(value);
     if (!bvid) return notify('请填写 BV 号或视频链接');
     const request = ++videoRequest.current;
@@ -402,6 +412,7 @@ export function PublishingPage() {
       setConstant('');
       setVersion('');
       setSection('');
+      setAutomaticSection(true);
       setMirror(result.mirror_horizontal || result.bvid === 'BV1bJouBSEiH');
     } catch (error) {
       if (request === videoRequest.current) notify(messageOf(error));
@@ -412,7 +423,7 @@ export function PublishingPage() {
 
   async function preview(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!video || !chart || busy) return;
+    if (!video || !chart || busy || loading || !selectedSection) return;
     setBusy(true);
     invalidate();
     try {
@@ -426,7 +437,7 @@ export function PublishingPage() {
           constant,
           mirror_horizontal: mirror,
           version_override: version,
-          section_id: Number(section),
+          section_id: Number(selectedSection),
         }),
       });
       const images = plan.order?.status === 'blocked' ? null : await renderPublishingImages(plan);
@@ -443,7 +454,8 @@ export function PublishingPage() {
       !prepared?.images ||
       !prepared.plan.order ||
       prepared.plan.order.status === 'blocked' ||
-      busy
+      busy ||
+      loading
     )
       return;
     setBusy(true);
@@ -557,7 +569,10 @@ export function PublishingPage() {
               <button
                 className="btn"
                 disabled={busy || loading}
-                onClick={() => setRefresh((value) => value + 1)}
+                onClick={() => {
+                  setLoading(true);
+                  setRefresh((value) => value + 1);
+                }}
               >
                 刷新
               </button>
@@ -574,9 +589,9 @@ export function PublishingPage() {
                 placeholder="BV 号或视频链接"
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                disabled={busy}
+                disabled={busy || loading}
               />
-              <button className="btn" disabled={busy || !input.trim()}>
+              <button className="btn" disabled={busy || loading || !input.trim()}>
                 载入稿件
               </button>
             </form>
@@ -587,7 +602,7 @@ export function PublishingPage() {
                   key={item.bvid}
                   className="publishing-video"
                   aria-pressed={video?.bvid === item.bvid}
-                  disabled={busy}
+                  disabled={busy || loading}
                   onClick={() => void selectVideo(item.bvid)}
                 >
                   <img src={item.cover} alt="" loading="lazy" referrerPolicy="no-referrer" />
@@ -630,7 +645,11 @@ export function PublishingPage() {
                 {video.title}
               </a>
               <form onSubmit={preview}>
-                <fieldset className="publishing-fields" disabled={busy} onChange={invalidate}>
+                <fieldset
+                  className="publishing-fields"
+                  disabled={busy || loading}
+                  onChange={invalidate}
+                >
                   <label className="field publishing-wide">
                     谱面
                     <input
@@ -721,8 +740,11 @@ export function PublishingPage() {
                     合集
                     <select
                       aria-label="合集"
-                      value={section}
-                      onChange={(event) => setSection(event.target.value)}
+                      value={selectedSection}
+                      onChange={(event) => {
+                        setSection(event.target.value);
+                        setAutomaticSection(false);
+                      }}
                       required
                     >
                       <option value="">请选择合集</option>
@@ -749,7 +771,10 @@ export function PublishingPage() {
                     封面左右镜像
                   </label>
                   <div className="form-actions publishing-wide">
-                    <button className="btn" disabled={!chart || busy || !achievement || !section}>
+                    <button
+                      className="btn"
+                      disabled={!chart || busy || loading || !achievement || !selectedSection}
+                    >
                       {busy ? '处理中…' : '生成预览'}
                     </button>
                   </div>
@@ -804,6 +829,7 @@ export function PublishingPage() {
                   className="btn primary"
                   disabled={
                     busy ||
+                    loading ||
                     !prepared.images ||
                     !prepared.plan.order ||
                     prepared.plan.order.status === 'blocked' ||
