@@ -283,10 +283,34 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(QR, str(raised.exception))
 
     async def test_oversized_page_remains_bounded(self):
-        payload = {"userMusicList": [{}] * (wahlap_worker.PAGE_SIZE + 1), "nextIndex": 0}
+        payload = {"userMusicList": [{}] * (wahlap_worker.MAX_RECORDS + 1), "nextIndex": 0}
         with self.assertRaises(wahlap.WahlapError) as raised:
             await wahlap_worker.read_all_scores(Pages([payload]), 123)
         self.assertEqual(raised.exception.pagination_reason, "group_limit")
+
+    async def test_server_may_return_more_groups_than_requested(self):
+        count = wahlap_worker.PAGE_SIZE + 1
+        payload = {
+            "userMusicList": [
+                {"userMusicDetailList": [detail(musicId=index + 1)]} for index in range(count)
+            ],
+            "nextIndex": 0,
+        }
+        client = Pages([payload])
+        records = await wahlap_worker.read_all_scores(client, 123)
+        self.assertEqual(len(records), count)
+        self.assertEqual(client.calls[0][2]["maxCount"], wahlap_worker.PAGE_SIZE)
+
+    async def test_groups_may_bundle_more_than_six_distinct_chart_records(self):
+        payload = page(*(detail(musicId=index + 1) for index in range(12)))
+        records = await wahlap_worker.read_all_scores(Pages([payload]), 123)
+        self.assertEqual(len(records), 12)
+        with (
+            patch.object(wahlap_worker, "MAX_RECORDS", 10),
+            self.assertRaises(wahlap.WahlapError) as raised,
+        ):
+            await wahlap_worker.read_all_scores(Pages([payload]), 123)
+        self.assertEqual(raised.exception.pagination_reason, "record_limit")
 
 
 class LifecycleClient:

@@ -131,7 +131,8 @@ async def read_all_scores(client, player_id: int) -> list[dict]:
         if "userId" in page and page["userId"] != player_id:
             raise WahlapError("invalid_scores")
         groups = page["userMusicList"]
-        if len(groups) > PAGE_SIZE:
+        # maxCount is a request hint; Wahlap can return more groups than requested.
+        if len(groups) > MAX_RECORDS:
             raise pagination_error("group_limit")
         for group in groups:
             if not isinstance(group, dict) or not isinstance(
@@ -139,7 +140,7 @@ async def read_all_scores(client, player_id: int) -> list[dict]:
             ):
                 raise WahlapError("incomplete_scores")
             details = group["userMusicDetailList"]
-            if not details or len(details) > 6:
+            if not details:
                 raise WahlapError("invalid_scores")
             for detail in details:
                 record = normalize_detail(detail, group.get("musicId"))
