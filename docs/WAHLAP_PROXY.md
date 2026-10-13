@@ -22,12 +22,12 @@
 | 内部 SOCKS | `10.203.240.1:17891`，仅允许 `.2` 访问，另有随机口令 |
 | TUN | `mw-tun` |
 | 二进制及管理程序 | `/opt/mai-journal-wahlap-proxy/` |
-| 私密配置 | `/etc/mai-journal/wahlap-proxy/{egress,tun}.json` |
+| 私密配置 | `/etc/mai-journal-wahlap-proxy/{egress,tun}.json` |
 | 状态目录 | `/var/lib/mai-journal-wahlap-{egress,tun}/` |
 | DNS | 命名空间内 `127.0.0.1:53` |
 | broker 配置 | `/etc/systemd/system/mai-journal-wahlap@.service.d/proxy.conf` |
 
-宿主上的 Mihomo 使用 `mai-wahlap-proxy` 用户，无额外 capability。命名空间内的 Mihomo 使用 `mai-wahlap-tun` 用户，只获得创建 TUN、修改本命名空间路由以及监听 DNS 端口所需的能力。取分 broker 和游戏工作进程不获得这些权限。两个代理配置分别只有 root 与对应的代理用户可读；节点密钥只出现在宿主代理配置里，不挂载给游戏沙箱。
+宿主上的 Mihomo 使用 `mai-wahlap-proxy` 用户，无额外 capability。命名空间内的 Mihomo 使用 `mai-wahlap-tun` 用户，只获得创建 TUN、修改本命名空间路由以及监听 DNS 端口所需的能力。取分 broker 和游戏工作进程不获得这些权限。两个代理配置分别只有 root 与对应的代理用户可读；节点密钥只出现在宿主代理配置里，不挂载给游戏沙箱。代理配置目录与应用的 `/etc/mai-journal` 分离，不放宽应用配置目录权限，也不把代理用户加入 `maimai` 组。
 
 命名空间内的 nftables 仅允许回环、TUN 和通往固定宿主 SOCKS 端口的 TCP。不存在通过宿主的普通默认路由；默认路由在 TUN 就绪后指向 `mw-tun`。不启用宿主 IP forwarding，不添加宿主 NAT，不修改宿主默认路由或防火墙。DNS 使用本地 fake-IP，并经 SOCKS 出口访问 DoH；IPv6 与 SOCKS UDP 关闭。当前链路服务于华立的 TCP/HTTPS 接口，不提供任意 UDP 转发。
 
@@ -101,7 +101,7 @@ systemctl enable mai-journal-wahlap-tun.service
 
 `network-check` 只检查本地网络前置条件，不证明节点或华立可访问。Mihomo 不记录连接日志；管理程序只显示固定的安全错误，禁止把私密配置或原始子进程输出粘贴进日志。节点停机、TUN 退出或底层通道断开时请求失败，不会自动重复登录。游戏会话中途掉线时仍可能无法确认退出，须由应用明确报告该状态。
 
-命名空间创建会拒绝同名外来资源及与宿主路由冲突的子网。失败时只清理本次创建的资源；重复启动已有的受管网络只做检查。停止命名空间会拒绝删除仍有进程运行的网络，避免遗留看不见的命名空间。
+命名空间创建会拒绝同名外来资源及与宿主路由冲突的子网。首次创建 `/run/netns` 时显式设为 `0755`，使低权限 TUN 进程可以检查命名空间句柄；已有目录权限不合适时会停止，不自动修改别人的目录。失败时只清理本次创建的资源；重复启动已有的受管网络只做检查。停止命名空间会拒绝删除仍有进程运行的网络，避免遗留看不见的命名空间。
 
 停用代理时先禁用华立同步，再等待工作进程结束，最后停止并禁用 TUN、出口和命名空间服务。不要在仍启用华立同步时删除 broker drop-in；那会重新允许取分程序使用宿主直连。
 

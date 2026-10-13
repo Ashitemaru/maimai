@@ -169,7 +169,8 @@ class ProxyNetworkTests(unittest.TestCase):
         self.folder = Path(folder.name)
         self.marker = self.folder / "marker.json"
         self.host = FakeHost()
-        self.network = proxy.Network(self.host, self.marker)
+        self.namespace_directory = self.folder / "netns"
+        self.network = proxy.Network(self.host, self.marker, self.namespace_directory)
 
     def owned(self):
         proxy.private_json(
@@ -250,6 +251,21 @@ class ProxyNetworkTests(unittest.TestCase):
         self.network.up()
         self.assertTrue(self.network.owned())
         self.assertIn((["ip", "netns", "add", proxy.NETNS], {}), self.host.commands)
+
+    def test_new_namespace_directory_is_traversable_despite_private_umask(self):
+        previous = os.umask(0o077)
+        try:
+            self.network.up()
+        finally:
+            os.umask(previous)
+        self.assertEqual(self.namespace_directory.stat().st_mode & 0o777, 0o755)
+
+    def test_existing_private_namespace_directory_is_not_relaxed(self):
+        self.namespace_directory.mkdir(mode=0o700)
+        with self.assertRaisesRegex(proxy.ProxyError, "allow traversal"):
+            self.network.up()
+        self.assertEqual(self.namespace_directory.stat().st_mode & 0o777, 0o700)
+        self.assertFalse(any("add" in command for command, _ in self.host.commands))
 
     def test_check_rejects_default_route_outside_tun(self):
         self.owned()
@@ -348,6 +364,11 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertIn(f"/etc/netns/{proxy.NETNS}/resolv.conf:/etc/resolv.conf", dropin)
         self.assertIn("DeviceAllow=/dev/net/tun rw", tun)
         self.assertNotIn("NetworkNamespacePath", web)
+        self.assertEqual(proxy.CONFIG, Path("/etc/mai-journal-wahlap-proxy"))
+        for name in ("egress", "tun"):
+            unit = (deploy / f"mai-journal-wahlap-{name}.service").read_text()
+            self.assertIn(f"-f {proxy.CONFIG}/{name}.json", unit)
+            self.assertNotIn("SupplementaryGroups=maimai", unit)
 
 
 if __name__ == "__main__":

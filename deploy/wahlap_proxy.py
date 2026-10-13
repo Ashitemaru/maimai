@@ -29,7 +29,8 @@ DOWNLOAD_URL = (
     f"mihomo-linux-amd64-compatible-{VERSION}.gz"
 )
 ROOT = Path("/opt/mai-journal-wahlap-proxy")
-CONFIG = Path("/etc/mai-journal/wahlap-proxy")
+CONFIG = Path("/etc/mai-journal-wahlap-proxy")
+NETNS_DIRECTORY = Path("/run/netns")
 MARKER = Path("/run/mai-journal-wahlap-network.json")
 NETNS = "mai-wahlap"
 HOST_LINK = "mw-host"
@@ -342,9 +343,26 @@ def firewall():
 
 
 class Network:
-    def __init__(self, host=None, marker=MARKER):
+    def __init__(self, host=None, marker=MARKER, namespace_directory=NETNS_DIRECTORY):
         self.host = host or Host()
         self.marker = Path(marker)
+        self.namespace_directory = Path(namespace_directory)
+
+    def prepare_namespace_directory(self):
+        try:
+            self.namespace_directory.mkdir(mode=0o755)
+        except FileExistsError:
+            if (
+                self.namespace_directory.is_symlink()
+                or not self.namespace_directory.is_dir()
+                or not self.namespace_directory.stat().st_mode & 0o001
+            ):
+                raise ProxyError(
+                    "Network namespace directory must already allow traversal"
+                ) from None
+        else:
+            # The root setup unit uses UMask=0077; only adjust the directory we just created.
+            self.namespace_directory.chmod(0o755)
 
     def ns(self, *arguments, **kwargs):
         return self.host.run(["ip", "netns", "exec", NETNS, *arguments], **kwargs)
@@ -380,6 +398,7 @@ class Network:
                 raise ProxyError("Reserved proxy subnet overlaps an existing host route")
         created = False
         try:
+            self.prepare_namespace_directory()
             self.host.run(["ip", "netns", "add", NETNS])
             created = True
             self.host.run(
@@ -434,7 +453,7 @@ class Network:
 def route_ready(host=None, *, timeout=20):
     """Called inside the namespace by the TUN service, never from the host network."""
     host = host or Host()
-    if os.stat("/proc/self/ns/net").st_ino != os.stat(f"/run/netns/{NETNS}").st_ino:
+    if os.stat("/proc/self/ns/net").st_ino != os.stat(NETNS_DIRECTORY / NETNS).st_ino:
         raise ProxyError("TUN route setup must run in the Wahlap namespace")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
