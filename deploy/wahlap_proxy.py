@@ -360,7 +360,7 @@ class Network:
             return False
 
     def up(self):
-        namespaces = json.loads(self.host.run(["ip", "-j", "netns", "list"]))
+        namespaces = json.loads(self.host.run(["ip", "-j", "netns", "list"]).strip() or "[]")
         links = json.loads(self.host.run(["ip", "-j", "link", "show"]))
         ns_exists = any(item.get("name") == NETNS for item in namespaces)
         link_exists = any(item.get("ifname") == HOST_LINK for item in links)
@@ -415,7 +415,7 @@ class Network:
                 raise ProxyError("Proxy namespace contains an unexpected default route")
 
     def down(self):
-        namespaces = json.loads(self.host.run(["ip", "-j", "netns", "list"]))
+        namespaces = json.loads(self.host.run(["ip", "-j", "netns", "list"]).strip() or "[]")
         if not any(item.get("name") == NETNS for item in namespaces):
             if self.marker.exists():
                 raise ProxyError("Proxy namespace disappeared; inspect its ownership marker")

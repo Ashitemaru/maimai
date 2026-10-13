@@ -42,12 +42,15 @@ class FakeHost:
         self.pids = ""
         self.fail_nft = False
         self.active_workers = ""
+        self.empty_netns_output = False
 
     def run(self, command, **kwargs):
         self.commands.append((command, kwargs))
         if command[:2] == ["systemctl", "list-units"]:
             return self.active_workers
         if command == ["ip", "-j", "netns", "list"]:
+            if self.empty_netns_output and not self.namespaces:
+                return ""
             return json.dumps(self.namespaces)
         if command == ["ip", "-j", "link", "show"]:
             return json.dumps(self.links)
@@ -239,6 +242,14 @@ class ProxyNetworkTests(unittest.TestCase):
         self.network.down()
         self.assertFalse(self.marker.exists())
         self.assertIn((["ip", "netns", "delete", proxy.NETNS], {}), self.host.commands)
+
+    def test_empty_iproute_netns_output_is_an_empty_inventory(self):
+        self.host.empty_netns_output = True
+        self.network.down()
+        self.assertFalse(any("delete" in command for command, _ in self.host.commands))
+        self.network.up()
+        self.assertTrue(self.network.owned())
+        self.assertIn((["ip", "netns", "add", proxy.NETNS], {}), self.host.commands)
 
     def test_check_rejects_default_route_outside_tun(self):
         self.owned()
