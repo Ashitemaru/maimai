@@ -108,6 +108,12 @@ appending incompatible data. Every complete archive is checked against SHA256SUM
 before extraction. Each run limits archive transfers to four connections and
 approximately eight minutes; network failures leave the running app untouched.
 The cache retains only the current target release and is removed after extraction.
+Asset downloads use GitHub's official release-asset API with
+`Accept: application/octet-stream`, avoiding a connection to the browser-facing
+`github.com` host. The asset ID and API URL must belong to the approved repository;
+the browser URL must still match its exact release tag and filename. Direct API
+responses and redirects to the existing official download hosts are supported.
+See [GitHub's release-asset download contract](https://docs.github.com/en/rest/releases/assets#get-a-release-asset).
 
 The deployer writes a recovery journal, stops the single application service
 (210-second systemd budget, allowing an active game sync to finish session cleanup), makes SQLite online-backup copies of personal and

@@ -101,6 +101,17 @@ class GitHub:
         self.base = f"https://api.github.com/repos/{repository}"
         self.opener = urllib.request.build_opener(OfficialRedirects())
 
+    def is_asset_api(self, url):
+        return (
+            isinstance(url, str)
+            and re.fullmatch(re.escape(self.base) + r"/releases/assets/[1-9][0-9]*", url)
+            is not None
+        )
+
+    def asset_download_url(self, url):
+        hosts = {"api.github.com"} if self.is_asset_api(url) else DOWNLOAD_HOSTS
+        return https_url(url, hosts)
+
     def read(self, url, limit):
         hosts = {"api.github.com"} if url.startswith(self.base + "/") else DOWNLOAD_HOSTS
         https_url(url, hosts)
@@ -108,12 +119,18 @@ class GitHub:
             url,
             headers={
                 "User-Agent": "mai-journal-pull-deploy/1",
-                "Accept": "application/vnd.github+json",
+                "Accept": (
+                    "application/octet-stream"
+                    if self.is_asset_api(url)
+                    else "application/vnd.github+json"
+                ),
                 "X-GitHub-Api-Version": "2026-03-10",
             },
         )
         try:
             with self.opener.open(request, timeout=45) as response:
+                if self.is_asset_api(url):
+                    self.asset_download_url(response.geturl())
                 data = response.read(limit + 1)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -175,17 +192,26 @@ class GitHub:
             expected = f"https://github.com/{self.repository}/releases/download/{tag}/{name}"
             if url != expected:
                 raise DeployError("Release asset URL does not match its repository and tag")
-            assets[name] = url
+            asset_id = matches[0].get("id")
+            api_url = matches[0].get("url")
+            if (
+                type(asset_id) is not int
+                or asset_id <= 0
+                or api_url != f"{self.base}/releases/assets/{asset_id}"
+            ):
+                raise DeployError("Release asset API URL does not match its repository and ID")
+            assets[name] = api_url
         return assets
 
     def download(self, assets, sha, destination):
         valid_sha(sha)
         name = f"mai-journal-{sha}.tar.gz"
-        checksums = self.read(assets["SHA256SUMS"], 65536)
+        checksum_url = self.asset_download_url(assets["SHA256SUMS"])
+        url = self.asset_download_url(assets[name])
+        checksums = self.read(checksum_url, 65536)
         if checksums is None:
             raise DeployError("A release asset disappeared before download")
         expected = checksum_for(checksums, name)
-        url = https_url(assets[name], DOWNLOAD_HOSTS)
         partial = destination.with_name(f"{destination.name}.{expected}.part")
         for path in (destination, partial):
             validate_download_file(path)
@@ -200,14 +226,19 @@ class GitHub:
             if time.monotonic() >= deadline:
                 break
             offset = partial.stat().st_size if partial.exists() else 0
-            headers = {"User-Agent": "mai-journal-pull-deploy/1", "Accept-Encoding": "identity"}
+            headers = {
+                "User-Agent": "mai-journal-pull-deploy/1",
+                "Accept": "application/octet-stream",
+                "Accept-Encoding": "identity",
+                "X-GitHub-Api-Version": "2026-03-10",
+            }
             if offset:
                 headers["Range"] = f"bytes={offset}-"
             request = urllib.request.Request(url, headers=headers)
             try:
                 timeout = min(45, max(1, deadline - time.monotonic()))
                 with self.opener.open(request, timeout=timeout) as response:
-                    https_url(response.geturl(), DOWNLOAD_HOSTS)
+                    self.asset_download_url(response.geturl())
                     response_total, append = download_response(response, offset)
                     if total is not None and response_total is not None and total != response_total:
                         raise DeployError("Archive total length changed during download")

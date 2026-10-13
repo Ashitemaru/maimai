@@ -6,6 +6,7 @@ import sqlite3
 import tarfile
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from deploy.deploy_release import (
     Deployer,
     DeployError,
     GitHub,
+    OfficialRedirects,
     atomic_json,
     checksum_for,
     extract_archive,
@@ -26,6 +28,8 @@ OLD = "a" * 40
 NEW = "b" * 40
 OTHER = "c" * 40
 REPO = "fixture/mai-journal"
+ASSET_API = f"https://api.github.com/repos/{REPO}/releases/assets/42"
+CHECKSUM_API = f"https://api.github.com/repos/{REPO}/releases/assets/43"
 
 
 class ArchiveResponse:
@@ -233,7 +237,7 @@ class ArchiveTests(unittest.TestCase):
         name = f"mai-journal-{NEW}.tar.gz"
         content = archive_bytes()
         manifest = hashlib.sha256(content).hexdigest().encode() + b"  " + name.encode()
-        assets = {name: "https://github.com/fixture/archive", "SHA256SUMS": "checksum"}
+        assets = {name: ASSET_API, "SHA256SUMS": CHECKSUM_API}
         with (
             patch.object(github, "read", return_value=manifest),
             patch.object(github.opener, "open", return_value=ArchiveResponse([content])),
@@ -273,7 +277,7 @@ class ArchiveDownloadTests(unittest.TestCase):
         self.name = f"mai-journal-{NEW}.tar.gz"
         self.digest = hashlib.sha256(self.content).hexdigest()
         self.manifest = f"{self.digest} {self.name}".encode()
-        self.assets = {self.name: "https://github.com/fixture/archive", "SHA256SUMS": "checksum"}
+        self.assets = {self.name: ASSET_API, "SHA256SUMS": CHECKSUM_API}
         self.partial = self.destination.with_name(f"{self.destination.name}.{self.digest}.part")
         patcher = patch.object(self.github, "read", return_value=self.manifest)
         patcher.start()
@@ -304,7 +308,73 @@ class ArchiveDownloadTests(unittest.TestCase):
         self.assertEqual(self.destination.read_bytes(), self.content)
         self.assertEqual(opened.call_args_list[1].args[0].get_header("Range"), "bytes=6-")
         self.assertIsNone(opened.call_args_list[0].args[0].get_header("Range"))
+        for call in opened.call_args_list:
+            request = call.args[0]
+            self.assertEqual(request.full_url, ASSET_API)
+            self.assertEqual(request.get_header("Accept"), "application/octet-stream")
         self.assertFalse(self.partial.exists())
+
+    def test_checksum_and_archive_api_requests_accept_direct_binary_responses(self):
+        github = GitHub(REPO)
+        with patch.object(
+            github.opener,
+            "open",
+            side_effect=[
+                ArchiveResponse([self.manifest], url=CHECKSUM_API),
+                ArchiveResponse([self.content], url=ASSET_API),
+            ],
+        ) as opened:
+            github.download(self.assets, NEW, self.destination)
+        requests = [call.args[0] for call in opened.call_args_list]
+        self.assertEqual([request.full_url for request in requests], [CHECKSUM_API, ASSET_API])
+        for request in requests:
+            self.assertEqual(request.get_header("Accept"), "application/octet-stream")
+        self.assertEqual(self.destination.read_bytes(), self.content)
+
+    def test_checksum_and_archive_api_responses_can_finish_on_official_cdn(self):
+        github = GitHub(REPO)
+        with patch.object(
+            github.opener,
+            "open",
+            side_effect=[ArchiveResponse([self.manifest]), ArchiveResponse([self.content])],
+        ):
+            github.download(self.assets, NEW, self.destination)
+        self.assertEqual(self.destination.read_bytes(), self.content)
+
+    def test_api_asset_redirect_preserves_binary_and_range_headers(self):
+        request = urllib.request.Request(
+            ASSET_API, headers={"Accept": "application/octet-stream", "Range": "bytes=6-"}
+        )
+        redirect = OfficialRedirects().redirect_request(
+            request, None, 302, "Found", {}, "https://release-assets.githubusercontent.com/fixture"
+        )
+        self.assertEqual(redirect.get_header("Accept"), "application/octet-stream")
+        self.assertEqual(redirect.get_header("Range"), "bytes=6-")
+        for url in (
+            "https://api.github.com/repos/other/repo/releases/assets/42",
+            "https://example.test/file",
+            "http://release-assets.githubusercontent.com/file",
+        ):
+            with self.subTest(url=url), self.assertRaises(DeployError):
+                OfficialRedirects().redirect_request(request, None, 302, "Found", {}, url)
+
+    def test_download_rejects_arbitrary_api_paths_or_foreign_repository_before_request(self):
+        invalid = [
+            "https://api.github.com/repos/other/repo/releases/assets/42",
+            f"https://api.github.com/repos/{REPO}/contents/file",
+            ASSET_API + "?redirect=1",
+            ASSET_API + "/extra",
+            ASSET_API.replace("/42", "/0"),
+            ASSET_API.replace("/42", "/-1"),
+        ]
+        for url in invalid:
+            for name in (self.name, "SHA256SUMS"):
+                with self.subTest(url=url, asset=name):
+                    github = GitHub(REPO)
+                    with patch.object(github.opener, "open") as opened:
+                        with self.assertRaises(DeployError):
+                            github.download({**self.assets, name: url}, NEW, self.destination)
+                    opened.assert_not_called()
 
     def test_partial_survives_failed_timer_and_fresh_downloader_resumes(self):
         with patch("deploy.deploy_release.DOWNLOAD_ATTEMPTS", 1):
@@ -426,10 +496,14 @@ class GitHubApprovalTests(unittest.TestCase):
             "assets": [
                 {
                     "name": name,
+                    "id": asset_id,
+                    "url": f"https://api.github.com/repos/{REPO}/releases/assets/{asset_id}",
                     "state": "uploaded",
                     "browser_download_url": f"https://github.com/{REPO}/releases/download/app-{NEW}/{name}",
                 }
-                for name in (f"mai-journal-{NEW}.tar.gz", "SHA256SUMS")
+                for asset_id, name in enumerate(
+                    (f"mai-journal-{NEW}.tar.gz", "SHA256SUMS"), start=42
+                )
             ],
         }
 
@@ -439,7 +513,10 @@ class GitHubApprovalTests(unittest.TestCase):
             "api",
             side_effect=[{"workflow_runs": [self.run]}, self.release, {"sha": NEW}],
         ):
-            self.assertIn("SHA256SUMS", self.github.release(NEW))
+            self.assertEqual(
+                self.github.release(NEW),
+                {f"mai-journal-{NEW}.tar.gz": ASSET_API, "SHA256SUMS": CHECKSUM_API},
+            )
         for key, value in (
             ("event", "pull_request"),
             ("head_branch", "topic"),
@@ -472,6 +549,38 @@ class GitHubApprovalTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(DeployError, "asset URL"):
                 self.github.release(NEW)
+
+    def test_asset_api_identity_must_match_positive_integer_id_and_exact_repository(self):
+        original = dict(self.release["assets"][0])
+        for changes in (
+            {"id": True},
+            {"id": 0},
+            {"id": -1},
+            {"id": "42"},
+            {"id": 43},
+            {"url": ASSET_API + "?extra=1"},
+            {"url": "https://api.github.com/repos/other/repo/releases/assets/42"},
+            {"url": f"https://api.github.com/repos/{REPO}/contents/file"},
+        ):
+            with self.subTest(changes=changes):
+                self.release["assets"][0] = {**original, **changes}
+                with patch.object(
+                    self.github,
+                    "api",
+                    side_effect=[{"workflow_runs": [self.run]}, self.release, {"sha": NEW}],
+                ):
+                    with self.assertRaisesRegex(DeployError, "asset API URL"):
+                        self.github.release(NEW)
+
+    def test_metadata_requests_keep_json_accept(self):
+        url = self.github.base + "/commits/main"
+        with patch.object(
+            self.github.opener, "open", return_value=ArchiveResponse([b"{}"], url=url)
+        ) as opened:
+            self.assertEqual(self.github.read(url, 100), b"{}")
+        self.assertEqual(
+            opened.call_args.args[0].get_header("Accept"), "application/vnd.github+json"
+        )
 
 
 class DeploymentTests(unittest.TestCase):
@@ -545,7 +654,7 @@ class DeploymentTests(unittest.TestCase):
         destination = self.root / "downloads" / name
         partial = destination.with_name(f"{name}.{digest}.part")
         manifest = f"{digest} {name}".encode()
-        assets = {name: "https://github.com/fixture/archive", "SHA256SUMS": "checksum"}
+        assets = {name: ASSET_API, "SHA256SUMS": CHECKSUM_API}
         with (
             patch.object(github, "read", return_value=manifest),
             patch.object(github, "main_sha", return_value=NEW),
