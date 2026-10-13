@@ -20,6 +20,7 @@ from deploy.deploy_release import (
     https_url,
     switch_current,
 )
+from tests.dependency_fixtures import dependency_files
 
 OLD = "a" * 40
 NEW = "b" * 40
@@ -36,6 +37,7 @@ def archive_bytes(sha=NEW, additions=(), replacements=None):
         "scripts/catalog_pipeline.py": "# Synthetic catalog fixture\n",
         "frontend/dist/index.html": "<!doctype html><title>Fixture</title>",
     }
+    contents.update(dependency_files())
     contents.update(replacements or {})
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
@@ -131,7 +133,7 @@ class ArchiveTests(unittest.TestCase):
         extract_archive(archive, target, NEW)
         return target
 
-    def test_valid_archive_is_code_only_and_has_matching_release(self):
+    def test_valid_archive_has_matching_code_and_offline_dependencies(self):
         result = self.extract(archive_bytes())
         self.assertEqual((result / "RELEASE_SHA").read_text().strip(), NEW)
         self.assertFalse((result / "backend/runtime").exists())

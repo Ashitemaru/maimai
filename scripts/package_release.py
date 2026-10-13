@@ -1,4 +1,4 @@
-"""Build a reproducible code-only release; runtime data never enters the archive."""
+"""Package application code and tested offline wheels; personal data stays outside."""
 
 import argparse
 import gzip
@@ -8,11 +8,17 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if __package__ in (None, ""):
+    sys.path.insert(0, str(ROOT))
+
+from deploy.deploy_release import dependency_bundle  # noqa: E402
+
 CORE_SCRIPTS = {
     "build_catalog.py",
     "catalog_chart_compiler.py",
@@ -69,16 +75,30 @@ def release_paths(root: Path) -> list[Path]:
     return sorted(set(selected))
 
 
-def package(root: Path, destination: Path, sha: str) -> Path:
+def package(root: Path, destination: Path, sha: str, *, dependencies: Path | None = None) -> Path:
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("Release SHA must identify a full commit")
     paths = release_paths(root)
+    dependencies = dependencies or root / "release-dependencies"
+    with tempfile.TemporaryDirectory(prefix="validate-release-wheels-") as temporary:
+        validation_root = Path(temporary)
+        (validation_root / "requirements.lock").write_bytes(
+            (root / "requirements.lock").read_bytes()
+        )
+        (validation_root / "dependencies").symlink_to(
+            dependencies.resolve(), target_is_directory=True
+        )
+        dependency_bundle(validation_root)
     destination.mkdir(parents=True, exist_ok=True)
     archive = destination / f"mai-journal-{sha}.tar.gz"
     with archive.open("wb") as output:
         with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
             with tarfile.open(fileobj=compressed, mode="w") as tar:
                 entries = [(str(path.relative_to(root)), path.read_bytes()) for path in paths]
+                entries.extend(
+                    (f"dependencies/{path.name}", path.read_bytes())
+                    for path in sorted(dependencies.iterdir())
+                )
                 entries.append(("RELEASE_SHA", (sha + "\n").encode()))
                 for name, payload in entries:
                     info = tarfile.TarInfo(name)
@@ -145,7 +165,7 @@ def publish_release(destination: Path, sha: str, repository: str, *, gh=run_gh) 
             "--title",
             f"mai journal {sha[:12]}",
             "--notes",
-            "Code-only release built after every required CI job passed. "
+            "Application release with tested offline dependencies, built after required CI passed. "
             "Personal data and credentials are not included.",
             "--latest",
         )
@@ -184,12 +204,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--publish", metavar="OWNER/REPO", help="Publish or verify the exact release"
     )
+    parser.add_argument("--dependencies", type=Path, default=ROOT / "release-dependencies")
     args = parser.parse_args(argv)
     phase = "Resolve source commit"
     try:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
         phase = "Package release"
-        print(package(ROOT, ROOT / "release", commit))
+        print(package(ROOT, ROOT / "release", commit, dependencies=args.dependencies))
         if args.publish:
             phase = "Publish or verify release"
             publish_release(ROOT / "release", commit, args.publish)

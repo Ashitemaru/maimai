@@ -17,6 +17,7 @@ const requests = [];
 const sharedFiles = [];
 const errors = [];
 const blockedWrites = [];
+const uploadJobs = new Map();
 await fs.mkdir(output, { recursive: true });
 const chart = {
   id: 9200,
@@ -47,8 +48,8 @@ const chart = {
   note: '',
   manual_date: null,
   achievement: 100.5,
-  provider_achievement: null,
-  provider_fc: null,
+  provider_achievement: 100.5,
+  provider_fc: 'ap',
   provider_synced_at: null,
   is_ap: true,
   is_complete: true,
@@ -100,6 +101,18 @@ function pngSize(bytes) {
 const server = http.createServer(async (request, response) => {
   try {
     const pathname = new URL(request.url, 'http://localhost').pathname;
+    const part = pathname.match(/^\/api\/completion-exports\/([^/]+)\/parts\/0$/);
+    if (part && request.method === 'PUT') {
+      const job = uploadJobs.get(part[1]);
+      assert(job, 'PNG uploads must belong to an existing fixture job');
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      job.image = Buffer.concat(chunks);
+      assert.deepEqual(pngSize(job.image), { width: job.width, height: job.height });
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
     if (pathname.startsWith('/api/') || request.method !== 'GET') {
       response.writeHead(405);
       response.end();
@@ -226,6 +239,7 @@ try {
           image: null,
         };
         jobs.set(job.id, job);
+        uploadJobs.set(job.id, job);
         if (control.gate) {
           const gate = control.gate;
           control.gate = null;
@@ -246,9 +260,7 @@ try {
           return;
         }
         if (method === 'PUT' && suffix === '/parts/0') {
-          job.image = request.postDataBuffer();
-          assert.deepEqual(pngSize(job.image), { width: job.width, height: job.height });
-          await route.fulfill({ json: { ok: true } });
+          await route.continue();
           return;
         }
         if (method === 'POST' && suffix === '/finish') {
@@ -395,7 +407,8 @@ try {
       .getByRole('dialog', { name: '选择谱面', exact: true })
       .getByRole('button', { name: /Mobile Export Fixture/ })
       .tap();
-    await page.getByLabel('达成率', { exact: true }).fill('100.5000');
+    assert.equal(await page.getByLabel('达成率', { exact: true }).inputValue(), '100.5000');
+    assert.equal(await page.getByLabel('徽章', { exact: true }).inputValue(), 'ap');
     await page.getByText('达成率暂用系统字体', { exact: true }).waitFor();
     assert.equal(
       control.gameManifestReads,
@@ -418,6 +431,49 @@ try {
       'Changing aspect must retry the failed cached manifest',
     );
     assert(control.successfulGameAssets > 0, 'Recovered manifest must load its actual badge asset');
+    if (width === 390) {
+      async function selectScore(achievement, combo, expectedScore, expectedBadge) {
+        Object.assign(chart, {
+          provider_achievement: achievement,
+          provider_fc: combo,
+          achievement,
+        });
+        await page.locator('.cover-song').tap();
+        await page.locator('.pick-song').first().tap();
+        assert.equal(await page.getByLabel('达成率', { exact: true }).inputValue(), expectedScore);
+        assert.equal(await page.getByLabel('徽章', { exact: true }).inputValue(), expectedBadge);
+        await page.locator('.canvas-frame[aria-busy="false"]').waitFor();
+      }
+      await selectScore(101, 'app', '101.0000', 'app');
+      await selectScore(100.8, 'ap', '100.8000', 'ap');
+      await selectScore(100.5, '', '100.5000', 'none');
+      await selectScore(100.5, 'fc', '100.5000', 'none');
+      const withoutBadge = await page.locator('canvas').evaluate((element) => element.toDataURL());
+      await page.getByLabel('徽章', { exact: true }).selectOption('ap');
+      await page.locator('.canvas-frame[aria-busy="false"]').waitFor();
+      const withBadge = await page.locator('canvas').evaluate((element) => element.toDataURL());
+      assert.notEqual(withBadge, withoutBadge, 'The explicit badge selection must change the PNG');
+      Object.assign(chart, { is_complete: false, is_ap: false });
+      await selectScore(null, null, '', 'none');
+      assert(await page.getByRole('button', { name: '导出封面', exact: true }).isDisabled());
+      await page.getByLabel('达成率', { exact: true }).fill('99.1234');
+      await page.getByLabel('徽章', { exact: true }).selectOption('app');
+      await page.getByLabel('导出比例', { exact: true }).selectOption('16:9');
+      assert.equal(await page.getByLabel('达成率', { exact: true }).inputValue(), '99.1234');
+      assert.equal(await page.getByLabel('徽章', { exact: true }).inputValue(), 'app');
+      assert.equal(
+        chart.provider_achievement,
+        null,
+        'Historical cover edits must not edit records',
+      );
+      Object.assign(chart, { is_complete: true, is_ap: true });
+      await selectScore(100.5, 'ap', '100.5000', 'ap');
+      await page.getByLabel('导出比例', { exact: true }).selectOption('4:3');
+      await page.locator('.canvas-frame[aria-busy="false"]').waitFor();
+      checks.push(
+        'Synchronized AP/AP+ is prefilled; high achievement without AP stays unbadged; no score remains empty; editable historical values survive other control changes without modifying records',
+      );
+    }
     const downloadCount = downloads.length;
     await page.getByRole('button', { name: '导出封面', exact: true }).tap();
     await panel.waitFor();
@@ -482,7 +538,7 @@ try {
     JSON.stringify({ checks, requests, sharedFiles, blockedWrites, errors }, null, 2),
   );
   console.log(
-    `Mobile export: ${checks.length} checks passed (Chromium iPhone emulation; no real Safari or native share sheet).`,
+    `Mobile export: ${checks.length} checks passed (${process.env.PLAYWRIGHT_BROWSER || 'chromium'} touch emulation; no physical iPhone or native share sheet).`,
   );
 } finally {
   await browser.close();

@@ -11,12 +11,14 @@ from uuid import uuid4
 import httpx
 
 from .ap_records import ScoreAccountError, ScoreSourceError, timestamp
+from .divingfish_upload import personal_records, plan_upload, verify_records
 from .maintenance import maintenance_status, utc_now
 from .store import SyncBusyError, SyncTokenChangedError
 from .wahlap import PAGINATION_REASONS
 
 DIVINGFISH_ROOT = "https://www.diving-fish.com/api/maimaidxprober"
 UPLOAD_ENDPOINT = DIVINGFISH_ROOT + "/player/update_records"
+RECORDS_ENDPOINT = DIVINGFISH_ROOT + "/player/records"
 JOB_COOLDOWN_SECONDS = 3
 SHUTDOWN_GRACE_SECONDS = 190
 
@@ -425,6 +427,11 @@ class ScoreSync:
             raise ScoreSyncError(409, "no_snapshot", "请先从华立读取一次完整成绩。")
         sync_id = receipt["sync_id"]
         attempted_at = timestamp()
+        progress = {
+            "write_attempted": False,
+            "upload_confirmed": False,
+            "verification_state": "not_started",
+        }
         try:
             with self.store.db() as conn:
                 row = conn.execute(
@@ -440,39 +447,63 @@ class ScoreSync:
                 DIVINGFISH_ROOT + "/music_data", timeout=20, follow_redirects=False
             )
             response.raise_for_status()
-            body, skipped = upload_records(records, response.json())
+            candidates, skipped = upload_records(records, response.json())
+            progress.update(
+                snapshot_records=len(records), skipped_count=len(skipped), skipped=skipped[:50]
+            )
+            self._assert_upload_token(token, generation)
+            self._update(stage="validating", message="正在比较水鱼已有成绩")
+            before = self._read_upload_records(token, after_upload=False)
+            try:
+                plan = plan_upload(candidates, before)
+            except (KeyError, TypeError, ValueError):
+                raise ScoreSyncError(
+                    502, "upload_preflight_invalid", "成绩比较未通过完整校验，尚未上传。"
+                ) from None
+            body = plan.body
+            progress.update(plan.counts)
             self._assert_open()
-            with self.store._token_lock:
-                if generation != self.store._token_generation or token != self.store.token()[0]:
-                    raise SyncTokenChangedError()
+            self._assert_upload_token(token, generation)
             # The initiated request uses its captured token. Do not hold a local
             # settings lock while waiting on an external server: polling stays fast.
-            self._update(stage="uploading", message="正在上传水鱼")
-            response = httpx.post(
-                UPLOAD_ENDPOINT,
-                headers={"Import-Token": token},
-                json=body,
-                timeout=30,
-                follow_redirects=False,
-            )
-            response.raise_for_status()
-            reply = response.json()
-            if not isinstance(reply, dict) or reply.get("message") != "更新成功":
-                raise ScoreSyncError(502, "upload_rejected", "水鱼未确认上传成功，本地成绩已保留。")
-            updated, created = reply.get("updates"), reply.get("creates")
-            if (
-                isinstance(updated, bool)
-                or not isinstance(updated, int)
-                or updated < 0
-                or isinstance(created, bool)
-                or not isinstance(created, int)
-                or created < 0
-                or updated + created != len(body)
-            ):
-                raise ScoreSyncError(
-                    502, "upload_partial", "水鱼未确认全部成绩写入，本地成绩已保留。"
+            if body:
+                self._update(stage="uploading", message="正在上传水鱼")
+                progress.update(write_attempted=True, verification_state="unverified")
+                response = httpx.post(
+                    UPLOAD_ENDPOINT,
+                    headers={"Import-Token": token},
+                    json=body,
+                    timeout=30,
+                    follow_redirects=False,
                 )
+                response.raise_for_status()
+                self._check_upload_ack(response.json(), len(body))
+                progress["upload_confirmed"] = True
+                self._update(stage="verifying", message="正在读回核对水鱼成绩")
+                actual = self._read_upload_records(token, after_upload=True)
+                differences = verify_records(plan.expected, actual)
+                progress.update(
+                    remote_records_after=len(actual),
+                    mismatch_count=len(differences),
+                    mismatches=differences[:50],
+                )
+                if differences:
+                    progress["verification_state"] = "mismatch"
+                    raise ScoreSyncError(
+                        502,
+                        "upload_verification_mismatch",
+                        f"水鱼已返回写入成功，但读回有 {len(differences)} 张谱面未通过核对；"
+                        "请稍后重试，本地成绩已保留。",
+                    )
+            else:
+                progress.update(remote_records_after=len(before), mismatch_count=0, mismatches=[])
+            progress.update(
+                verification_state="verified",
+                verified_count=len(plan.expected),
+                verified_at=timestamp(),
+            )
             result = {
+                **progress,
                 "ok": True,
                 "source": "divingfish_upload",
                 "uploaded_at": timestamp(),
@@ -480,9 +511,6 @@ class ScoreSync:
                 "records": len(body),
                 "sync_id": sync_id,
                 "uploaded_count": len(body),
-                "snapshot_records": len(records),
-                "skipped_count": len(skipped),
-                "skipped": skipped[:50],
             }
             self._save_upload_receipt(result)
             return result
@@ -497,6 +525,7 @@ class ScoreSync:
                 )
             self._save_upload_receipt(
                 {
+                    **progress,
                     "ok": False,
                     "source": "divingfish_upload",
                     "attempted_at": attempted_at,
@@ -505,6 +534,47 @@ class ScoreSync:
                 }
             )
             raise error from None
+
+    def _assert_upload_token(self, token, generation):
+        with self.store._token_lock:
+            if generation != self.store._token_generation or token != self.store.token()[0]:
+                raise SyncTokenChangedError()
+
+    @staticmethod
+    def _read_upload_records(token, *, after_upload):
+        try:
+            response = httpx.get(
+                RECORDS_ENDPOINT,
+                headers={"Import-Token": token},
+                timeout=30,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            return personal_records(response.json())
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            if after_upload:
+                raise ScoreSyncError(
+                    502,
+                    "upload_verification_unavailable",
+                    "水鱼已返回写入成功，但暂时无法读回核对；请稍后重试，本地成绩已保留。",
+                ) from None
+            raise ScoreSyncError(
+                502, "upload_preflight_failed", "暂时无法完整读取水鱼已有成绩，尚未上传。"
+            ) from None
+
+    @staticmethod
+    def _check_upload_ack(reply, count):
+        if not isinstance(reply, dict) or reply.get("message") != "更新成功":
+            raise ScoreSyncError(502, "upload_rejected", "水鱼未确认上传成功，本地成绩已保留。")
+        updated, created = reply.get("updates"), reply.get("creates")
+        if (
+            type(updated) is not int
+            or updated < 0
+            or type(created) is not int
+            or created < 0
+            or updated + created != count
+        ):
+            raise ScoreSyncError(502, "upload_partial", "水鱼未确认全部成绩写入，本地成绩已保留。")
 
     def _save_upload_receipt(self, result):
         data = json.dumps(result, ensure_ascii=False)

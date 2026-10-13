@@ -27,7 +27,8 @@
     "verify:venues": "node scripts/verify-venue-summary.mjs",
     "verify:venue-map": "node scripts/verify-venue-map.mjs",
     "verify:score-sync": "node scripts/verify-score-sync.mjs",
-    "render:covers": "node scripts/render-bilibili-covers.mjs"
+    "render:covers": "node scripts/render-bilibili-covers.mjs",
+    "verify:webkit": "node scripts/verify-webkit.mjs"
   },
   "dependencies": {
     "jsqr": "1.4.0",

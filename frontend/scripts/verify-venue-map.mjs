@@ -7,7 +7,7 @@ import { launchBrowser } from './browser.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const bundle = path.resolve(process.env.UI_DIST || path.join(root, 'frontend/dist'));
-const output = path.join(root, 'output/venue-map-audit');
+const output = process.env.VENUE_MAP_AUDIT_OUTPUT || path.join(root, 'output/venue-map-audit');
 await fs.mkdir(output, { recursive: true });
 const graphic =
   '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#e9edf0"/><path d="M0 80H256M85 0V256M0 190H256M180 0V256" stroke="#fff" stroke-width="12"/></svg>';
@@ -143,7 +143,10 @@ await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await launchBrowser();
 try {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 1000 },
+    hasTouch: true,
+  });
   await context.route('https://tile.openstreetmap.org/**', (route) =>
     route.fulfill({ contentType: 'image/svg+xml', body: graphic }),
   );
@@ -241,7 +244,7 @@ try {
   await editor.getByRole('button', { name: /搜索结果广场/ }).click();
   const svg = editor.locator('.venue-map-svg');
   const box = await svg.boundingBox();
-  await page.mouse.click(box.x + box.width * 0.6, box.y + box.height * 0.5);
+  await page.touchscreen.tap(box.x + box.width * 0.6, box.y + box.height * 0.5);
   assert(await editor.locator('.venue-map-picked').isVisible());
   assert.equal(await editor.getByLabel('显示名称', { exact: true }).inputValue(), '搜索结果广场');
   assert(
@@ -254,7 +257,7 @@ try {
   await page.screenshot({ path: path.join(output, 'mobile-editor.png') });
   await editor.getByRole('button', { name: '取消', exact: true }).click();
   await page.screenshot({ path: path.join(output, 'mobile.png') });
-  checks.push('390px layout fits viewport; map click selects a coordinate');
+  checks.push('390px layout fits viewport; browser touch input selects a map coordinate');
   assert.deepEqual(errors, []);
   await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ checks, errors }, null, 2));
   console.log(JSON.stringify({ checks: checks.length, errors }));

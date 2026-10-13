@@ -7,7 +7,7 @@ import { idleScoreSync } from './score-sync-fixture.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const bundle = path.resolve(process.env.UI_DIST || path.join(root, 'frontend/dist'));
-const output = path.join(root, 'output/score-sync-audit');
+const output = process.env.SCORE_SYNC_AUDIT_OUTPUT || path.join(root, 'output/score-sync-audit');
 await fs.mkdir(output, { recursive: true });
 const qr = 'MAIMAI-SYNC-FIXTURE-NOT-A-REAL-CREDENTIAL';
 const checks = [],
@@ -46,6 +46,7 @@ let configured = false,
   pollReady = false,
   jobSequence = 0;
 let pendingCount = 1;
+let uploadCount = 118;
 const maintenanceMessage = '华立每日04:00–07:00维护，请07:00后重试';
 const setMaintenance = (active) => {
   syncStatus.wahlap.available = !active;
@@ -185,7 +186,9 @@ try {
             source: 'divingfish_upload',
             uploaded_at: '2026-10-13T04:25:00+08:00',
             records: 118,
-            uploaded_count: 118,
+            uploaded_count: uploadCount,
+            verification_state: 'verified',
+            verified_count: 118,
             skipped_count: 2,
             snapshot_records: 120,
             sync_id: receipt.sync_id,
@@ -306,6 +309,9 @@ try {
   setMaintenance(true);
   const refreshBefore = requests.filter((item) => item.path === '/api/ap-records').length;
   await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
+  await page.reload();
+  await page.getByRole('link', { name: 'AP 图鉴', exact: true }).waitFor();
+  await page.waitForLoadState('networkidle');
   pollReady = true;
   await showToast('华立成绩已同步，待核记录已核对');
   await showToast(receipt.notice);
@@ -313,7 +319,7 @@ try {
   await page.getByRole('link', { name: /待核记录/ }).click();
   await page.getByText('0 条待核记录', { exact: true }).waitFor();
   checks.push(
-    'Screenshot decodes without BarcodeDetector, sends only QR text, clears input, and sync completes after leaving settings',
+    'Screenshot decodes without BarcodeDetector, sends only QR text, clears input, and the running job resumes after page navigation and a full reload',
   );
   checks.push(
     'Fresh server status blocks a maintenance-window QR POST with one toast; after 07:00 a stale tab recovers on click and an already-running job continues',
@@ -340,11 +346,18 @@ try {
   assert.equal(requests.filter((item) => item.path === '/api/sync/divingfish/upload').length, 0);
   await upload().click();
   await uploadPanel.getByText('2026-10-13 04:25', { exact: true }).waitFor();
-  await uploadPanel.getByText('已上传 118 条 · 跳过 2 条', { exact: true }).waitFor();
+  await uploadPanel.getByText('已上传 118 条并核对 · 跳过 2 条', { exact: true }).waitFor();
   assert.equal(requests.filter((item) => item.path === '/api/sync/divingfish/upload').length, 1);
   await page.screenshot({ path: path.join(output, 'mobile-complete.png'), fullPage: true });
   checks.push(
     'Upload remains available during Wahlap maintenance, is explicit, requires Token and snapshot, reports skipped rows, and no exit confirmation is invented',
+  );
+  uploadCount = 0;
+  await upload().click();
+  await uploadPanel.getByText('水鱼成绩已是最新 · 跳过 2 条', { exact: true }).waitFor();
+  await showToast('水鱼成绩已是最新');
+  checks.push(
+    'A verified no-change upload reports that scores are current without claiming an upload',
   );
   setMaintenance(false);
   const beforeStatusError = requests.filter((item) => item.path === '/api/sync/wahlap').length;

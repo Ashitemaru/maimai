@@ -110,7 +110,7 @@ GET /api/sync/status -> {wahlap,job,divingfish}
   attempt receipt (including failed attempts) or null. No token/player ID is exposed.
   job=null or {id,kind,state,stage,message,error,result}, where kind is wahlap or
   divingfish_upload; state is running, succeeded or failed; stage is starting,
-  fetching, validating, uploading, completed or failed. error is null or {code,message},
+  fetching, validating, uploading, verifying, completed or failed. error is null or {code,message},
   with retry_at and retry_after_seconds also present for maintenance rejection.
   A worker failure may also include stage (configuration, authorization, preview,
   login, scores) and http_status (100-599). Pagination failures may also include
@@ -160,19 +160,41 @@ POST /api/sync/divingfish/upload (no body) -> HTTP 202, job object
   is uploaded automatically by game sync or pending-claim confirmation. Requires an
   Import-Token. Looks up exact official song IDs in DivingFish /music_data to attach
   the title/type required by its /player/update_records API; sends a JSON list with
-  the six score fields plus title and type, authenticated by Import-Token.
+  song_id, level_index, achievements, fc, fs, dxScore, title and type, authenticated
+  by Import-Token. Before any POST, GET /player/records with the same token and match
+  by (song_id, level_index). Achievement, combo badge, sync badge and DX score are
+  independent bests: retain the higher value of each field. Only new or improved
+  records are sent. A fully unchanged/higher remote result succeeds without a POST.
   Missing/deleted/unsupported charts are skipped with a count and up to 50 reasons.
   A wholly unmappable snapshot, duplicate ID/title mapping or malformed catalog fails
   before sending. No deletion/clear operation is sent. The complete local snapshot
-  remains intact regardless of upload outcome. Success requires the upstream success
-  marker and creates+updates count to equal the uploaded record count.
+  remains intact regardless of upload outcome. A write requires the upstream success
+  marker and creates+updates count to equal the uploaded record count, then another
+  GET /player/records must confirm every retained/submitted field is at least its
+  expected value. This includes records outside the upload snapshot, even removed
+  songs and native utage entries. Derived catalog/rating fields are not compared.
+  Malformed/duplicate remote records fail closed; a post-write read failure is an
+  unverified write, never reported as success. No automatic write retry or rollback.
   Success receipt={ok:true,source:"divingfish_upload",attempted_at,uploaded_at,sync_id,
-  records,uploaded_count,snapshot_records,skipped_count,skipped:[{song_id,level_index,reason}]}.
-  Failure receipt={ok:false,source:"divingfish_upload",attempted_at,sync_id,error}.
+  records,uploaded_count,snapshot_records,skipped_count,skipped:[{song_id,level_index,reason}],
+  compared_count,new_count,improved_count,unchanged_count,preserved_count,
+  outside_upload_count,remote_records_before,remote_records_after,verified_count,
+  verified_at,write_attempted,upload_confirmed,verification_state:"verified",
+  mismatch_count:0,mismatches:[]}.
+  preserved_count counts matched charts for which one or more remote fields were higher.
+  outside_upload_count counts prior remote charts outside the matched snapshot;
+  verified_count includes both matched and outside records. No-op uploaded_count is 0.
+  Failure receipt={ok:false,source:"divingfish_upload",attempted_at,sync_id,error,
+  write_attempted,upload_confirmed,verification_state,...available comparison counts}.
+  verification_state is not_started, unverified, mismatch, or verified. A mismatch
+  includes mismatch_count and up to 50 mismatches=[{song_id,level_index,fields}].
   Changing the saved token while preparing aborts before upload. A request already
   started uses its captured token; status polling and settings remain responsive.
   Upstream timeout/error may leave an externally partial upload; local data is retained
   and failure is explicit, never retried automatically.
+  The upstream API overwrites fields and offers no conditional/atomic update. The
+  preflight protects the retrieved baseline; it cannot exclude a simultaneous write
+  by another client between the read and POST. Avoid parallel imports elsewhere.
   All score jobs share a nonblocking process/file lease (busy -> 409); starts have a
   short cooldown (429). Network operations have bounded timeouts. UI polls status.
 POST /api/sync/divingfish (no body)

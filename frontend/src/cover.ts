@@ -57,8 +57,10 @@ export interface CoverChart {
   jp_release_provider?: string | null;
   release_status?: string;
 }
+export type CoverCombo = 'none' | 'ap' | 'app';
 interface CoverOptions {
   achievement: string;
+  combo?: CoverCombo;
   versionOverride?: string;
   aspect?: CoverAspect;
   backgroundUrl?: string;
@@ -436,7 +438,8 @@ export async function renderCover(
     options.versionLogoUrl || (version.asset?.logo_file ? assetURL(version.asset.logo_file) : '');
   const isUtage = chart.type === 'utage' || chart.difficulty_name.toUpperCase() === 'UTAGE';
   const typeKey = isUtage ? '' : chart.type === 'dx' ? 'dx' : 'standard';
-  const apKey = Number(raw) === 101 ? 'app' : 'ap';
+  const combo = options.combo ?? (Number(raw) === 101 ? 'app' : 'ap');
+  const apKey = combo === 'none' ? '' : combo;
   const badgeKeys = [typeKey, apKey];
   const resources = new Map<string, HTMLImageElement>();
   const requests: Array<[string, string]> = [];
@@ -711,7 +714,7 @@ export async function renderCover(
     const alpha = alphaBounds(apImage);
     record(apKey, contain(ctx, apImage, apBox, alpha));
     gameAssets.push(apKey);
-  } else badge(apKey, Number(raw) === 101 ? 'AP+' : 'AP', apBox, 46);
+  } else if (apKey) badge(apKey, apKey === 'app' ? 'AP+' : 'AP', apBox, 46);
   if (achievementStyle === 'system_font') notices.push('达成率暂用系统字体');
   const cropped = options.aspect === '4:3';
   canvas.width = cropped ? 1440 : 1920;

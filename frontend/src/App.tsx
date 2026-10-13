@@ -559,7 +559,8 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const [picker, setPicker] = useState<'record' | 'cover' | null>(null);
   const [cover, setCover] = useState<CoverState>({
     chart: null,
-    score: '100.9615',
+    score: '',
+    combo: 'none',
     version: '',
     aspect: '16:9',
   });
@@ -812,7 +813,23 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     }
   }
   function chooseCover(chart: Chart) {
-    setCover((value) => ({ ...value, chart, score: '', version: '' }));
+    const achievement = chart.provider_achievement ?? chart.achievement;
+    setCover((value) => ({
+      ...value,
+      chart,
+      score: achievement == null ? '' : achievement.toFixed(4),
+      combo:
+        chart.provider_fc != null || chart.provider_achievement != null
+          ? chart.provider_fc === 'app'
+            ? 'app'
+            : chart.provider_fc === 'ap'
+              ? 'ap'
+              : 'none'
+          : chart.is_complete
+            ? 'ap'
+            : 'none',
+      version: '',
+    }));
     closeModal();
     location.hash = 'cover';
     setPage('cover');

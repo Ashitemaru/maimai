@@ -5,12 +5,14 @@ import { readQrImage } from './readQrImage';
 import { useNotify } from './Toast';
 import type { ScoreSyncControl } from './useScoreSync';
 import type { Settings } from './types';
+import { uploadSummary } from './scoreSync';
 
 const stages: Record<string, string> = {
   starting: '正在开始同步…',
   fetching: '正在读取华立成绩…',
   validating: '正在核对成绩和待核记录…',
   uploading: '正在上传水鱼…',
+  verifying: '正在读回核对…',
   completed: '已完成',
   failed: '未完成',
 };
@@ -207,12 +209,7 @@ export function ScoreSyncPanel({
             {job?.kind === 'divingfish_upload' ? job.message || '正在上传水鱼…' : '正在开始上传…'}
           </p>
         )}
-        {lastUpload?.ok && (
-          <p className="score-upload-receipt">
-            已上传 {lastUpload.uploaded_count ?? lastUpload.records ?? 0} 条
-            {lastUpload.skipped_count ? ` · 跳过 ${lastUpload.skipped_count} 条` : ''}
-          </p>
-        )}
+        {lastUpload?.ok && <p className="score-upload-receipt">{uploadSummary(lastUpload)}</p>}
         <form className="score-token-form" onSubmit={saveToken}>
           <div className="field">
             <label htmlFor="import-token">

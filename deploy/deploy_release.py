@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import sqlite3
@@ -30,6 +31,9 @@ SERVICE = "mai-journal.service"
 READY_URL = "http://127.0.0.1:8766/api/ready"
 MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_EXTRACTED = 256 * 1024 * 1024
+DEPENDENCY_SCHEMA = 1
+PIP_VERSION = "26.2.1"
+WHEEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*\.whl\Z")
 CORE_SCRIPTS = {
     "build_catalog.py",
     "catalog_chart_compiler.py",
@@ -194,6 +198,10 @@ def checksum_for(data, name):
 
 
 def allowed_file(parts):
+    if parts[0] == "dependencies":
+        return len(parts) == 2 and (
+            parts[1] == "manifest.json" or WHEEL_NAME.fullmatch(parts[1]) is not None
+        )
     if parts == ("deploy", "wahlap-runtime.lock.json"):
         return True
     if len(parts) == 1:
@@ -232,7 +240,7 @@ def extract_archive(archive, destination, sha):
                 if len(seen) > 10000:
                     raise DeployError("Too many archive members")
                 if member.isdir():
-                    if parts[0] not in {"backend", "scripts", "frontend", "deploy"}:
+                    if parts[0] not in {"backend", "scripts", "frontend", "deploy", "dependencies"}:
                         raise DeployError("Archive contains a non-code directory")
                     if parts[0] == "frontend" and len(parts) > 1 and parts[1] != "dist":
                         raise DeployError("Only built frontend assets belong in a release")
@@ -265,7 +273,12 @@ def extract_archive(archive, destination, sha):
             raise DeployError(f"Missing required release file: {required}")
     if (destination / "RELEASE_SHA").read_text().strip() != sha:
         raise DeployError("Archive RELEASE_SHA does not match the approved commit")
-    lines = (destination / "requirements.lock").read_text().splitlines()
+    requirement_pins(destination / "requirements.lock")
+    dependency_bundle(destination)
+
+
+def requirement_pins(path):
+    lines = path.read_text().splitlines()
     pins = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
     if not pins or any(
         not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*==[A-Za-z0-9][A-Za-z0-9.!+_-]*", pin)
@@ -274,6 +287,93 @@ def extract_archive(archive, destination, sha):
         raise DeployError(
             "Requirements must contain version pins only, without URLs or pip options"
         )
+    normalized = {normalize_pin(pin) for pin in pins}
+    if len({pin.split("==")[0] for pin in normalized}) != len(pins):
+        raise DeployError("Requirements must not contain duplicate packages")
+    return normalized
+
+
+def normalize_pin(pin):
+    name, version = pin.split("==")
+    return re.sub(r"[-_.]+", "-", name).lower() + "==" + version
+
+
+def dependency_bundle(release, *, check_host=False):
+    """Validate all vendored wheels before creating a venv or stopping the service."""
+    folder = release / "dependencies"
+    manifest_path = folder / "manifest.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise DeployError("Release has no offline dependency bundle; rebuild it with current CI")
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (ValueError, UnicodeError) as exc:
+        raise DeployError("Invalid dependency bundle manifest") from exc
+    if not isinstance(manifest, dict) or manifest.get("schema") != DEPENDENCY_SCHEMA:
+        raise DeployError("Unsupported dependency bundle schema")
+    target = manifest.get("target")
+    if not isinstance(target, dict) or (
+        target.get("implementation") != "cpython"
+        or target.get("python") != "3.14"
+        or target.get("system") != "Linux"
+        or target.get("machine") != "x86_64"
+        or not isinstance(target.get("glibc_min"), str)
+        or not re.fullmatch(r"[0-9]+\.[0-9]+", target["glibc_min"])
+    ):
+        raise DeployError("Unsupported dependency bundle target")
+    if check_host:
+        libc, version = platform.libc_ver()
+        compatible = (
+            sys.implementation.name == target["implementation"]
+            and f"{sys.version_info.major}.{sys.version_info.minor}" == target["python"]
+            and platform.system() == target["system"]
+            and platform.machine() == target["machine"]
+            and libc == "glibc"
+            and re.fullmatch(r"[0-9]+\.[0-9]+", version)
+            and tuple(map(int, version.split(".")))
+            >= tuple(map(int, target["glibc_min"].split(".")))
+        )
+        if not compatible:
+            raise DeployError(
+                "Dependency bundle requires CPython 3.14, Linux x86_64 and glibc >= "
+                + target["glibc_min"]
+            )
+    requirements = release / "requirements.lock"
+    if manifest.get("requirements_sha256") != hashlib.sha256(requirements.read_bytes()).hexdigest():
+        raise DeployError("Dependency bundle does not match requirements.lock")
+    pins = requirement_pins(requirements) | {f"pip=={PIP_VERSION}"}
+    wheels = manifest.get("wheels")
+    if not isinstance(wheels, list) or len(wheels) != len(pins):
+        raise DeployError("Dependency bundle must contain exactly one wheel for every pin")
+    files, found, locks = {"manifest.json"}, set(), {}
+    for wheel in wheels:
+        if not isinstance(wheel, dict):
+            raise DeployError("Invalid dependency wheel entry")
+        name, pin, digest = (wheel.get(key) for key in ("filename", "requirement", "sha256"))
+        if (
+            not isinstance(name, str)
+            or not WHEEL_NAME.fullmatch(name)
+            or name in files
+            or not isinstance(pin, str)
+            or pin not in pins
+            or pin in found
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            raise DeployError("Invalid or duplicate dependency wheel")
+        parts = name[:-4].split("-")
+        if len(parts) not in {5, 6} or normalize_pin(f"{parts[0]}=={parts[1]}") != pin:
+            raise DeployError("Dependency wheel filename does not match its package pin")
+        path = folder / name
+        if not path.is_file() or path.is_symlink():
+            raise DeployError("Missing or unsafe dependency wheel")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise DeployError("Dependency wheel checksum mismatch")
+        files.add(name)
+        found.add(pin)
+        locks[pin] = f"{pin} --hash=sha256:{digest}\n"
+    if {path.name for path in folder.iterdir()} != files or found != pins:
+        raise DeployError("Dependency bundle contains missing or unexpected files")
+    return locks
 
 
 def fsync_directory(path):
@@ -316,12 +416,25 @@ class Host:
             ) from exc
 
     def install(self, release):
+        locks = dependency_bundle(release, check_host=True)
+        bootstrap = release / "install-pip.txt"
+        requirements = release / "install-requirements.txt"
+        bootstrap.write_text(locks.pop(f"pip=={PIP_VERSION}"))
+        requirements.write_text("".join(locks[pin] for pin in sorted(locks)))
         self.run([sys.executable, "-m", "venv", str(release / "venv")])
         python = str(release / "venv/bin/python")
         pip = [python, "-m", "pip", "--isolated", "--disable-pip-version-check", "--no-cache-dir"]
-        install = ["install", "--index-url", "https://pypi.org/simple", "--only-binary=:all:"]
-        self.run([*pip, *install, "--upgrade", "pip==26.2.1"])
-        self.run([*pip, *install, "--requirement", str(release / "requirements.lock")])
+        install = [
+            "install",
+            "--no-index",
+            "--find-links",
+            str(release / "dependencies"),
+            "--only-binary=:all:",
+            "--require-hashes",
+            "--no-deps",
+        ]
+        self.run([*pip, *install, "--upgrade", "--requirement", str(bootstrap)])
+        self.run([*pip, *install, "--requirement", str(requirements)])
         self.run([*pip, "check"])
 
     def service(self, action):

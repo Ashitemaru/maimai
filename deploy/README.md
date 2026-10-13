@@ -9,17 +9,21 @@ resource bounds and `RELEASE_SHA` are validated before installing dependencies.
 
 The archive has no enclosing directory. It contains `backend/*.py` excluding tests,
 the core `scripts/*.py` allowlist in `deploy_release.py`, `requirements.lock`,
-`frontend/dist/**`, `RELEASE_SHA`, and optionally `deploy/**` for manual bootstrap
-updates. It must contain no runtime, catalogs, pictures, archives, credentials,
-symlinks or private records. The only allowed deployment JSON is the public
+`frontend/dist/**`, `RELEASE_SHA`, a required `dependencies/` wheel bundle, and
+optionally `deploy/**` for manual bootstrap updates. It must contain no personal
+runtime data, catalogs, pictures, credentials, symlinks or private records.
+`dependencies/` contains only wheels and their public `manifest.json`.
+The only allowed deployment JSON is the public
 `deploy/wahlap-runtime.lock.json` manifest; the external score runtime and its
 binary files never enter a release. Requirements are exact version pins with no URLs or
 pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other tests.
 
 ## One-time root bootstrap
 
-1. Install the OS Python 3.12+ interpreter, its venv package, CA certificates and sudo.
-   Use an app interpreter version covered by CI. Create the locked service account
+1. Install CPython 3.14, its venv package, CA certificates and sudo on Linux x86_64
+   with glibc at least as new as the Ubuntu 24.04 wheel-builder runner (2.39).
+   The manifest records the actual builder version and the deployer checks it.
+   Create the locked service account
    `maimai` with no interactive login. Create `/srv/mai-journal` owned by `maimai`,
    mode 0700, and `releases`, `backups`, `shared/runtime`, `shared/catalog`,
    `shared/assets` beneath it. Existing private runtime/catalog files remain 0600;
@@ -70,10 +74,28 @@ Derived previews live in shared/runtime/jacket-thumbnails, capped at 64 MiB and
 
 ## Activation and recovery
 
-Dependencies are installed into the final candidate release directory before the
-old app is stopped; venvs are never moved after installation. pip is pinned and run
-in isolated mode against PyPI with binary wheels only. Main is rechecked after
-preparation. A filesystem flock serializes the complete deployment. The current
+CI downloads the exact `requirements.lock` pins plus pinned pip into an isolated
+wheelhouse on CPython 3.14 / Ubuntu 24.04 x86_64. It installs those wheels using the
+same server installer with `--no-index --require-hashes --no-deps`, runs `pip check`
+and imports the runtime/native modules before publishing. Missing wheels or
+incomplete dependency pins fail CI. The immutable release contains this tested
+bundle; server releases never download packages from PyPI.
+To reproduce this build on the matching Linux host, run
+`python -m scripts.build_release_dependencies` from the repository root, then
+`python scripts/package_release.py`. The generated `release-dependencies/` and
+`release/` directories remain untracked.
+
+Before installation, the deployer validates every wheel's hash and package/version,
+the exact bundle file set, the requirements digest, Python minor version, CPU
+architecture, OS and minimum glibc version. Dependencies are installed into the
+final candidate release directory before the old app is stopped; venvs are never
+moved after installation. A missing, incompatible or corrupted bundle fails closed
+without a network fallback or service stop. Installed older releases remain usable
+for rollback, but a fresh deployment of a historical code-only archive requires
+rebuilding it with the current packaging workflow under a new commit/tag.
+
+Main is rechecked after preparation. A filesystem flock serializes the complete
+deployment. The current
 SHA is a no-op, so ordinary timer ticks make just one unauthenticated GitHub API
 request. GitHub errors/rate limits keep the running version and are retried on a
 later timer run; a release in progress is not an error.
@@ -106,6 +128,13 @@ schema-compatible releases; destructive migrations need a separate reviewed plan
 Tests use fake GitHub archives, fake service management and temporary SQLite
 databases. They do not prove the first real asset download, server wheel install,
 systemd sandbox or public proxy configuration. Validate those during bootstrap.
+
+When introducing the bundled-release format, install the reviewed updated
+`deploy/deploy_release.py` at `/opt/mai-journal/deploy_release.py` (root-owned 0755)
+before publishing the first bundle. It remains one standalone Python file;
+there is no new root helper or scheduled job. An older deployer intentionally
+rejects `dependencies/`, keeping the existing application running. Normal releases
+continue to leave this root-owned bootstrap file unchanged.
 
 ## Direct game-score synchronization
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, messageOf } from './api';
 import type { ScoreSyncJob, ScoreSyncStatus } from './scoreSync';
+import { uploadSummary } from './scoreSync';
 
 export function useScoreSync(onChanged: () => Promise<void>, notify: (message: string) => void) {
   const [state, setState] = useState<ScoreSyncStatus | null>(null);
@@ -39,10 +40,7 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
           );
         } else {
           const result = job.result;
-          if (result?.source === 'divingfish_upload')
-            notify(
-              `已上传 ${result.uploaded_count ?? result.records ?? 0} 条${result.skipped_count ? ` · 跳过 ${result.skipped_count} 条` : ''}`,
-            );
+          if (result?.source === 'divingfish_upload') notify(uploadSummary(result));
           else notify('已上传水鱼');
         }
       }

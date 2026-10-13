@@ -21,6 +21,7 @@ playwright-report/
 /data/
 /output/
 /release/
+/release-dependencies/
 /backend/runtime/
 /.playwright-mcp/
 /ashitemaru-bilibili-covers/

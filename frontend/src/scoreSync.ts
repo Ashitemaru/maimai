@@ -16,7 +16,17 @@ interface DivingFishUploadResult {
   uploaded_count?: number;
   snapshot_records?: number;
   skipped_count?: number;
+  verification_state?: string;
+  verified_count?: number;
+  verified_at?: string;
   sync_id: string;
+}
+export function uploadSummary(result: DivingFishUploadResult) {
+  const count = result.uploaded_count ?? result.records ?? 0;
+  const verified = result.verification_state === 'verified';
+  const message =
+    count === 0 && verified ? '水鱼成绩已是最新' : `已上传 ${count} 条${verified ? '并核对' : ''}`;
+  return message + (result.skipped_count ? ` · 跳过 ${result.skipped_count} 条` : '');
 }
 export interface ScoreSyncJob {
   id: string;

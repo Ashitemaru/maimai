@@ -365,10 +365,7 @@ try {
   assert.equal(mutations.length, 0, 'The empty venue selection must not submit');
   await drawer.getByLabel('AP 机厅', { exact: true }).selectOption('【广州】已有机厅');
   await save();
-  await page
-    .locator('#toast')
-    .filter({ hasText: /失败|fetch|请求/i })
-    .waitFor();
+  await page.locator('#toast').filter({ hasText: '网络请求失败，请检查连接后重试' }).waitFor();
   assert.equal(
     await drawer.getByLabel('AP 机厅', { exact: true }).inputValue(),
     '【广州】已有机厅',

@@ -10,8 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from deploy.deploy_release import CORE_SCRIPTS as DEPLOY_SCRIPTS
-from deploy.deploy_release import extract_archive
+from deploy.deploy_release import DeployError, extract_archive
 from scripts.package_release import CORE_SCRIPTS, main, package, publish_release, run_gh
+from tests.dependency_fixtures import dependency_files
 
 SHA = "a" * 40
 
@@ -168,10 +169,14 @@ class PackageReleaseTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
         (self.root / "requirements.lock").write_text("example==1.0.0\n")
+        for name, payload in dependency_files().items():
+            path = self.root / name.replace("dependencies/", "release-dependencies/", 1)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(payload)
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         subprocess.run(["git", "add", "."], cwd=self.root, check=True)
 
-    def test_only_code_and_built_frontend_are_packaged(self):
+    def test_only_code_built_frontend_and_offline_dependencies_are_packaged(self):
         archive = package(self.root, self.root / "release", "a" * 40)
         with tarfile.open(archive) as tar:
             self.assertEqual(
@@ -185,7 +190,8 @@ class PackageReleaseTest(unittest.TestCase):
                     "requirements.lock",
                     "frontend/dist/index.html",
                     "RELEASE_SHA",
-                },
+                }
+                | set(dependency_files()),
             )
         first = archive.read_bytes()
         self.assertEqual(first, package(self.root, self.root / "release", "a" * 40).read_bytes())
@@ -212,6 +218,15 @@ class PackageReleaseTest(unittest.TestCase):
     def test_missing_runtime_module_prevents_release(self):
         (self.root / "backend/store.py").unlink()
         with self.assertRaises(ValueError):
+            package(self.root, self.root / "release", SHA)
+
+    def test_unbundled_or_tampered_dependencies_prevent_release(self):
+        wheel = self.root / "release-dependencies/example-1.0.0-py3-none-any.whl"
+        wheel.write_text("tampered")
+        with self.assertRaisesRegex(DeployError, "checksum mismatch"):
+            package(self.root, self.root / "release", SHA)
+        wheel.unlink()
+        with self.assertRaisesRegex(DeployError, "Missing or unsafe"):
             package(self.root, self.root / "release", SHA)
 
     def create_release(self):

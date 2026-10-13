@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend.ap_records import ScoreAccountError, ScoreSourceError
 from backend.score_sync import (
+    RECORDS_ENDPOINT,
     UPLOAD_ENDPOINT,
     ScoreSync,
     ScoreSyncError,
@@ -58,6 +59,19 @@ def music_data():
 
 def response(data):
     return httpx.Response(200, json=data, request=httpx.Request("GET", "https://example.invalid"))
+
+
+def upload_get(before=None, after=None):
+    replies = iter([{"records": before or []}, {"records": after or [score()]}])
+
+    def get(url, **kwargs):
+        if url.endswith("/music_data"):
+            return response(music_data())
+        if url != RECORDS_ENDPOINT:
+            raise AssertionError("unexpected read endpoint")
+        return response(next(replies))
+
+    return get
 
 
 class ScoreSyncTests(unittest.TestCase):
@@ -548,7 +562,7 @@ class ScoreSyncTests(unittest.TestCase):
         records = [score(), score(song_id=999999, level_index=5, achievements=120)]
         jobs = self.prepare_upload(records)
         before = self.state()
-        with patch("backend.score_sync.httpx.get", return_value=response(music_data())) as get:
+        with patch("backend.score_sync.httpx.get", side_effect=upload_get()) as get:
             with patch(
                 "backend.score_sync.httpx.post",
                 return_value=response({"message": "更新成功", "updates": 1, "creates": 0}),
@@ -565,7 +579,10 @@ class ScoreSyncTests(unittest.TestCase):
         )
         self.assertEqual(post.call_args.kwargs["headers"], {"Import-Token": TEST_TOKEN})
         self.assertFalse(post.call_args.kwargs["follow_redirects"])
-        self.assertNotIn("headers", get.call_args.kwargs)
+        self.assertNotIn("headers", get.call_args_list[0].kwargs)
+        self.assertEqual(get.call_args.kwargs["headers"], {"Import-Token": TEST_TOKEN})
+        self.assertEqual(receipt["verification_state"], "verified")
+        self.assertEqual(receipt["verified_count"], 1)
         after = self.state()
         before.pop("metadata")
         after.pop("metadata")
@@ -581,7 +598,7 @@ class ScoreSyncTests(unittest.TestCase):
             self.assertTrue(release.wait(3))
             return response({"message": "更新成功", "updates": 1, "creates": 0})
 
-        with patch("backend.score_sync.httpx.get", return_value=response(music_data())):
+        with patch("backend.score_sync.httpx.get", side_effect=upload_get()):
             with patch("backend.score_sync.httpx.post", side_effect=post):
                 jobs.start_upload()
                 self.assertTrue(started.wait(2))
@@ -618,7 +635,7 @@ class ScoreSyncTests(unittest.TestCase):
         ]
         for reply in replies:
             with self.subTest(reply=type(reply).__name__):
-                with patch("backend.score_sync.httpx.get", return_value=response(music_data())):
+                with patch("backend.score_sync.httpx.get", side_effect=upload_get()):
                     with patch("backend.score_sync.httpx.post", side_effect=[reply]):
                         jobs.start_upload()
                         result = self.finish(jobs)
@@ -641,6 +658,128 @@ class ScoreSyncTests(unittest.TestCase):
             [(item["song_id"], item["level_index"]) for item in skipped], [(111359, 10)]
         )
         self.assertEqual(utage["level_index"], 10)
+
+    def test_upload_noop_reads_remote_bests_without_posting(self):
+        jobs = self.prepare_upload()
+        remote = score(achievements=101, fc="app", fs="fsdp", dxScore=2000)
+        with (
+            patch("backend.score_sync.httpx.get", side_effect=upload_get(before=[remote])) as get,
+            patch("backend.score_sync.httpx.post") as post,
+        ):
+            jobs.start_upload()
+            result = self.finish(jobs)
+        self.assertEqual(result["state"], "succeeded")
+        receipt = result["result"]
+        self.assertEqual(receipt["uploaded_count"], 0)
+        self.assertEqual(receipt["preserved_count"], 1)
+        self.assertEqual(receipt["verification_state"], "verified")
+        self.assertFalse(receipt["write_attempted"])
+        self.assertFalse(receipt["upload_confirmed"])
+        self.assertEqual(get.call_count, 2)
+        post.assert_not_called()
+
+    def test_upload_mixed_improvements_preserve_remote_fields_and_check_other_records(self):
+        jobs = self.prepare_upload()
+        old = score(achievements=101, fc="fc", fs="fsdp", dxScore=1000)
+        extra = score(song_id=9999)
+        merged = score(achievements=101, fs="fsdp")
+        with (
+            patch(
+                "backend.score_sync.httpx.get",
+                side_effect=upload_get(before=[old, extra], after=[merged, extra]),
+            ),
+            patch(
+                "backend.score_sync.httpx.post",
+                return_value=response({"message": "更新成功", "updates": 1, "creates": 0}),
+            ) as post,
+        ):
+            jobs.start_upload()
+            result = self.finish(jobs)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(
+            post.call_args.kwargs["json"], [{**merged, "title": "Example", "type": "DX"}]
+        )
+        self.assertEqual(result["result"]["verified_count"], 2)
+        self.assertEqual(result["result"]["outside_upload_count"], 1)
+        self.assertEqual(
+            self.store.chart(self.key)["provider_achievement"], score()["achievements"]
+        )
+
+    def test_unavailable_or_invalid_preflight_never_posts(self):
+        jobs = self.prepare_upload()
+        failures = [
+            httpx.ReadTimeout(TEST_TOKEN),
+            response({"records": [score(), score()]}),
+            response({"records": [{"song_id": 10001}]}),
+            response({"not_records": []}),
+        ]
+        for failure in failures:
+            with (
+                self.subTest(failure=type(failure).__name__),
+                patch(
+                    "backend.score_sync.httpx.get", side_effect=[response(music_data()), failure]
+                ),
+                patch("backend.score_sync.httpx.post") as post,
+            ):
+                jobs.start_upload()
+                result = self.finish(jobs)
+                self.assertEqual(result["error"]["code"], "upload_preflight_failed")
+                receipt = self.store.meta("last_divingfish_upload")
+                self.assertFalse(receipt["write_attempted"])
+                self.assertEqual(receipt["verification_state"], "not_started")
+                self.assertNotIn(TEST_TOKEN, json.dumps(receipt))
+                post.assert_not_called()
+
+    def test_acknowledged_upload_with_unavailable_readback_is_not_success(self):
+        jobs = self.prepare_upload()
+        with (
+            patch(
+                "backend.score_sync.httpx.get",
+                side_effect=[
+                    response(music_data()),
+                    response({"records": []}),
+                    httpx.ReadTimeout(TEST_TOKEN),
+                ],
+            ),
+            patch(
+                "backend.score_sync.httpx.post",
+                return_value=response({"message": "更新成功", "updates": 0, "creates": 1}),
+            ) as post,
+        ):
+            jobs.start_upload()
+            result = self.finish(jobs)
+        self.assertEqual(result["error"]["code"], "upload_verification_unavailable")
+        receipt = self.store.meta("last_divingfish_upload")
+        self.assertTrue(receipt["write_attempted"])
+        self.assertTrue(receipt["upload_confirmed"])
+        self.assertEqual(receipt["verification_state"], "unverified")
+        self.assertNotIn(TEST_TOKEN, json.dumps(receipt))
+        post.assert_called_once()
+
+    def test_acknowledged_upload_detects_missing_or_degraded_outside_records(self):
+        jobs = self.prepare_upload()
+        extra = score(song_id=9999)
+        for after in ([score()], [score(), score(song_id=9999, achievements=99)]):
+            with (
+                self.subTest(after=after),
+                patch(
+                    "backend.score_sync.httpx.get",
+                    side_effect=upload_get(before=[extra], after=after),
+                ),
+                patch(
+                    "backend.score_sync.httpx.post",
+                    return_value=response({"message": "更新成功", "updates": 0, "creates": 1}),
+                ) as post,
+            ):
+                jobs.start_upload()
+                result = self.finish(jobs)
+                self.assertEqual(result["error"]["code"], "upload_verification_mismatch")
+                receipt = self.store.meta("last_divingfish_upload")
+                self.assertEqual(receipt["verification_state"], "mismatch")
+                self.assertEqual(receipt["mismatch_count"], 1)
+                self.assertEqual(receipt["mismatches"][0]["song_id"], 9999)
+                self.assertTrue(receipt["upload_confirmed"])
+                post.assert_called_once()
 
     def test_upload_mapping_rejects_all_unknown_and_ambiguous_title(self):
         for catalog in ([], {"invalid": True}):
@@ -750,7 +889,7 @@ class ScoreSyncTests(unittest.TestCase):
         jobs = self.job(clock=lambda: DURING_MAINTENANCE)
         with (
             patch("backend.score_sync.wahlap_available") as probe,
-            patch("backend.score_sync.httpx.get", return_value=response(music_data())),
+            patch("backend.score_sync.httpx.get", side_effect=upload_get()),
             patch(
                 "backend.score_sync.httpx.post",
                 return_value=response({"message": "更新成功", "updates": 1, "creates": 0}),

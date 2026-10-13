@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Chart } from './types';
 import { renderCover } from './cover';
-import type { CoverAspect, CoverReceipt } from './cover';
+import type { CoverAspect, CoverCombo, CoverReceipt } from './cover';
 import { loadBackgroundManifest, resolveVersion } from './coverAssets';
 import type { BackgroundManifest } from './coverAssets';
 import { messageOf } from './api';
@@ -13,6 +13,7 @@ import { useToastMessage } from './Toast';
 export interface CoverState {
   chart: Chart | null;
   score: string;
+  combo: CoverCombo;
   version: string;
   aspect: CoverAspect;
 }
@@ -83,6 +84,7 @@ export function CoverPage({
     const temporary = document.createElement('canvas');
     renderCover(temporary, value.chart, {
       achievement: value.score,
+      combo: value.combo,
       versionOverride: value.version,
       aspect: value.aspect,
     })
@@ -117,6 +119,7 @@ export function CoverPage({
     try {
       await renderCover(output, value.chart, {
         achievement: value.score,
+        combo: value.combo,
         versionOverride: value.version,
         aspect: value.aspect,
       });
@@ -201,6 +204,18 @@ export function CoverPage({
               onChange={(event) => change({ score: event.target.value })}
               placeholder="100.9876"
             />
+          </div>
+          <div className="field">
+            <label htmlFor="cover-combo">徽章</label>
+            <select
+              id="cover-combo"
+              value={value.combo}
+              onChange={(event) => change({ combo: event.target.value as CoverCombo })}
+            >
+              <option value="none">无</option>
+              <option value="ap">AP</option>
+              <option value="app">AP+</option>
+            </select>
           </div>
           <div className="field">
             <label htmlFor="cover-version">版本</label>

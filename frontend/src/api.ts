@@ -11,7 +11,13 @@ export class ApiError extends Error {
 }
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const generation = authGeneration();
-  const response = await fetch(path, { ...init, credentials: 'same-origin' });
+  let response: Response;
+  try {
+    response = await fetch(path, { ...init, credentials: 'same-origin' });
+  } catch (error) {
+    if (error instanceof TypeError) throw new ApiError('网络请求失败，请检查连接后重试', 0);
+    throw error;
+  }
   if (response.status === 401 && !new URL(path, location.origin).pathname.startsWith('/api/auth/'))
     reportExpiredSession(generation);
   return response;
