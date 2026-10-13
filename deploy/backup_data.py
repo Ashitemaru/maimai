@@ -28,12 +28,20 @@ DB_PATHS = (
     "shared/runtime/auth.sqlite3",
 )
 CONFIG_PATHS = ("config/mai-journal/app.env", "config/mai-journal/deploy.env")
-OPTIONAL_PATHS = (
+LEGACY_OPTIONAL_PATHS = (
     "shared/runtime/auth.sqlite3",
     "shared/runtime/secrets.json",
     "config/system/etc/caddy/Caddyfile",
     "config/system/etc/sudoers.d/mai-journal",
 )
+WAHLAP_PROXY_SYSTEM_PATHS = (
+    "etc/mai-journal-wahlap-proxy/egress.json",
+    "etc/mai-journal-wahlap-proxy/tun.json",
+    "etc/netns/mai-wahlap/resolv.conf",
+    "etc/systemd/system/mai-journal-wahlap@.service.d/proxy.conf",
+)
+WAHLAP_PROXY_PATHS = tuple("config/system/" + path for path in WAHLAP_PROXY_SYSTEM_PATHS)
+OPTIONAL_PATHS = (*LEGACY_OPTIONAL_PATHS, *WAHLAP_PROXY_PATHS)
 
 
 class BackupDataError(ValueError):
@@ -344,7 +352,7 @@ def capture(source_root, config_root, destination, *, system_root=Path("/")):
     (destination / "current").symlink_to(release_target)
     for name in ("app.env", "deploy.env"):
         _copy_file(_path(config_root, name), destination / "config/mai-journal" / name)
-    system_files = ["etc/caddy/Caddyfile", "etc/sudoers.d/mai-journal"]
+    system_files = ["etc/caddy/Caddyfile", "etc/sudoers.d/mai-journal", *WAHLAP_PROXY_SYSTEM_PATHS]
     unit_root = _path(system_root, "etc/systemd/system", missing=True)
     if unit_root.exists():
         _directory(unit_root)
@@ -366,7 +374,7 @@ def capture(source_root, config_root, destination, *, system_root=Path("/")):
         relative = directory + "/catalog.sqlite"
         databases[relative] = _database_report(destination / relative)
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now(UTC).isoformat(),
         "release_sha": release_sha,
         "catalog": catalog,
@@ -401,7 +409,7 @@ def verify(destination):
             "entries",
         }
         and type(manifest.get("schema_version")) is int
-        and manifest["schema_version"] == 1,
+        and manifest["schema_version"] in {1, 2},
         "Unsupported backup manifest",
     )
     try:
@@ -419,11 +427,17 @@ def verify(destination):
             _relative(entry.get("target"))
     # Inventory never follows links; exact equality rejects missing, altered and extra files.
     _require(_inventory(destination) == entries, "Backup inventory or checksum mismatch")
+    optional_paths = OPTIONAL_PATHS if manifest["schema_version"] == 2 else LEGACY_OPTIONAL_PATHS
     _require(
         manifest["optional_absent"]
-        == sorted(relative for relative in OPTIONAL_PATHS if relative not in entries),
+        == sorted(relative for relative in optional_paths if relative not in entries),
         "Optional input receipt mismatch",
     )
+    if any(relative in entries for relative in WAHLAP_PROXY_PATHS):
+        _require(
+            all(relative in entries for relative in WAHLAP_PROXY_PATHS),
+            "Wahlap proxy recovery files are incomplete",
+        )
     sha, _ = _code_release(destination)
     _require(sha == manifest.get("release_sha"), "Backup release mismatch")
     catalog = _catalog_selection(destination)

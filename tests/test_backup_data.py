@@ -7,7 +7,14 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from deploy.backup_data import BackupDataError, capture, verify
+from deploy.backup_data import (
+    LEGACY_OPTIONAL_PATHS,
+    WAHLAP_PROXY_PATHS,
+    WAHLAP_PROXY_SYSTEM_PATHS,
+    BackupDataError,
+    capture,
+    verify,
+)
 
 SHA = "a" * 40
 
@@ -183,8 +190,75 @@ class BackupDataTests(unittest.TestCase):
         manifest = self.capture()
         self.assertEqual(
             manifest["optional_absent"],
-            ["shared/runtime/auth.sqlite3", "shared/runtime/secrets.json"],
+            sorted(
+                ["shared/runtime/auth.sqlite3", "shared/runtime/secrets.json", *WAHLAP_PROXY_PATHS]
+            ),
         )
+
+    def add_proxy_configuration(self):
+        for relative in WAHLAP_PROXY_SYSTEM_PATHS:
+            source = self.system / relative
+            write(source, "private-fixture-proxy-material")
+            source.chmod(0o640)
+        (self.system / "etc/mai-journal-wahlap-proxy").chmod(0o750)
+
+    def test_proxy_recovery_files_are_private_exact_and_exclude_neighboring_secrets(self):
+        self.add_proxy_configuration()
+        for relative in (
+            "etc/mai-journal-wahlap-proxy/candidate-node.json",
+            "etc/mai-journal-wahlap-proxy/egress.json.old",
+            "etc/netns/other/resolv.conf",
+            "etc/systemd/system/mai-journal-wahlap@.service.d/unrelated.conf",
+        ):
+            write(self.system / relative, "unrelated-secret-must-not-copy")
+        manifest = self.capture()
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(verify(self.destination), manifest)
+        self.assertFalse(any(path in manifest["optional_absent"] for path in WAHLAP_PROXY_PATHS))
+        for source_path, saved_path in zip(
+            WAHLAP_PROXY_SYSTEM_PATHS, WAHLAP_PROXY_PATHS, strict=True
+        ):
+            source, saved = self.system / source_path, self.destination / saved_path
+            self.assertEqual(digest(source), digest(saved))
+            self.assertEqual(source.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(saved.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(
+            (self.system / "etc/mai-journal-wahlap-proxy").stat().st_mode & 0o777, 0o750
+        )
+        self.assertFalse(
+            any(
+                "candidate-node" in path or "unrelated" in path or path.endswith(".old")
+                for path in manifest["entries"]
+            )
+        )
+        self.assertNotIn("private-fixture-proxy-material", json.dumps(manifest))
+        (self.destination / WAHLAP_PROXY_PATHS[-1]).unlink()
+        with self.assertRaisesRegex(BackupDataError, "inventory"):
+            verify(self.destination)
+
+    def test_missing_proxy_dropin_cannot_be_reported_as_complete_recovery(self):
+        self.add_proxy_configuration()
+        (self.system / WAHLAP_PROXY_SYSTEM_PATHS[-1]).unlink()
+        with self.assertRaisesRegex(BackupDataError, "proxy recovery files are incomplete"):
+            self.capture()
+
+    def test_proxy_configuration_parent_symlink_is_not_followed(self):
+        self.add_proxy_configuration()
+        directory = self.system / "etc/mai-journal-wahlap-proxy"
+        directory.rename(self.base / "outside-proxy")
+        directory.symlink_to(self.base / "outside-proxy")
+        with self.assertRaisesRegex(BackupDataError, "symbolic link"):
+            self.capture()
+
+    def test_previous_schema_one_backups_remain_verifiable(self):
+        manifest = self.capture()
+        manifest["schema_version"] = 1
+        manifest["optional_absent"] = sorted(
+            path for path in LEGACY_OPTIONAL_PATHS if path not in manifest["entries"]
+        )
+        self.save_manifest(manifest)
+        self.assertEqual(verify(self.destination), manifest)
 
     def test_sqlite_backup_includes_committed_wal_rows_without_copying_sidecars(self):
         source = self.runtime / "personal.sqlite3"
