@@ -19,6 +19,9 @@ import {
   type PublishingJob,
   type PublishingPlan,
   type PublishingVideo,
+  type PublishingOrder,
+  type PublishingOrderCheck,
+  type PublishingOrderItem,
 } from './publishing';
 
 interface LoginRequest {
@@ -49,6 +52,146 @@ function ChartLabel({ chart }: { chart: Chart }) {
   );
 }
 
+function OrderVideo({ item }: { item: PublishingOrderItem }) {
+  return (
+    <span className="publishing-order-video">
+      <a href={`https://www.bilibili.com/video/${item.bvid}`} target="_blank" rel="noreferrer">
+        {item.song_title || item.title}
+      </a>
+      {item.version && <span>{item.version}</span>}
+    </span>
+  );
+}
+
+function UnmatchedOrderVideos({ items }: { items: PublishingOrder['unmatched'] }) {
+  return (
+    <ul className="publishing-order-unmatched" aria-label="待处理稿件">
+      {items.map((item) => (
+        <li key={item.bvid || item.aid}>
+          <a href={`https://www.bilibili.com/video/${item.bvid}`} target="_blank" rel="noreferrer">
+            {item.title}
+          </a>
+          <span>{item.reason}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function OrderReport({ report }: { report: PublishingOrderCheck }) {
+  return (
+    <div className="publishing-order-report">
+      <time>{formatTimestamp(report.checked_at)}</time>
+      {!report.sections.length && <p>暂无合集小节</p>}
+      {report.sections.map((section) => {
+        const current = new Map(section.current.map((item) => [item.bvid, item.position]));
+        const changed = section.desired.filter((item) => current.get(item.bvid) !== item.position);
+        return (
+          <section className="publishing-order-section" key={section.section_id}>
+            <div className="publishing-order-heading">
+              <strong>
+                {section.season_title} · {section.section_title}
+              </strong>
+              <span data-order-status={section.status}>
+                {
+                  { ordered: '顺序一致', changes: '顺序有差异', blocked: '无法确定顺序' }[
+                    section.status
+                  ]
+                }
+                {' · '}
+                {section.current.length} 条
+              </span>
+            </div>
+            {section.status === 'changes' && (
+              <ul
+                className="publishing-order-changes"
+                aria-label={`${section.section_title} 顺序差异`}
+              >
+                {changed.map((item) => (
+                  <li key={item.bvid}>
+                    <span
+                      className="publishing-order-position"
+                      aria-label={`当前位置 ${current.get(item.bvid) ?? '新增'}，应有位置 ${item.position}`}
+                    >
+                      {current.get(item.bvid) ?? '新增'} → {item.position}
+                    </span>
+                    <OrderVideo item={item} />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {section.status === 'blocked' && <UnmatchedOrderVideos items={section.unmatched} />}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function PlanOrder({ order }: { order: PublishingOrder | undefined }) {
+  if (!order) return <p className="publishing-order-blocked">请重新生成预览以确认合集顺序</p>;
+  if (order.status === 'blocked')
+    return (
+      <div className="publishing-plan-order">
+        <h3>合集顺序待处理</h3>
+        <UnmatchedOrderVideos items={order.unmatched} />
+      </div>
+    );
+  const index = order.desired.findIndex((item) => item.bvid === order.target_bvid);
+  const before = index > 0 ? order.desired[index - 1] : null;
+  const after = index >= 0 ? order.desired[index + 1] : null;
+  return (
+    <div className="publishing-plan-order">
+      <h3>合集顺序</h3>
+      <p>
+        将排在第 {order.target_position} 位，共 {order.desired.length} 条
+      </p>
+      <dl className="publishing-order-neighbors">
+        <div>
+          <dt>上一条</dt>
+          <dd>{before ? <OrderVideo item={before} /> : '已是首位'}</dd>
+        </div>
+        <div>
+          <dt>下一条</dt>
+          <dd>{after ? <OrderVideo item={after} /> : '已是末位'}</dd>
+        </div>
+      </dl>
+      <p>
+        {order.status === 'changes'
+          ? `本次会调整「${order.section_title}」小节顺序`
+          : '合集顺序已一致'}
+      </p>
+    </div>
+  );
+}
+
+function PublishingSteps({ steps }: { steps: PublishingJob['steps'] }) {
+  const labels: Record<string, string> = {
+    metadata: '标题与封面',
+    collection: '归入合集',
+    order: '合集排序',
+  };
+  const states: Record<string, string> = {
+    sending: '提交中',
+    submitted: '待确认',
+    verified: '已完成',
+    rejected: '未完成',
+  };
+  if (!Object.keys(labels).some((key) => typeof steps[key] === 'string')) return null;
+  return (
+    <ul className="publishing-job-steps" aria-label="处理步骤">
+      {Object.entries(labels).map(
+        ([key, label]) =>
+          typeof steps[key] === 'string' && (
+            <li key={key} data-complete={steps[key] === 'verified'}>
+              {label} · {states[steps[key]] || '待处理'}
+            </li>
+          ),
+      )}
+    </ul>
+  );
+}
+
 export function PublishingPage() {
   const notify = useNotify();
   const [session, setSession] = useState<BilibiliSession | null>(null);
@@ -57,6 +200,8 @@ export function PublishingPage() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [collections, setCollections] = useState<PublishingCollection[]>([]);
+  const [orderCheck, setOrderCheck] = useState<PublishingOrderCheck | null>(null);
+  const [checkingOrder, setCheckingOrder] = useState(false);
   const [jobs, setJobs] = useState<PublishingJob[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -75,7 +220,7 @@ export function PublishingPage() {
   const [manifest, setManifest] = useState<BackgroundManifest | null>(null);
   const [prepared, setPrepared] = useState<{
     plan: PublishingPlan;
-    images: PublishingImages;
+    images: PublishingImages | null;
     retryJob?: string;
   } | null>(null);
   const [job, setJob] = useState<PublishingJob | null>(null);
@@ -195,6 +340,18 @@ export function PublishingPage() {
     setSection(matchingCollectionSection(collections, value));
   }
 
+  async function checkOrder() {
+    if (checkingOrder || busy) return;
+    setCheckingOrder(true);
+    try {
+      setOrderCheck(await api<PublishingOrderCheck>('/bilibili/collections/order'));
+    } catch (error) {
+      notify(messageOf(error));
+    } finally {
+      setCheckingOrder(false);
+    }
+  }
+
   async function connect() {
     setBusy(true);
     try {
@@ -218,6 +375,7 @@ export function PublishingPage() {
       setVideo(null);
       setVideos([]);
       setJobs([]);
+      setOrderCheck(null);
       invalidate();
     } catch (error) {
       notify(messageOf(error));
@@ -271,7 +429,7 @@ export function PublishingPage() {
           section_id: Number(section),
         }),
       });
-      const images = await renderPublishingImages(plan);
+      const images = plan.order?.status === 'blocked' ? null : await renderPublishingImages(plan);
       setPrepared({ plan, images });
     } catch (error) {
       notify(messageOf(error));
@@ -281,7 +439,13 @@ export function PublishingPage() {
   }
 
   async function apply() {
-    if (!prepared || busy) return;
+    if (
+      !prepared?.images ||
+      !prepared.plan.order ||
+      prepared.plan.order.status === 'blocked' ||
+      busy
+    )
+      return;
     setBusy(true);
     try {
       const result = prepared.retryJob
@@ -343,7 +507,7 @@ export function PublishingPage() {
           <span>{session?.connected ? session.account?.name || '已连接' : '尚未连接'}</span>
         </div>
         {session?.connected ? (
-          <button className="btn" disabled={busy} onClick={disconnect}>
+          <button className="btn" disabled={busy || checkingOrder} onClick={disconnect}>
             断开连接
           </button>
         ) : (
@@ -374,6 +538,19 @@ export function PublishingPage() {
       </section>
       {session?.connected && (
         <>
+          <section className="settings-panel" aria-busy={checkingOrder}>
+            <div className="publishing-panel-heading">
+              <h2>合集顺序</h2>
+              <button
+                className="btn"
+                disabled={busy || checkingOrder}
+                onClick={() => void checkOrder()}
+              >
+                {checkingOrder ? '检查中…' : '检查合集顺序'}
+              </button>
+            </div>
+            {orderCheck && <OrderReport report={orderCheck} />}
+          </section>
           <section className="settings-panel">
             <div className="publishing-panel-heading">
               <h2>选择稿件</h2>
@@ -608,21 +785,30 @@ export function PublishingPage() {
                   </dd>
                 </div>
               </dl>
-              <div className="publishing-cover-previews">
-                <figure>
-                  <img src={prepared.images.cover16} alt="16:9 投稿封面预览" />
-                  <figcaption>16:9</figcaption>
-                </figure>
-                <figure>
-                  <img src={prepared.images.cover43} alt="4:3 投稿封面预览" />
-                  <figcaption>4:3</figcaption>
-                </figure>
-              </div>
+              <PlanOrder order={prepared.plan.order} />
+              {prepared.images && (
+                <div className="publishing-cover-previews">
+                  <figure>
+                    <img src={prepared.images.cover16} alt="16:9 投稿封面预览" />
+                    <figcaption>16:9</figcaption>
+                  </figure>
+                  <figure>
+                    <img src={prepared.images.cover43} alt="4:3 投稿封面预览" />
+                    <figcaption>4:3</figcaption>
+                  </figure>
+                </div>
+              )}
               <div className="publishing-submit">
                 <button
                   type="button"
                   className="btn primary"
-                  disabled={busy || publishingComplete(job?.state || '')}
+                  disabled={
+                    busy ||
+                    !prepared.images ||
+                    !prepared.plan.order ||
+                    prepared.plan.order.status === 'blocked' ||
+                    publishingComplete(job?.state || '')
+                  }
                   onClick={() => void apply()}
                 >
                   {busy
@@ -637,6 +823,7 @@ export function PublishingPage() {
                   <span role="status">{publishingState(job.state)}</span>
                 )}
               </div>
+              {job && <PublishingSteps steps={job.steps} />}
             </section>
           )}
           {jobs.length > 0 && (
@@ -657,6 +844,7 @@ export function PublishingPage() {
                     </button>
                   )}
                   {item.updated_at && <time>{formatTimestamp(item.updated_at)}</time>}
+                  <PublishingSteps steps={item.steps} />
                 </div>
               ))}
             </section>

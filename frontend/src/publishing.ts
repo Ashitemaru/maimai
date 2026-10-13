@@ -19,6 +19,33 @@ export interface PublishingCollection {
   title: string;
   sections: { id: number; title: string }[];
 }
+export interface PublishingOrderItem {
+  episode_id: number | null;
+  aid: number;
+  bvid: string;
+  title: string;
+  song_title: string | null;
+  chart_key: string | null;
+  version: string | null;
+  position: number;
+}
+export interface PublishingOrder {
+  season_id: number;
+  season_title: string;
+  section_id: number;
+  section_title: string;
+  status: 'ordered' | 'changes' | 'blocked';
+  revision: string;
+  current: PublishingOrderItem[];
+  desired: PublishingOrderItem[];
+  unmatched: { bvid: string; aid: number; title: string; reason: string }[];
+  target_position?: number | null;
+  target_bvid?: string;
+}
+export interface PublishingOrderCheck {
+  checked_at: string;
+  sections: PublishingOrder[];
+}
 export interface PublishingPlan {
   plan_id: string;
   bvid: string;
@@ -33,6 +60,7 @@ export interface PublishingPlan {
   section_id: number;
   section_title?: string;
   expires_at: string;
+  order?: PublishingOrder;
 }
 export interface PublishingJob {
   job_id: string;

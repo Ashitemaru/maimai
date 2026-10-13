@@ -3718,6 +3718,98 @@ textarea {
 .publishing-history time {
   margin-left: auto;
 }
+.publishing-order-report,
+.publishing-plan-order {
+  margin-top: var(--space-4);
+}
+.publishing-order-report > time,
+.publishing-order-heading > span,
+.publishing-order-video > span,
+.publishing-order-unmatched li > span,
+.publishing-order-neighbors dt {
+  color: var(--muted);
+  font-size: var(--font-ui);
+}
+.publishing-order-section {
+  padding: var(--space-3) 0;
+}
+.publishing-order-section + .publishing-order-section {
+  border-top: 1px solid var(--line);
+}
+.publishing-order-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.publishing-order-heading > span[data-order-status='ordered'] {
+  color: var(--green);
+}
+.publishing-order-heading > span[data-order-status='changes'],
+.publishing-order-heading > span[data-order-status='blocked'] {
+  color: var(--accent);
+}
+.publishing-order-changes,
+.publishing-order-unmatched,
+.publishing-job-steps {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-3) 0 0;
+}
+.publishing-order-changes,
+.publishing-order-unmatched {
+  display: grid;
+  gap: var(--space-3);
+}
+.publishing-order-changes > li {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+}
+.publishing-order-position {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.publishing-order-video,
+.publishing-order-unmatched li {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.publishing-plan-order h3 {
+  font-size: var(--font-body);
+  margin: 0 0 var(--space-2);
+}
+.publishing-plan-order p {
+  margin: var(--space-2) 0;
+}
+.publishing-order-neighbors {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+}
+.publishing-order-neighbors > div {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: var(--space-2);
+}
+.publishing-order-neighbors dd {
+  margin: 0;
+}
+.publishing-job-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  width: 100%;
+  color: var(--muted);
+  font-size: var(--font-ui);
+}
+.publishing-job-steps [data-complete='true'] {
+  color: var(--green);
+}
 @media (max-width: 600px) {
   .publishing-videos,
   .publishing-cover-previews {

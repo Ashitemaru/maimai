@@ -355,3 +355,20 @@ class BilibiliClient:
                 "csrf": self.csrf(),
             },
         )
+
+    def sort_section(self, header, episode_ids):
+        if len(episode_ids) != len(set(episode_ids)):
+            raise BilibiliError("合集排序存在重复稿件", status=409)
+        return self.request(
+            "POST",
+            MEMBER,
+            "/x2/creative/web/season/section/edit",
+            params={"csrf": self.csrf()},
+            json={
+                "section": {key: header[key] for key in ("id", "type", "seasonId", "title")},
+                "sorts": [
+                    {"id": episode_id, "sort": i + 1} for i, episode_id in enumerate(episode_ids)
+                ],
+                "captcha_token": "",
+            },
+        )

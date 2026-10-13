@@ -113,6 +113,9 @@ class FakeStore:
     def chart(self, key):
         return copy.deepcopy(self.chart_value) if key == self.chart_value["chart_key"] else None
 
+    def all_charts(self):
+        return [copy.deepcopy(self.chart_value), *copy.deepcopy(getattr(self, "extra_charts", []))]
+
 
 class FakeClient:
     def __init__(self):
@@ -158,15 +161,38 @@ class FakeClient:
 
     def membership(self, data, sections):
         for key, episodes in self.collection_members.items():
-            if episodes:
-                return {"section_id": key, "episode_id": episodes[0]["id"]}
+            for episode in episodes:
+                if episode["aid"] == 456:
+                    return {"section_id": key, "episode_id": episode["id"]}
         return None
 
     def section(self, section_id):
+        episodes = []
+        for episode in self.collection_members[section_id]:
+            defaults = {"cid": 789, "bvid": BV, "title": "【maimai】Example Master13.9 AP"}
+            episodes.append(defaults | copy.deepcopy(episode))
         return {
-            "section": {"id": section_id},
-            "episodes": copy.deepcopy(self.collection_members[section_id]),
+            "section": {"id": section_id, "seasonId": 1, "type": 0, "title": str(section_id)},
+            "episodes": episodes,
         }
+
+    def videos(self, page):
+        return {
+            "items": [
+                {"bvid": BV, "title": self.data["archive"]["title"]},
+                *getattr(self, "extra_videos", []),
+            ],
+            "page": 1,
+            "has_more": False,
+        }
+
+    def sort_section(self, header, ids):
+        self.calls.append("sort")
+        rows = {episode["id"]: episode for episode in self.collection_members[header["id"]]}
+        if self.fail != "sort_unapplied":
+            self.collection_members[header["id"]] = [rows[key] for key in ids]
+        if self.fail in ("sort", "sort_unapplied"):
+            raise BilibiliError("sort timed out", uncertain=True)
 
     def upload_cover(self, value):
         self.calls.append("cover")
@@ -195,7 +221,7 @@ class FakeClient:
         self.calls.append("add")
         if self.fail == "add":
             raise BilibiliError("add timed out", uncertain=True)
-        self.collection_members[section_id] = [{"aid": 456, "cid": 789, "id": 222}]
+        self.collection_members[section_id].append({"aid": 456, "cid": 789, "id": 222})
         self.data["in_season"] = True
 
     def start_login(self):

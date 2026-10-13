@@ -35,6 +35,38 @@ const chart = {
   provider_fc: 'app',
   achievement: 100.9999,
 };
+const orderItem = (aid, bvid, song_title, version, position) => ({
+  episode_id: aid,
+  aid,
+  bvid,
+  title: `【maimai】${song_title} Expert13.0 AP`,
+  song_title,
+  chart_key: `${aid}:2`,
+  version,
+  position,
+});
+const previousVideo = orderItem(101, 'BV1AAA111111', 'Earlier song', 'PiNK', 1);
+const targetVideo = orderItem(102, bvid, chart.title, 'UNiVERSE', 2);
+const nextVideo = orderItem(103, 'BV1BBB111111', 'Later song', 'FESTiVAL', 3);
+const desiredOrder = {
+  season_id: 3,
+  season_title: 'AP collection',
+  section_id: 8,
+  section_title: '13.0',
+  status: 'changes',
+  revision: 'order-fixture',
+  current: [{ ...nextVideo, position: 1 }, targetVideo, { ...previousVideo, position: 3 }],
+  desired: [previousVideo, targetVideo, nextVideo],
+  unmatched: [],
+  target_bvid: bvid,
+  target_position: 2,
+};
+const unresolvedVideo = {
+  aid: 104,
+  bvid: 'BV1CCC111111',
+  title: 'Unidentified song',
+  reason: '无法确定日服版本',
+};
 const counts = { total: 1, complete: 1, ap: 1, remaining: 0, conflicts: 0, legacy_complete: 0 };
 const server = http.createServer(async (request, response) => {
   try {
@@ -70,6 +102,9 @@ try {
     let retryCount = 0;
     let latestPlan = null;
     let persistedJob = null;
+    let blockedOrder = false;
+    let orderChecks = 0;
+    const requests = [];
     const prepared = [];
     const applied = [];
     await context.route('**/*', async (route) => {
@@ -107,6 +142,7 @@ try {
     await context.route('**/api/**', async (route) => {
       const request = route.request();
       const pathname = new URL(request.url()).pathname;
+      requests.push({ pathname, method: request.method() });
       const send = (json, status = 200) => route.fulfill({ json, status });
       if (pathname === '/api/bilibili/status')
         return send({ connected, account: connected ? { mid: 1, name: 'Fixture user' } : null });
@@ -146,6 +182,30 @@ try {
             },
           ],
         });
+      if (pathname === '/api/bilibili/collections/order') {
+        assert.equal(request.method(), 'GET');
+        orderChecks += 1;
+        return send({
+          checked_at: '2026-10-14T06:00:00+08:00',
+          sections: [
+            desiredOrder,
+            {
+              ...desiredOrder,
+              section_id: 9,
+              section_title: '13.1',
+              status: 'ordered',
+              current: desiredOrder.desired,
+            },
+            {
+              ...desiredOrder,
+              section_id: 10,
+              section_title: '13.2',
+              status: 'blocked',
+              unmatched: [unresolvedVideo],
+            },
+          ],
+        });
+      }
       if (pathname === '/api/bilibili/jobs')
         return send({ items: persistedJob ? [persistedJob] : [] });
       if (pathname === '/api/bilibili/jobs/job-1')
@@ -158,7 +218,12 @@ try {
         assert.equal(request.method(), 'POST');
         assert.equal(request.postData(), null, 'Retry must use the server stored PNGs');
         retryCount += 1;
-        persistedJob = { ...persistedJob, state: 'complete', error: null };
+        persistedJob = {
+          ...persistedJob,
+          state: 'complete',
+          steps: { metadata: 'verified', collection: 'verified', order: 'verified' },
+          error: null,
+        };
         return send(persistedJob);
       }
       if (pathname === '/api/bilibili/prepare') {
@@ -174,6 +239,14 @@ try {
           title: '【maimai】Our Wrenally Expert13.0 AP',
           chart,
           expires_at: '2030-01-01T00:00:00Z',
+          order: blockedOrder
+            ? {
+                ...desiredOrder,
+                status: 'blocked',
+                target_position: null,
+                unmatched: [unresolvedVideo],
+              }
+            : desiredOrder,
         };
         return send(latestPlan);
       }
@@ -193,7 +266,7 @@ try {
           job_id: 'job-1',
           bvid,
           state: 'uncertain',
-          steps: {},
+          steps: { metadata: 'verified', collection: 'verified', order: 'submitted' },
           error: '模拟网络中断',
         };
         return send(persistedJob);
@@ -227,6 +300,31 @@ try {
       (await qr.getAttribute('src')).startsWith('data:image/png;base64,'),
       'QR must be generated locally',
     );
+    await page.getByRole('button', { name: '检查合集顺序', exact: true }).waitFor();
+    assert.equal(orderChecks, 0, 'Collection ordering must only be checked on demand');
+    const postCount = requests.filter((item) => item.method === 'POST').length;
+    await page.getByRole('button', { name: '检查合集顺序', exact: true }).click();
+    await page.getByText('顺序有差异 · 3 条', { exact: true }).waitFor();
+    await page.getByText('顺序一致 · 3 条', { exact: true }).waitFor();
+    await page.getByText('无法确定顺序 · 3 条', { exact: true }).waitFor();
+    assert.equal(orderChecks, 1);
+    assert.equal(
+      requests.filter((item) => item.method === 'POST').length,
+      postCount,
+      'Checking order must never POST',
+    );
+    assert.equal(
+      await page.getByLabel('13.0 顺序差异').getByText('3 → 1', { exact: true }).count(),
+      1,
+    );
+    assert.equal(
+      await page.getByLabel('13.0 顺序差异').getByText('PiNK', { exact: true }).count(),
+      1,
+    );
+    assert.equal(
+      await page.getByLabel('13.0 顺序差异').getByText('1 → 3', { exact: true }).count(),
+      1,
+    );
     await page.getByRole('button', { name: /Our Wrenally old title/ }).click();
     await page.getByLabel('谱面', { exact: true }).fill('Our Wrenally');
     await page.getByRole('button', { name: /Our Wrenally STD/ }).click();
@@ -242,6 +340,22 @@ try {
       '8',
       'Unique matching constant section is selected',
     );
+    blockedOrder = true;
+    await page.getByRole('button', { name: '生成预览', exact: true }).click();
+    await page.getByRole('heading', { name: '合集顺序待处理', exact: true }).waitFor();
+    assert(
+      await page.getByRole('button', { name: '确认整理', exact: true }).isDisabled(),
+      'Unknown ordering prevents submission',
+    );
+    assert.equal(
+      await page
+        .locator('.publishing-plan-order')
+        .getByText('Unidentified song', { exact: true })
+        .count(),
+      1,
+    );
+    assert.equal(applied.length, 0);
+    blockedOrder = false;
     await page.getByRole('button', { name: '生成预览', exact: true }).click();
     await page.getByText('版本 Logo 载入失败', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '确认整理', exact: true }).count(), 0);
@@ -254,6 +368,17 @@ try {
       '【maimai】Our Wrenally Expert13.0 AP',
     );
     assert.equal(applied.length, 0, 'Preview must never apply remotely');
+    const orderPreview = page.locator('.publishing-plan-order');
+    assert.equal(
+      await orderPreview.getByText('将排在第 2 位，共 3 条', { exact: true }).count(),
+      1,
+    );
+    assert.equal(await orderPreview.getByText('Earlier song', { exact: true }).count(), 1);
+    assert.equal(await orderPreview.getByText('Later song', { exact: true }).count(), 1);
+    assert.equal(
+      await orderPreview.getByText('本次会调整「13.0」小节顺序', { exact: true }).count(),
+      1,
+    );
     const normal = await page.getByAltText('16:9 投稿封面预览').getAttribute('src');
     await page.getByLabel('封面左右镜像').check();
     assert.equal(
@@ -287,10 +412,22 @@ try {
     assert(mirrorMatches, 'The entire rendered cover must mirror, not only the jacket');
     await page.getByRole('button', { name: '确认整理', exact: true }).click();
     await page.getByRole('button', { name: '重试整理', exact: true }).waitFor();
+    assert.equal(
+      await page
+        .locator('.publishing-preview')
+        .getByText('合集排序 · 待确认', { exact: true })
+        .count(),
+      1,
+    );
     const frozenImages = { cover16: applied[0].cover16, cover43: applied[0].cover43 };
     failLogo = true;
     await page.reload();
     await page.getByRole('button', { name: '继续整理', exact: true }).click();
+    assert.equal(
+      orderChecks,
+      1,
+      'History recovery must use the frozen plan, not a new ordering query',
+    );
     assert.equal(
       await page.getByAltText('16:9 投稿封面预览').getAttribute('src'),
       frozenImages.cover16,
@@ -301,6 +438,13 @@ try {
     );
     await page.getByRole('button', { name: '重试整理', exact: true }).click();
     await page.getByRole('button', { name: '已整理', exact: true }).waitFor();
+    assert.equal(
+      await page
+        .locator('.publishing-preview')
+        .getByText('合集排序 · 已完成', { exact: true })
+        .count(),
+      1,
+    );
     assert.equal(applied.length, 1);
     assert.equal(retryCount, 1);
     assert.equal(applied[0].plan_id, `plan-${planCount}`);
@@ -329,6 +473,17 @@ try {
       '',
       'Ambiguous section matches must remain unselected',
     );
+    persistedJob = { ...persistedJob, state: 'failed' };
+    delete latestPlan.order;
+    await page.getByRole('button', { name: '刷新', exact: true }).click();
+    await page.getByRole('button', { name: '继续整理', exact: true }).click();
+    await page.getByText('请重新生成预览以确认合集顺序', { exact: true }).waitFor();
+    assert(
+      await page.getByRole('button', { name: '重试整理', exact: true }).isDisabled(),
+      'Old unfinished plans without ordering evidence must not submit',
+    );
+    assert.equal(applied.length, 1);
+    assert.equal(retryCount, 1);
     checks.push({
       width,
       prepares: prepared.length,
@@ -336,6 +491,10 @@ try {
       dimensions: ['1920x1080', '1440x1080'],
       mirrored: true,
       explicitAchievement: true,
+      independentOrderCheck: true,
+      orderBlockedPreventsSubmission: true,
+      orderRetryVerified: true,
+      legacyPlanWithoutOrderBlocked: true,
     });
     await context.close();
   }

@@ -320,17 +320,38 @@ DELETE /api/bilibili/session -> removes the locally saved Bilibili session.
 GET /api/bilibili/videos?page=1 -> {items,has_more,page}
 GET /api/bilibili/videos/{bvid} -> existing title, both covers and revision.
 GET /api/bilibili/collections -> {items:[{id,title,sections:[{id,title}]}]}
+GET /api/bilibili/collections/order -> {checked_at,sections:[OrderReport]}
+  Explicit read-only inspection of all owned collection sections. Each OrderReport
+  has season_id, season_title, section_id, section_title, revision,
+  status (ordered|changes|blocked), current, desired and unmatched.
+  Order items contain episode_id, aid, bvid, title, song_title, chart_key, version
+  and position. Positions are one-based; a proposed new item has episode_id=null.
+  Unmatched items include bvid, aid, title and reason. Unknown identities or versions
+  block multi-item sorting; empty/single-item sections require no comparison.
+  Uses chart-specific JP release order, then NFKC/casefold song names; equal keys
+  retain their relative order. Re:MASTER uses its own release and PLUS stays separate.
 POST /api/bilibili/prepare
   {bvid,chart_key,achievement,combo,constant,section_id,mirror_horizontal?,
    title_override?,include_type?,version_override?} -> frozen plan with plan_id.
   The score is supplied explicitly for this video; a current personal best is never
   substituted. Plans expire after one hour. Existing STD/DX suffixes, Utage notation
   and the historical mirrored-title exception are preserved by default.
+  Explicit chart selection saves an account-scoped BVID/chart identity binding in
+  the personal database, including when another item blocks the proposed order.
+  This permits several previously unrecognized videos to be associated in turn.
+  Bindings retain identity evidence, not a frozen candidate release version.
+  The plan also freezes order: an OrderReport with target_bvid and target_position.
+  The preview includes the proposed video's position before any external writes.
+  A blocked plan can be inspected but cannot be applied. Missing order information
+  in an older plan requires regeneration instead of bypassing the new checks.
 POST /api/bilibili/apply {plan_id,cover16,cover43} -> persistent job receipt.
   cover16 and cover43 are PNG data URLs, exactly 1920x1080 and 1440x1080.
   Rechecks ownership and the frozen revision before updating covers/title/section.
   The existing archive metadata and video files are preserved. Unsupported archive
   configurations are rejected before editing. This does not upload a new video.
+  Checks the frozen section before any upload/edit, then verifies exact membership
+  before reordering. Preserves section metadata and sends all episode IDs, never
+  only the newly added video. A job completes only after order has been read back.
 GET /api/bilibili/jobs -> recent account-owned jobs.
 GET /api/bilibili/jobs/{job_id} -> job, frozen plan and saved PNGs when unfinished.
 POST /api/bilibili/jobs/{job_id}/retry -> resumes with those exact saved PNGs.
