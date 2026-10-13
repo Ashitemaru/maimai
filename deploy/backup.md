@@ -79,13 +79,15 @@ restic -r "$HOME/Backups/mai-journal" \
 python3 -c 'from pathlib import Path; from deploy.backup_data import verify; verify(Path("/tmp/mai-journal-restore-check/payload")); print("verified")'
 ```
 
-此演练验证数据可恢复，不宣称在新机器上完整启动过生产服务。
+此命令验证数据可恢复，不包含服务启动验收。完整恢复还需执行下面的整机恢复顺序；每次实际演练应分别记录文件/数据库、应用 HTTPS、华立沙箱与代理的结果，不能用其中一项代替其他项。
+
+最近一次实际启动验收见 [2026-10-14 恢复演练](recovery-drill-20261014.md)，其中分别记录已通过项目和未覆盖的机器切换步骤。
 
 ## 整机故障后的恢复顺序
 
 1. 在新服务器完成 [基础部署](README.md) 的用户、Python、Caddy、目录和权限准备，保持应用及部署定时器停止。取回仓库与匹配密码，完成上述隔离恢复校验。
 2. 将 `payload/shared`、`payload/releases` 及相对 `current` 链接复制到空的 `/srv/mai-journal`，设为 `maimai:maimai`；数据库/凭据 0600，私有目录 0700。将 `config/mai-journal` 恢复到 `/etc/mai-journal`，root:root 0600。先将应用环境中的 `MAIMAI_WAHLAP_ENABLED` 设为 `0`，保持取分 socket 停止。手动安装并检查 `config/system` 中的代理、单元及 sudoers，不直接覆盖不同机器的系统配置。
-3. 按当前 `requirements.lock` 重建该 release 内的 venv。灾难恢复后清空 `shared/runtime/auth.sqlite3` 中的 `sessions` 表，让设备重新使用 Master Key 登录，避免恢复已撤销的旧会话。此操作在清单验证之后执行。
+3. 在恢复后的最终 release 路径重建 venv；不要复制旧 venv（启动脚本包含绝对路径）。新版快照包含 `dependencies/manifest.json` 和固定哈希 wheel，使用已审核部署引导代码的 `dependency_bundle(release, check_host=True)` / `Host().install(release)` 验证并离线安装，目标为 CPython 3.14 / Linux x86_64，glibc 下限以清单为准。旧快照没有 wheel 时，须在受控构建机按该快照的 `requirements.lock` 构建并验证匹配的 wheel 包，再传入恢复机；禁止随手换成最新依赖或跳过哈希。灾难恢复后清空 `shared/runtime/auth.sqlite3` 中的 `sessions` 表，让设备重新使用 Master Key 登录，避免恢复已撤销的旧会话。此操作在清单验证之后执行。
 4. 从当前 release 的 `deploy/` 恢复 root 管理的部署/备份引导代码。按照 [华立运行环境](wahlap-runtime.md) 重建 Wine/bubblewrap 和独立 worker，安装脚本从备份的 `release_sha` 对应 Git 提交取得，严格使用其 `wahlap-runtime.lock.json`。按照 [独立代理出口](../docs/WAHLAP_PROXY.md) 重装固定哈希的 Mihomo、专用用户和网络服务：从备份的 `egress.json` 私密提取选定节点交给安装器，重新生成成对的本地 SOCKS 口令和 `0640` 对应组权限，恢复 DNS 及 broker drop-in。不要只恢复 broker 基础单元而漏掉 drop-in。二进制、外部运行环境和 `/run` 内的命名空间没有包含在备份里，网页恢复不等于华立链路恢复。完成无账号连接探测与断网不回退检查后，再启用 socket 和 `MAIMAI_WAHLAP_ENABLED=1`；找不到可用出口时维持禁用，网站其他功能仍可恢复。
 5. `systemctl daemon-reload` 后启动应用，确认本地 `/api/ready` 中 release_sha 与备份一致，再确认 HTTPS、Master Key 登录、AP 数量、待核 buffer、机厅和人工裁决。无需真实二维码即可做这些检查。
 6. 最后恢复部署、备份定时器和 Mac 拉取，重新建立一次加密快照。替换服务器后须独立验证新 SSH 主机密钥并更新 Mac 的 known_hosts。
