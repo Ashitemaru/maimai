@@ -185,7 +185,7 @@ try {
             ok: true,
             source: 'divingfish_upload',
             uploaded_at: '2026-10-13T04:25:00+08:00',
-            records: 118,
+            records: uploadCount,
             uploaded_count: uploadCount,
             verification_state: 'verified',
             verified_count: 118,

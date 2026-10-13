@@ -100,6 +100,15 @@ SHA is a no-op, so ordinary timer ticks make just one unauthenticated GitHub API
 request. GitHub errors/rate limits keep the running version and are retried on a
 later timer run; a release in progress is not an error.
 
+Release archives stream into a private `downloads/` cache. Interrupted transfers
+retain their bytes and resume on the next connection or timer run; the partial
+filename includes the expected SHA-256. A resumed response must match the exact
+requested byte range. If GitHub ignores Range, the file restarts rather than
+appending incompatible data. Every complete archive is checked against SHA256SUMS
+before extraction. Each run limits archive transfers to four connections and
+approximately eight minutes; network failures leave the running app untouched.
+The cache retains only the current target release and is removed after extraction.
+
 The deployer writes a recovery journal, stops the single application service
 (210-second systemd budget, allowing an active game sync to finish session cleanup), makes SQLite online-backup copies of personal and
 adjudications databases (plus the session database when present), changes

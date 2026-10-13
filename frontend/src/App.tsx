@@ -814,6 +814,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   }
   function chooseCover(chart: Chart) {
     const achievement = chart.provider_achievement ?? chart.achievement;
+    const savedCombo = chart.is_ap ? (chart.status === 'app' ? 'app' : 'ap') : 'none';
     setCover((value) => ({
       ...value,
       chart,
@@ -825,9 +826,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
             : chart.provider_fc === 'ap'
               ? 'ap'
               : 'none'
-          : chart.is_complete
-            ? 'ap'
-            : 'none',
+          : savedCombo,
       version: '',
     }));
     closeModal();

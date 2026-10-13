@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -31,6 +32,9 @@ SERVICE = "mai-journal.service"
 READY_URL = "http://127.0.0.1:8766/api/ready"
 MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_EXTRACTED = 256 * 1024 * 1024
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_SECONDS = 480
+DOWNLOAD_CHUNK = 64 * 1024
 DEPENDENCY_SCHEMA = 1
 PIP_VERSION = "26.2.1"
 WHEEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*\.whl\Z")
@@ -175,15 +179,124 @@ class GitHub:
         return assets
 
     def download(self, assets, sha, destination):
+        valid_sha(sha)
         name = f"mai-journal-{sha}.tar.gz"
         checksums = self.read(assets["SHA256SUMS"], 65536)
-        data = self.read(assets[name], MAX_ARCHIVE)
-        if checksums is None or data is None:
+        if checksums is None:
             raise DeployError("A release asset disappeared before download")
         expected = checksum_for(checksums, name)
-        if hashlib.sha256(data).hexdigest() != expected:
-            raise DeployError("Release archive checksum mismatch")
-        destination.write_bytes(data)
+        url = https_url(assets[name], DOWNLOAD_HOSTS)
+        partial = destination.with_name(f"{destination.name}.{expected}.part")
+        for path in (destination, partial):
+            validate_download_file(path)
+            if path.exists() and file_digest(path) == expected:
+                if path == partial:
+                    partial.replace(destination)
+                return
+        destination.unlink(missing_ok=True)
+        deadline = time.monotonic() + DOWNLOAD_SECONDS
+        total = None
+        for attempt in range(DOWNLOAD_ATTEMPTS):
+            if time.monotonic() >= deadline:
+                break
+            offset = partial.stat().st_size if partial.exists() else 0
+            headers = {"User-Agent": "mai-journal-pull-deploy/1", "Accept-Encoding": "identity"}
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
+            request = urllib.request.Request(url, headers=headers)
+            try:
+                timeout = min(45, max(1, deadline - time.monotonic()))
+                with self.opener.open(request, timeout=timeout) as response:
+                    https_url(response.geturl(), DOWNLOAD_HOSTS)
+                    response_total, append = download_response(response, offset)
+                    if total is not None and response_total is not None and total != response_total:
+                        raise DeployError("Archive total length changed during download")
+                    total = response_total
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+                    flags |= os.O_APPEND if append else os.O_TRUNC
+                    with os.fdopen(os.open(partial, flags, 0o600), "wb", buffering=0) as handle:
+                        received = offset if append else 0
+                        reached_eof = False
+                        reader = getattr(response, "read1", response.read)
+                        while time.monotonic() < deadline:
+                            chunk = reader(DOWNLOAD_CHUNK)
+                            if not chunk:
+                                reached_eof = True
+                                break
+                            received += len(chunk)
+                            if received > MAX_ARCHIVE or (total is not None and received > total):
+                                raise DeployError("Archive response exceeded its declared size")
+                            handle.write(chunk)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    if (total is not None and received != total) or not reached_eof:
+                        raise OSError("incomplete archive body")
+                    if file_digest(partial) != expected:
+                        raise DeployError("Release archive checksum mismatch")
+                    partial.replace(destination)
+                    return
+            except DeployError:
+                partial.unlink(missing_ok=True)
+                raise
+            except urllib.error.HTTPError as exc:
+                exc.close()
+                if exc.code == 416:
+                    partial.unlink(missing_ok=True)
+                    raise DeployError(
+                        "Cached archive range was rejected; retry starts fresh"
+                    ) from None
+                if exc.code not in {408, 429, 500, 502, 503, 504}:
+                    raise DeployError(
+                        f"GitHub archive HTTP {exc.code}; current service was not changed"
+                    ) from None
+            except (OSError, urllib.error.URLError, http.client.HTTPException):
+                pass
+            saved = partial.stat().st_size if partial.exists() else 0
+            log(f"Archive transfer interrupted; saved {saved} bytes (attempt {attempt + 1})")
+        saved = partial.stat().st_size if partial.exists() else 0
+        raise DeployError(
+            f"Archive transfer incomplete; retained {saved} bytes for the next timer run"
+        )
+
+
+def validate_download_file(path):
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise DeployError("Archive download cache must contain regular files only")
+    if path.exists() and path.stat().st_size > MAX_ARCHIVE:
+        raise DeployError("Cached archive exceeded its size limit")
+
+
+def file_digest(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def download_response(response, offset):
+    """A range must start at the persisted byte; an ignored range restarts the file."""
+    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+        raise DeployError("Archive response must not use content encoding")
+    length = response.headers.get("Content-Length")
+    if length is not None:
+        if not re.fullmatch(r"[0-9]+", length) or int(length) > MAX_ARCHIVE:
+            raise DeployError("Invalid archive response length")
+        length = int(length)
+    content_range = response.headers.get("Content-Range")
+    if response.status == 206:
+        match = re.fullmatch(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)", content_range or "")
+        if match is None:
+            raise DeployError("Missing or invalid archive Content-Range")
+        start, end, total = map(int, match.groups())
+        if (
+            start != offset
+            or not start <= end < total <= MAX_ARCHIVE
+            or end != total - 1
+            or (length is not None and length != end - start + 1)
+        ):
+            raise DeployError("Archive Content-Range does not match the requested remainder")
+        return total, bool(offset)
+    if response.status != 200 or content_range is not None:
+        raise DeployError("Unexpected archive download response")
+    return length, False
 
 
 def checksum_for(data, name):
@@ -561,14 +674,26 @@ class Deployer:
             # Only inactive candidates reach preparation. A previous interrupted
             # venv install may be incomplete; rebuild instead of trusting it.
             shutil.rmtree(release)
+        downloads = self.root / "downloads"
+        if downloads.is_symlink() or (downloads.exists() and not downloads.is_dir()):
+            raise DeployError("Archive cache must be a real directory")
+        downloads.mkdir(mode=0o700, exist_ok=True)
+        name = f"mai-journal-{sha}.tar.gz"
+        for path in downloads.iterdir():
+            if not path.name.startswith(name) and re.fullmatch(
+                r"mai-journal-[0-9a-f]{40}\.tar\.gz(?:\.[0-9a-f]{64}\.part)?", path.name
+            ):
+                validate_download_file(path)
+                path.unlink()
+        archive = downloads / name
+        self.github.download(assets, sha, archive)
         with tempfile.TemporaryDirectory(prefix=".prepare-", dir=self.releases) as temp:
             staging = Path(temp)
-            archive = staging / "release.tar.gz"
-            self.github.download(assets, sha, archive)
             extracted = staging / "code"
             extracted.mkdir()
             extract_archive(archive, extracted, sha)
             extracted.replace(release)
+        archive.unlink()
         try:
             self.host.install(release)
             (release / "release.env").write_text(f"MAIMAI_RELEASE_SHA={sha}\n")

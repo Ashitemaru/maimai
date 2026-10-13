@@ -28,6 +28,31 @@ OTHER = "c" * 40
 REPO = "fixture/mai-journal"
 
 
+class ArchiveResponse:
+    def __init__(self, chunks, *, status=200, headers=None, url=None):
+        self.chunks = iter(chunks)
+        self.status = status
+        self.headers = headers or {}
+        self.url = url or "https://release-assets.githubusercontent.com/fixture"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return None
+
+    def geturl(self):
+        return self.url
+
+    def read1(self, _):
+        chunk = next(self.chunks, b"")
+        if isinstance(chunk, Exception):
+            raise chunk
+        return chunk
+
+    read = read1
+
+
 def archive_bytes(sha=NEW, additions=(), replacements=None):
     contents = {
         "RELEASE_SHA": sha + "\n",
@@ -208,10 +233,16 @@ class ArchiveTests(unittest.TestCase):
         name = f"mai-journal-{NEW}.tar.gz"
         content = archive_bytes()
         manifest = hashlib.sha256(content).hexdigest().encode() + b"  " + name.encode()
-        assets = {name: "archive", "SHA256SUMS": "checksum"}
-        with patch.object(github, "read", side_effect=[manifest, content]):
+        assets = {name: "https://github.com/fixture/archive", "SHA256SUMS": "checksum"}
+        with (
+            patch.object(github, "read", return_value=manifest),
+            patch.object(github.opener, "open", return_value=ArchiveResponse([content])),
+        ):
             github.download(assets, NEW, self.root / "download.tar.gz")
-        with patch.object(github, "read", side_effect=[manifest, b"corrupted"]):
+        with (
+            patch.object(github, "read", return_value=manifest),
+            patch.object(github.opener, "open", return_value=ArchiveResponse([b"corrupted"])),
+        ):
             with self.assertRaisesRegex(DeployError, "checksum mismatch"):
                 github.download(assets, NEW, self.root / "bad.tar.gz")
 
@@ -229,6 +260,151 @@ class ArchiveTests(unittest.TestCase):
             https_url("https://release-assets.githubusercontent.com/a", DOWNLOAD_HOSTS),
             "https://release-assets.githubusercontent.com/a",
         )
+
+
+class ArchiveDownloadTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.destination = self.root / "archive.tar.gz"
+        self.github = GitHub(REPO)
+        self.content = b"first-second-last"
+        self.name = f"mai-journal-{NEW}.tar.gz"
+        self.digest = hashlib.sha256(self.content).hexdigest()
+        self.manifest = f"{self.digest} {self.name}".encode()
+        self.assets = {self.name: "https://github.com/fixture/archive", "SHA256SUMS": "checksum"}
+        self.partial = self.destination.with_name(f"{self.destination.name}.{self.digest}.part")
+        patcher = patch.object(self.github, "read", return_value=self.manifest)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def transfer(self, replies):
+        with patch.object(self.github.opener, "open", side_effect=replies) as opened:
+            self.github.download(self.assets, NEW, self.destination)
+        return opened
+
+    def remainder(self, offset):
+        return ArchiveResponse(
+            [self.content[offset:]],
+            status=206,
+            headers={
+                "Content-Range": f"bytes {offset}-{len(self.content) - 1}/{len(self.content)}",
+                "Content-Length": str(len(self.content) - offset),
+            },
+        )
+
+    def test_interrupted_attempt_resumes_only_bytes_written_to_disk(self):
+        opened = self.transfer(
+            [
+                ArchiveResponse([self.content[:6], TimeoutError("fixture timeout")]),
+                self.remainder(6),
+            ]
+        )
+        self.assertEqual(self.destination.read_bytes(), self.content)
+        self.assertEqual(opened.call_args_list[1].args[0].get_header("Range"), "bytes=6-")
+        self.assertIsNone(opened.call_args_list[0].args[0].get_header("Range"))
+        self.assertFalse(self.partial.exists())
+
+    def test_partial_survives_failed_timer_and_fresh_downloader_resumes(self):
+        with patch("deploy.deploy_release.DOWNLOAD_ATTEMPTS", 1):
+            with self.assertRaisesRegex(DeployError, "retained 6 bytes"):
+                self.transfer([ArchiveResponse([self.content[:6], TimeoutError()])])
+        self.assertEqual(self.partial.read_bytes(), self.content[:6])
+        self.assertFalse(self.destination.exists())
+        fresh = GitHub(REPO)
+        with (
+            patch.object(fresh, "read", return_value=self.manifest),
+            patch.object(fresh.opener, "open", return_value=self.remainder(6)) as opened,
+        ):
+            fresh.download(self.assets, NEW, self.destination)
+        self.assertEqual(opened.call_args.args[0].get_header("Range"), "bytes=6-")
+        self.assertEqual(self.destination.read_bytes(), self.content)
+
+    def test_server_ignoring_range_restarts_without_appending(self):
+        self.partial.write_bytes(self.content[:6])
+        opened = self.transfer(
+            [ArchiveResponse([self.content], headers={"Content-Length": str(len(self.content))})]
+        )
+        self.assertEqual(opened.call_args.args[0].get_header("Range"), "bytes=6-")
+        self.assertEqual(self.destination.read_bytes(), self.content)
+
+    def test_short_body_resumes_instead_of_hashing_incomplete_file(self):
+        opened = self.transfer(
+            [
+                ArchiveResponse(
+                    [self.content[:6]], headers={"Content-Length": str(len(self.content))}
+                ),
+                self.remainder(6),
+            ]
+        )
+        self.assertEqual(opened.call_count, 2)
+        self.assertEqual(self.destination.read_bytes(), self.content)
+
+    def test_complete_partial_from_previous_run_is_verified_without_redownload(self):
+        self.partial.write_bytes(self.content)
+        opened = self.transfer([])
+        opened.assert_not_called()
+        self.assertEqual(self.destination.read_bytes(), self.content)
+
+    def test_invalid_ranges_are_rejected_and_partial_is_discarded(self):
+        headers = [
+            {},
+            {"Content-Range": "bytes 0-16/17"},
+            {"Content-Range": "bytes 6-15/17"},
+            {"Content-Range": "bytes 6-16/*"},
+            {"Content-Range": "bytes 6-16/17", "Content-Length": "12"},
+            {"Content-Range": "bytes 6-16/17", "Content-Encoding": "gzip"},
+            {"Content-Range": "bytes 6-999999999/1000000000"},
+        ]
+        for row in headers:
+            with self.subTest(headers=row):
+                self.partial.write_bytes(self.content[:6])
+                with self.assertRaises(DeployError):
+                    self.transfer([ArchiveResponse([self.content[6:]], status=206, headers=row)])
+                self.assertFalse(self.partial.exists())
+                self.assertFalse(self.destination.exists())
+
+    def test_checksum_failure_discards_completed_bad_partial(self):
+        with self.assertRaisesRegex(DeployError, "checksum mismatch"):
+            self.transfer([ArchiveResponse([b"wrong payload"])])
+        self.assertFalse(self.partial.exists())
+        self.assertFalse(self.destination.exists())
+
+    def test_declared_or_actual_oversize_fails_before_activation(self):
+        with patch("deploy.deploy_release.MAX_ARCHIVE", 5):
+            for headers in ({"Content-Length": "6"}, {}):
+                with self.subTest(headers=headers), self.assertRaises(DeployError):
+                    self.transfer([ArchiveResponse([b"123456"], headers=headers)])
+                self.assertFalse(self.partial.exists())
+
+    def test_cached_symlinks_are_never_read_or_written(self):
+        outside = self.root / "outside"
+        outside.write_bytes(b"untouched")
+        for path in (self.destination, self.partial):
+            with self.subTest(path=path):
+                path.symlink_to(outside)
+                with self.assertRaisesRegex(DeployError, "regular files"):
+                    self.transfer([])
+                self.assertEqual(outside.read_bytes(), b"untouched")
+                path.unlink()
+
+    def test_response_destination_still_requires_official_https(self):
+        with self.assertRaisesRegex(DeployError, "unofficial"):
+            self.transfer([ArchiveResponse([self.content], url="https://example.test/archive")])
+        self.assertFalse(self.destination.exists())
+
+    def test_retry_budget_preserves_bytes_without_an_unbounded_loop(self):
+        with patch("deploy.deploy_release.DOWNLOAD_ATTEMPTS", 2):
+            with self.assertRaisesRegex(DeployError, "retained 6 bytes"):
+                self.transfer([ArchiveResponse([self.content[:6], TimeoutError()]), TimeoutError()])
+        self.assertEqual(self.partial.read_bytes(), self.content[:6])
+
+    def test_deadline_keeps_progress_even_without_content_length(self):
+        with patch("deploy.deploy_release.time.monotonic", side_effect=[0, 1, 2, 3, 500, 500]):
+            with self.assertRaisesRegex(DeployError, "retained 6 bytes"):
+                self.transfer([ArchiveResponse([self.content[:6], self.content[6:]])])
+        self.assertEqual(self.partial.read_bytes(), self.content[:6])
 
 
 class GitHubApprovalTests(unittest.TestCase):
@@ -360,6 +536,58 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.deployer.run(), "superseded")
         self.assertTrue(all(event[0] == "install" for event in self.host.events))
         self.assertFalse(self.deployer.journal.exists())
+
+    def test_partial_download_failure_keeps_old_service_and_survives_timer(self):
+        github = GitHub(REPO)
+        content = archive_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        name = f"mai-journal-{NEW}.tar.gz"
+        destination = self.root / "downloads" / name
+        partial = destination.with_name(f"{name}.{digest}.part")
+        manifest = f"{digest} {name}".encode()
+        assets = {name: "https://github.com/fixture/archive", "SHA256SUMS": "checksum"}
+        with (
+            patch.object(github, "read", return_value=manifest),
+            patch.object(github, "main_sha", return_value=NEW),
+            patch.object(github, "release", return_value=assets),
+            patch("deploy.deploy_release.DOWNLOAD_ATTEMPTS", 1),
+            patch.object(
+                github.opener, "open", return_value=ArchiveResponse([content[:20], TimeoutError()])
+            ),
+        ):
+            with self.assertRaisesRegex(DeployError, "retained 20 bytes"):
+                Deployer(self.root, github, self.host).run()
+        self.assertEqual(partial.read_bytes(), content[:20])
+        self.assertEqual(self.host.events, [])
+        self.assertEqual(self.deployer.installed(), OLD)
+        self.assertFalse(self.deployer.journal.exists())
+        with (
+            patch.object(github, "read", return_value=manifest),
+            patch.object(github, "main_sha", return_value=NEW),
+            patch.object(github, "release", return_value=assets),
+            patch.object(
+                github.opener,
+                "open",
+                return_value=ArchiveResponse(
+                    [content[20:]],
+                    status=206,
+                    headers={"Content-Range": f"bytes 20-{len(content) - 1}/{len(content)}"},
+                ),
+            ) as opened,
+        ):
+            self.assertEqual(Deployer(self.root, github, self.host).run(), "deployed")
+        self.assertEqual(opened.call_args.args[0].get_header("Range"), "bytes=20-")
+        self.assertFalse(partial.exists())
+        self.assertFalse(destination.exists())
+
+    def test_download_cache_symlink_is_rejected_before_network_or_service_changes(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.root / "downloads").symlink_to(outside)
+        with self.assertRaisesRegex(DeployError, "real directory"):
+            self.deployer.run()
+        self.assertEqual(self.host.events, [])
+        self.assertNotIn(("download", NEW), self.github.requests)
 
     def test_health_failure_rolls_back_code_without_overwriting_new_personal_data(self):
         self.host.failed_ready.add(NEW)

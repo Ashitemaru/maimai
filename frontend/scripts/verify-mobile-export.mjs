@@ -453,6 +453,19 @@ try {
       await page.locator('.canvas-frame[aria-busy="false"]').waitFor();
       const withBadge = await page.locator('canvas').evaluate((element) => element.toDataURL());
       assert.notEqual(withBadge, withoutBadge, 'The explicit badge selection must change the PNG');
+      Object.assign(chart, { is_complete: true, is_ap: false, status: 'legacy' });
+      await selectScore(null, null, '', 'none');
+      checks.push('An unverified original-table completion does not prefill an AP badge');
+      Object.assign(chart, { is_complete: true, is_ap: true, status: 'app' });
+      await selectScore(null, null, '', 'app');
+      await page.getByLabel('达成率', { exact: true }).fill('101.0000');
+      await page.locator('.canvas-frame[aria-busy="false"]').waitFor();
+      assert.equal(await page.getByLabel('徽章', { exact: true }).inputValue(), 'app');
+      assert(await page.getByRole('button', { name: '导出封面', exact: true }).isEnabled());
+      await selectScore(100.5, '', '100.5000', 'none');
+      checks.push(
+        'Saved AP+ survives an absent provider; an explicit current empty combo takes priority',
+      );
       Object.assign(chart, { is_complete: false, is_ap: false });
       await selectScore(null, null, '', 'none');
       assert(await page.getByRole('button', { name: '导出封面', exact: true }).isDisabled());
@@ -466,7 +479,7 @@ try {
         null,
         'Historical cover edits must not edit records',
       );
-      Object.assign(chart, { is_complete: true, is_ap: true });
+      Object.assign(chart, { is_complete: true, is_ap: true, status: 'ap' });
       await selectScore(100.5, 'ap', '100.5000', 'ap');
       await page.getByLabel('导出比例', { exact: true }).selectOption('4:3');
       await page.locator('.canvas-frame[aria-busy="false"]').waitFor();
