@@ -17,6 +17,10 @@ import httpx
 MEMBER = "https://member.bilibili.com"
 API = "https://api.bilibili.com"
 PASSPORT = "https://passport.bilibili.com"
+QR_LOGIN_PAGES = {
+    ("account.bilibili.com", "/h5/account-h5/auth/scan-web"),
+    ("passport.bilibili.com", "/h5-app/passport/login/scan"),
+}
 BVID = re.compile(r"BV[0-9A-Za-z]{10}\Z")
 MAX_RESPONSE = 4 * 1024 * 1024
 
@@ -209,12 +213,29 @@ class BilibiliClient:
 
     def start_login(self):
         data = self.request("GET", PASSPORT, "/x/passport-login/web/qrcode/generate")
-        url = urlsplit(data.get("url", ""))
         if (
-            url.scheme != "https"
-            or url.hostname != "passport.bilibili.com"
-            or not data.get("qrcode_key")
+            not isinstance(data, dict)
+            or not isinstance(data.get("url"), str)
+            or not isinstance(data.get("qrcode_key"), str)
+            or not data["qrcode_key"].strip()
         ):
+            raise BilibiliError("B 站没有返回有效登录二维码")
+        raw_url = data["url"]
+        try:
+            url = urlsplit(raw_url)
+            valid_url = (
+                url.scheme == "https"
+                and (url.hostname, url.path) in QR_LOGIN_PAGES
+                and url.port in (None, 443)
+                and url.username is None
+                and url.password is None
+                and not url.fragment
+                and raw_url == raw_url.strip()
+                and not any(ord(character) < 32 for character in raw_url)
+            )
+        except ValueError:
+            valid_url = False
+        if not valid_url:
             raise BilibiliError("B 站没有返回有效登录二维码")
         return data
 

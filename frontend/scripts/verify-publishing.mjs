@@ -149,7 +149,7 @@ try {
       if (pathname === '/api/bilibili/login')
         return send({
           login_id: 'opaque-test',
-          url: 'https://passport.bilibili.com/fixture-only',
+          url: 'https://account.bilibili.com/h5/account-h5/auth/scan-web?qrcode_key=fixture-only',
           expires_at: '2030-01-01T00:00:00Z',
         });
       if (pathname === '/api/bilibili/login/opaque-test') {

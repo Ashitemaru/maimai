@@ -227,7 +227,10 @@ class FakeClient:
     def start_login(self):
         return {
             "qrcode_key": "synthetic-secret-key",
-            "url": PASSPORT + "/h5-app/passport/login/scan?test=1",
+            "url": (
+                "https://account.bilibili.com/h5/account-h5/auth/scan-web"
+                "?navhide=1&callback=&qrcode_key=synthetic-secret-key"
+            ),
         }
 
     def poll_login(self, key):
@@ -387,7 +390,9 @@ class BilibiliServiceTests(unittest.TestCase):
 
     def test_login_opaque_id_expiry_and_session_permissions(self):
         result = self.service.start_login()
-        self.assertNotIn("synthetic-secret-key", json.dumps(result))
+        self.assertEqual(set(result), {"login_id", "url", "expires_at"})
+        self.assertNotIn("synthetic-secret-key", result["login_id"])
+        self.assertEqual(result["url"], self.client.start_login()["url"])
         answer = self.service.poll_login(result["login_id"])
         self.assertEqual(answer["state"], "connected")
         self.assertEqual(os.stat(self.service.session_path).st_mode & 0o777, 0o600)
@@ -477,6 +482,81 @@ class BilibiliServiceTests(unittest.TestCase):
 
 
 class BilibiliProtocolTests(unittest.TestCase):
+    def qr_client(self, data):
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            return httpx.Response(200, json={"code": 0, "data": data})
+
+        client = BilibiliClient(transport=httpx.MockTransport(handle))
+        self.addCleanup(client.close)
+        return client, requests
+
+    def test_qr_accepts_current_account_page_and_previous_passport_page(self):
+        for page in (
+            "https://account.bilibili.com/h5/account-h5/auth/scan-web",
+            "https://passport.bilibili.com/h5-app/passport/login/scan",
+        ):
+            with self.subTest(page=page):
+                data = {
+                    "url": page + "?navhide=1&callback=&qrcode_key=synthetic-key",
+                    "qrcode_key": "synthetic-key",
+                }
+                client, requests = self.qr_client(data)
+                self.assertEqual(client.start_login(), data)
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(requests[0].method, "GET")
+                self.assertEqual(
+                    str(requests[0].url), PASSPORT + "/x/passport-login/web/qrcode/generate"
+                )
+
+    def test_qr_rejects_untrusted_or_malformed_page_without_echoing_secrets(self):
+        path = "/h5/account-h5/auth/scan-web"
+        for page in (
+            "https://account.bilibili.com.evil.test" + path,
+            "https://evilaccount.bilibili.com" + path,
+            "http://account.bilibili.com" + path,
+            "https://private-user:private-password@account.bilibili.com" + path,
+            "https://account.bilibili.com:8443" + path,
+            "https://account.bilibili.com:invalid" + path,
+            "https://account.bilibili.com:99999" + path,
+            "https://account.bilibili.com/other-path",
+            "https://passport.bilibili.com" + path,
+            "https://[invalid" + path,
+            " https://account.bilibili.com" + path,
+            "https://account.bilibili.com\n" + path,
+        ):
+            with self.subTest(page=page):
+                client, requests = self.qr_client(
+                    {"url": page + "?qrcode_key=private-key", "qrcode_key": "private-key"}
+                )
+                with self.assertRaises(BilibiliError) as error:
+                    client.start_login()
+                self.assertEqual(str(error.exception), "B 站没有返回有效登录二维码")
+                self.assertEqual(len(requests), 1)
+
+    def test_qr_rejects_invalid_response_field_types(self):
+        url = "https://account.bilibili.com/h5/account-h5/auth/scan-web"
+        for data in (
+            None,
+            [],
+            ["private-key"],
+            "private-key",
+            {},
+            {"url": None, "qrcode_key": "private-key"},
+            {"url": 123, "qrcode_key": "private-key"},
+            {"url": url},
+            {"url": url, "qrcode_key": 123},
+            {"url": url, "qrcode_key": ""},
+            {"url": url, "qrcode_key": "  "},
+        ):
+            with self.subTest(data=data):
+                client, _ = self.qr_client(data)
+                with self.assertRaises(BilibiliError) as error:
+                    client.start_login()
+                self.assertEqual(str(error.exception), "B 站没有返回有效登录二维码")
+
     def test_edit_payload_preserves_real_web_shapes(self):
         payload = edit_payload(archive())
         self.assertEqual(payload["human_type2"], 1030)
