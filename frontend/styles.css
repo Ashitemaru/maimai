@@ -3360,6 +3360,9 @@ textarea {
   grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
   gap: var(--space-3);
 }
+.venue-album-error {
+  padding-block: var(--space-3) var(--space-5);
+}
 .venue-album-chart {
   display: flex;
   flex-direction: column;

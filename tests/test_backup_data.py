@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from deploy.backup_data import (
     BILIBILI_SESSION_PATH,
@@ -14,6 +15,8 @@ from deploy.backup_data import (
     WAHLAP_PROXY_SYSTEM_PATHS,
     BackupDataError,
     capture,
+    capture_frozen,
+    finalize_capture,
     verify,
 )
 
@@ -123,6 +126,65 @@ class BackupDataTests(unittest.TestCase):
 
     def save_manifest(self, manifest):
         document(self.destination / "manifest.json", manifest)
+
+    def test_frozen_phase_defers_hashes_and_database_checks_until_sources_can_change(self):
+        with (
+            patch("deploy.backup_data._inventory") as inventory,
+            patch("deploy.backup_data._database_report") as report,
+            patch("deploy.backup_data.os.fsync") as sync,
+        ):
+            metadata = capture_frozen(
+                self.source, self.config, self.destination, system_root=self.system
+            )
+        inventory.assert_not_called()
+        report.assert_not_called()
+        sync.assert_not_called()
+        self.assertFalse((self.destination / "manifest.json").exists())
+
+        # Simulate the resumed application accepting new records and a catalog
+        # publication before checks finish. Only frozen files may be inspected.
+        with closing(sqlite3.connect(self.runtime / "personal.sqlite3")) as connection:
+            connection.execute("INSERT INTO ap_pending VALUES ('added after restart')")
+            connection.commit()
+        (self.catalog / "current").unlink()
+        (self.catalog / "current").symlink_to("updates/snapshots/older-snapshot")
+        (self.config / "app.env").unlink()
+        manifest = finalize_capture(self.destination, metadata)
+        self.assertEqual(manifest, verify(self.destination))
+        self.assertEqual(
+            manifest["databases"]["shared/runtime/personal.sqlite3"]["tables"]["ap_pending"], 2
+        )
+        self.assertEqual(manifest["catalog"]["current_link"], "updates/snapshots/current-snapshot")
+
+    def test_finalization_syncs_each_copied_file_once_before_accepting_manifest(self):
+        metadata = capture_frozen(
+            self.source, self.config, self.destination, system_root=self.system
+        )
+        with patch("deploy.backup_data.os.fsync", wraps=os.fsync) as sync:
+            manifest = finalize_capture(self.destination, metadata)
+            copied_files = sum(entry["type"] == "file" for entry in manifest["entries"].values())
+            self.assertEqual(sync.call_count, copied_files + 1)  # Last sync is the manifest.
+        with patch("deploy.backup_data.os.fsync") as sync:
+            verify(self.destination)
+        sync.assert_not_called()
+
+    def test_finalization_fsync_failure_cannot_leave_an_accepted_manifest(self):
+        metadata = capture_frozen(
+            self.source, self.config, self.destination, system_root=self.system
+        )
+        with patch("deploy.backup_data.os.fsync", side_effect=OSError("fixture fsync failed")):
+            with self.assertRaisesRegex(OSError, "fsync"):
+                finalize_capture(self.destination, metadata)
+        self.assertFalse((self.destination / "manifest.json").exists())
+
+    def test_finalize_still_rejects_corrupt_database_after_frozen_copy(self):
+        metadata = capture_frozen(
+            self.source, self.config, self.destination, system_root=self.system
+        )
+        (self.destination / "shared/runtime/personal.sqlite3").write_bytes(b"broken database")
+        with self.assertRaises(sqlite3.DatabaseError):
+            finalize_capture(self.destination, metadata)
+        self.assertFalse((self.destination / "manifest.json").exists())
 
     def test_capture_keeps_durable_inputs_byte_exact_catalog_and_drops_disposable_data(self):
         before = {

@@ -14,4 +14,22 @@ maimai.example.com {
 		header_up X-Forwarded-Host {host}
 		header_up X-Forwarded-Proto {scheme}
 	}
+	# A connection failure must be a typed response, never an empty download.
+	# Upstream application errors pass through unchanged.
+	handle_errors {
+		header {
+			Cache-Control no-store
+			Retry-After 5
+			-Content-Disposition
+		}
+		@api path /api /api/*
+		handle @api {
+			header Content-Type "application/json; charset=utf-8"
+			respond `{"detail":"服务暂时不可用，请稍后重试。"}` 503
+		}
+		handle {
+			header Content-Type "text/html; charset=utf-8"
+			respond `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="5"><title>mai journal</title><body><h1>mai journal</h1><p>服务暂时不可用，正在重新连接…</p></body></html>` 503
+		}
+	}
 }

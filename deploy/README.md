@@ -72,6 +72,17 @@ Unversioned cover artwork also revalidates; hashed frontend bundles can be cache
 Derived previews live in shared/runtime/jacket-thumbnails, capped at 64 MiB and
 4,096 files. They are disposable and regenerated from catalog artwork after eviction.
 
+Keep the template's `handle_errors` block when provisioning Caddy. A stopped or
+unreachable app must produce an explicit, non-cacheable 503: JSON for API calls
+and HTML for browser navigation. The HTML retries the same URL after five seconds.
+This incident's browser downloaded the empty, untyped proxy error as a zero-byte
+file; a typed HTML response removes that ambiguous navigation result. Application
+responses, including API validation/conflict errors and intentional image downloads,
+still pass through.
+Run `python scripts/verify_proxy.py` on a host with Caddy to exercise the template
+on isolated loopback ports, with a disconnected upstream and after recovery. It
+does not stop or reconfigure the production proxy or application.
+
 ## Activation and recovery
 
 CI downloads the exact `requirements.lock` pins plus pinned pip into an isolated

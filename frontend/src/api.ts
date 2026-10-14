@@ -28,9 +28,17 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...init,
     headers: { 'Content-Type': 'application/json', ...init.headers },
   });
-  const data = await response.json();
+  const fallback = response.status >= 500 ? '服务暂时不可用，请稍后重试' : '请求未完成，请稍后重试';
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    if (init.signal?.aborted) throw error;
+    // Gateways can return an empty body or HTML while the app is unavailable.
+    throw new ApiError(response.ok ? '服务返回的数据格式异常，请重试' : fallback, response.status);
+  }
   if (!response.ok) {
-    const detail = data.detail;
+    const detail = data?.detail;
     const message =
       typeof detail === 'string'
         ? detail
@@ -40,7 +48,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
                 typeof value === 'string' && value && items.indexOf(value) === index,
             )
             .join(' · ');
-    throw new ApiError(message || '请求未完成，请稍后重试', response.status);
+    throw new ApiError(message || fallback, response.status);
   }
   return data as T;
 }

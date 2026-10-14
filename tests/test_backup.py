@@ -76,9 +76,13 @@ class BackupTests(unittest.TestCase):
         self.backup.repository.mkdir()
         (self.backup.repository / "config").write_text("fixture encrypted repository")
         self.capture = Mock(side_effect=self.fake_capture)
-        capture_patch = patch("deploy.backup.capture", self.capture)
+        capture_patch = patch("deploy.backup.capture_frozen", self.capture)
         capture_patch.start()
         self.addCleanup(capture_patch.stop)
+        self.finalize = Mock(side_effect=self.fake_finalize)
+        finalize_patch = patch("deploy.backup.finalize_capture", self.finalize)
+        finalize_patch.start()
+        self.addCleanup(finalize_patch.stop)
 
     def fake_capture(self, root, config, payload):
         self.assertEqual(root, self.root)
@@ -90,6 +94,14 @@ class BackupTests(unittest.TestCase):
 
     def actions(self):
         return [event[0] for event in self.host.events if event[0] not in {"state", "quiescent"}]
+
+    def fake_finalize(self, payload, metadata):
+        self.host.events.append(("finalize",))
+        self.assertFalse(self.backup.marker.exists())
+        for path in (self.root / "deploy.lock", self.root / "shared/catalog/updates/publish.lock"):
+            with lock(path):
+                pass
+        return metadata
 
     def fake_restic(self, *args, **kwargs):
         if args[0] == "backup":
@@ -113,9 +125,10 @@ class BackupTests(unittest.TestCase):
         self.capture.side_effect = capture_locked
         result = self.backup.snapshot()
         self.assertEqual(result, {"release_sha": SHA})
-        self.assertEqual(self.actions(), ["stop", "capture", "start", "ready"])
+        self.assertEqual(self.actions(), ["stop", "capture", "start", "ready", "finalize"])
         self.assertFalse(self.backup.marker.exists())
-        self.assertEqual(self.host.events[-1], ("ready", SHA))
+        self.assertEqual(self.host.events[-2], ("ready", SHA))
+        self.assertIsNotNone(self.backup.service_pause_seconds)
         for path in (self.root / "deploy.lock", self.root / "shared/catalog/updates/publish.lock"):
             self.assertTrue(path.exists())
             with lock(path):
@@ -136,9 +149,58 @@ class BackupTests(unittest.TestCase):
                 self.host.events.clear()
                 self.capture.side_effect = lambda *args: {"release_sha": SHA}
                 self.backup.snapshot()
-                self.assertEqual(self.actions(), [])
+                self.assertEqual(self.actions(), ["finalize"])
                 self.assertEqual(self.host.active, state)
                 self.assertFalse(self.backup.marker.exists())
+                self.assertEqual(self.backup.service_pause_seconds, 0.0)
+
+    def test_finalization_failure_happens_after_service_is_ready_and_never_encrypts(self):
+        def fail_after_resume(*args):
+            self.fake_finalize(*args)
+            self.assertEqual(self.host.active, "active")
+            raise BackupError("Copied database integrity check failed")
+
+        self.finalize.side_effect = fail_after_resume
+        with patch.object(self.backup, "restic") as restic:
+            with self.assertRaisesRegex(BackupError, "integrity"):
+                self.backup.backup()
+        restic.assert_not_called()
+        self.assertEqual(self.actions(), ["stop", "capture", "start", "ready", "finalize"])
+        self.assertEqual(self.host.active, "active")
+        self.assertFalse(self.backup.marker.exists())
+        self.assertFalse(self.backup.staging.exists())
+        status = json.loads(self.backup.receipt.read_text())
+        self.assertEqual(status["state"], "failed")
+        self.assertIsNotNone(status["service_pause_seconds"])
+
+    def test_pause_metric_excludes_finalization_after_resumption(self):
+        with patch("deploy.backup.time.monotonic", side_effect=[10.0, 12.75]):
+            self.backup.snapshot()
+        self.assertEqual(self.backup.service_pause_seconds, 2.75)
+
+    def test_fsync_failure_does_not_encrypt_or_stop_the_resumed_application(self):
+        def fail_after_resume(*args):
+            self.fake_finalize(*args)
+            self.assertEqual(self.host.active, "active")
+            raise OSError("fixture fsync failed")
+
+        self.finalize.side_effect = fail_after_resume
+        with patch.object(self.backup, "restic") as restic:
+            with self.assertRaisesRegex(OSError, "fsync"):
+                self.backup.backup()
+        restic.assert_not_called()
+        self.assertEqual(self.actions(), ["stop", "capture", "start", "ready", "finalize"])
+        self.assertEqual(self.host.active, "active")
+        self.assertFalse(self.backup.marker.exists())
+        self.assertFalse(self.backup.staging.exists())
+
+    def test_readiness_failure_does_not_finalize_or_report_a_completed_pause(self):
+        self.host.fail_ready = True
+        with self.assertRaisesRegex(BackupError, "ready failure"):
+            self.backup.snapshot()
+        self.finalize.assert_not_called()
+        self.assertTrue(self.backup.marker.exists())
+        self.assertIsNone(self.backup.service_pause_seconds)
 
     def test_pending_deployment_prevents_any_stop_or_capture(self):
         (self.root / "deployment-pending.json").write_text("{}")

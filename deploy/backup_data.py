@@ -1,6 +1,8 @@
-"""Capture already-quiesced application data; service and transport belong to the caller.
+"""Copy quiesced application data, then validate the independent copy while online.
 
-The caller must hold deploy.lock, stop the application, then hold publish.lock.
+capture_frozen requires deploy.lock, a stopped application and publish.lock.
+finalize_capture reads only the private copy, so those locks and the application
+pause can end before file fsyncs, database checks and two full checksum passes.
 Only the current and immediately previous catalog snapshots are retained. Older
 history entries in status.json are informational and can refer to omitted snapshots.
 This module never restores over a running installation or contacts the network.
@@ -112,8 +114,10 @@ def _json(path):
     return value
 
 
-def _hash(path):
+def _hash(path, *, sync=False):
     with path.open("rb") as stream:
+        if sync:
+            os.fsync(stream.fileno())
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
@@ -138,7 +142,8 @@ def _copy_file(source, destination):
         shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
         outgoing.flush()
         os.fchmod(outgoing.fileno(), 0o700 if mode & 0o111 else 0o600)
-        os.fsync(outgoing.fileno())
+        # Closing makes this copy independent of the source. Durability waits
+        # until finalization after the app resumes; incomplete staging is disposable.
 
 
 def _copy_tree(source, destination, *, excluded=()):
@@ -195,7 +200,6 @@ def _backup_database(source, destination):
                 "SQLite backup could not become a standalone file",
             )
     destination.chmod(0o600)
-    return _database_report(destination)
 
 
 def _code_release(root, *, allow_absolute=False):
@@ -263,7 +267,7 @@ def _catalog_selection(root):
     }
 
 
-def _inventory(root):
+def _inventory(root, *, sync_files=False):
     entries = {}
 
     def walk(directory):
@@ -281,7 +285,7 @@ def _inventory(root):
                 _file(path)
                 entries[relative] = {
                     "type": "file",
-                    "sha256": _hash(path),
+                    "sha256": _hash(path, sync=sync_files),
                     "bytes": path.stat().st_size,
                     "mode": stat.S_IMODE(mode),
                 }
@@ -308,8 +312,8 @@ def _empty_destination(destination, roots):
     return destination
 
 
-def capture(source_root, config_root, destination, *, system_root=Path("/")):
-    """Copy frozen inputs into an empty directory and return its complete manifest."""
+def capture_frozen(source_root, config_root, destination, *, system_root=Path("/")):
+    """Copy frozen inputs; leave ordinary file fsyncs and validation to finalization."""
     source_root = Path(source_root).resolve(strict=True)
     config_root = Path(config_root).resolve(strict=True)
     system_root = Path(system_root).resolve(strict=True)
@@ -320,13 +324,14 @@ def capture(source_root, config_root, destination, *, system_root=Path("/")):
     )
     release_sha, release_target = _code_release(source_root, allow_absolute=True)
     catalog = _catalog_selection(source_root)
-    databases, absent = {}, []
+    databases, absent = [], []
     for relative in DB_PATHS:
         source = _path(source_root, relative, missing=relative == DB_PATHS[2])
         if not source.exists():
             absent.append(relative)
             continue
-        databases[relative] = _backup_database(source, destination / relative)
+        _backup_database(source, destination / relative)
+        databases.append(relative)
     secret = _path(source_root, "shared/runtime/secrets.json", missing=True)
     if secret.exists():
         _copy_file(secret, destination / "shared/runtime/secrets.json")
@@ -378,15 +383,29 @@ def capture(source_root, config_root, destination, *, system_root=Path("/")):
         *(f"shared/catalog/updates/snapshots/{x}" for x in catalog["snapshots"]),
     }:
         relative = directory + "/catalog.sqlite"
-        databases[relative] = _database_report(destination / relative)
-    manifest = {
+        databases.append(relative)
+    return {
         "schema_version": 3,
         "created_at": datetime.now(UTC).isoformat(),
         "release_sha": release_sha,
         "catalog": catalog,
-        "databases": databases,
+        "databases": sorted(set(databases)),
         "optional_absent": sorted(absent),
-        "entries": _inventory(destination),
+    }
+
+
+def finalize_capture(destination, metadata):
+    """Create and verify the full manifest without reading the live installation."""
+    destination = Path(destination).absolute()
+    _directory(destination)
+    destination = destination.resolve()
+    manifest = {
+        **metadata,
+        "databases": {
+            relative: _database_report(_path(destination, relative))
+            for relative in metadata["databases"]
+        },
+        "entries": _inventory(destination, sync_files=True),
     }
     with (destination / "manifest.json").open("x", encoding="utf-8") as stream:
         os.fchmod(stream.fileno(), 0o600)
@@ -395,6 +414,12 @@ def capture(source_root, config_root, destination, *, system_root=Path("/")):
         stream.flush()
         os.fsync(stream.fileno())
     return verify(destination)
+
+
+def capture(source_root, config_root, destination, *, system_root=Path("/")):
+    """Copy and validate in one call for callers without a service to resume."""
+    metadata = capture_frozen(source_root, config_root, destination, system_root=system_root)
+    return finalize_capture(destination, metadata)
 
 
 def verify(destination):

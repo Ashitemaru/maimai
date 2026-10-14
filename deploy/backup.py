@@ -21,9 +21,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 if __package__:
-    from .backup_data import capture, verify
+    from .backup_data import capture_frozen, finalize_capture, verify
 else:
-    from backup_data import capture, verify
+    from backup_data import capture_frozen, finalize_capture, verify
 
 SERVICE = "mai-journal.service"
 READY_URL = "http://127.0.0.1:8766/api/ready"
@@ -108,6 +108,7 @@ class Backups:
         self.staging = self.directory / "staging"
         self.marker = self.directory / "resume-needed.json"
         self.receipt = self.directory / "status.json"
+        self.service_pause_seconds = None
 
     def restic(self, *arguments, cwd=None):
         return self.host.command(
@@ -160,6 +161,7 @@ class Backups:
                 self.restore_service()
 
     def snapshot(self):
+        self.service_pause_seconds = None
         with lock(self.root / "deploy.lock"):
             self.restore_service()
             if (self.root / "deployment-pending.json").exists():
@@ -171,17 +173,24 @@ class Backups:
             payload = self.staging / "payload"
             if payload.exists():
                 shutil.rmtree(payload)
+            paused_at = None
             try:
                 if state == "active":
                     atomic_json(self.marker, {"release_sha": self.current_sha()})
+                    paused_at = time.monotonic()
                     self.host.service("stop")
                 if self.host.state() not in {"inactive", "failed"} or not self.host.quiescent():
                     raise BackupError("Application is still running; no snapshot captured")
                 with lock(self.root / "shared/catalog/updates/publish.lock"):
-                    manifest = capture(self.root, self.config, payload)
+                    metadata = capture_frozen(self.root, self.config, payload)
             finally:
                 self.restore_service()
-        return manifest
+                self.service_pause_seconds = (
+                    round(time.monotonic() - paused_at, 2) if paused_at is not None else 0.0
+                )
+        # The payload is now independent of live data. Resume before file fsyncs,
+        # SQLite checks and two checksum passes; failures prevent restic/retention.
+        return finalize_capture(payload, metadata)
 
     def backup(self, *, full_check=False):
         self.prepare()
@@ -200,7 +209,9 @@ class Backups:
                 captured_at = time.monotonic()
                 manifest = self.snapshot()
                 status.update(
-                    phase="encrypt", capture_seconds=round(time.monotonic() - captured_at, 2)
+                    phase="encrypt",
+                    capture_seconds=round(time.monotonic() - captured_at, 2),
+                    service_pause_seconds=self.service_pause_seconds,
                 )
                 atomic_json(self.receipt, status)
                 result = self.restic(
@@ -255,6 +266,7 @@ class Backups:
                 )
                 raise
             finally:
+                status["service_pause_seconds"] = self.service_pause_seconds
                 status["finished_at"] = datetime.now(UTC).isoformat()
                 atomic_json(self.receipt, status)
                 # Plaintext staging is disposable; encrypted snapshots remain untouched.

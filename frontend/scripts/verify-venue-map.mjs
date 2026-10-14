@@ -24,6 +24,12 @@ const chart = {
   is_ap: true,
   status: 'ap',
 };
+const albumCharts = Array.from({ length: 49 }, (_, index) => ({
+  ...chart,
+  chart_key: `${index + 1}:3`,
+  id: index + 1,
+  title: index === 0 ? chart.title : index === 48 ? 'Second-page AP' : `Fixture AP ${index + 1}`,
+}));
 const location = {
   latitude: 31.22,
   longitude: 121.46,
@@ -33,7 +39,7 @@ let venues = [
   {
     name: '【上海】测试机厅',
     city: '上海',
-    total: 2,
+    total: albumCharts.length,
     pending_count: 1,
     location,
     jackets: [chart],
@@ -51,8 +57,10 @@ let venues = [
 const writes = [],
   requests = [],
   errors = [],
+  downloads = [],
   checks = [];
 let failSave = false;
+let failAlbum = false;
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const send = (data, status = 200) => {
@@ -96,8 +104,28 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/venues')
       return send({ items: venues.map((item) => ({ name: item.name, count: item.total })) });
     if (url.pathname === '/api/venues/map') return send({ items: venues });
-    if (url.pathname === '/api/venues/charts')
-      return send({ items: [chart], total: 1, offset: 0, limit: 48 });
+    if (url.pathname === '/api/venues/charts') {
+      if (failAlbum) {
+        const failure = failAlbum;
+        failAlbum = false;
+        res.writeHead(failure === 'empty' ? 502 : 503, { 'Content-Type': 'text/html' });
+        return res.end(failure === 'empty' ? '' : '<html><body>Service unavailable</body></html>');
+      }
+      const offset = Number(url.searchParams.get('offset') || 0);
+      const selectedVenue = venues.find((venue) => venue.name === url.searchParams.get('name'));
+      const items =
+        selectedVenue?.name === '【上海】测试机厅'
+          ? albumCharts
+          : selectedVenue?.total
+            ? [chart]
+            : [];
+      return send({
+        items: items.slice(offset, offset + 48),
+        total: items.length,
+        offset,
+        limit: 48,
+      });
+    }
     if (url.pathname === '/api/venues/search') {
       assert.equal(url.searchParams.get('q'), '测试广场');
       return send({
@@ -152,15 +180,68 @@ try {
   );
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(origin + '/#venues');
-  await page.getByText('3 家机厅 · 3 AP', { exact: true }).waitFor();
-  const marker = page.getByRole('button', { name: '【上海】测试机厅，2 AP', exact: true });
+  page.on('download', (download) => downloads.push(download.suggestedFilename()));
+  await page.goto(origin + '/?view=completion#venues');
+  await page.getByText('3 家机厅 · 50 AP', { exact: true }).waitFor();
+  const marker = page.getByRole('button', { name: '【上海】测试机厅，49 AP', exact: true });
   await marker.click();
   await page.getByRole('region', { name: '机厅详情' }).waitFor();
   await page.getByText('Fixture AP', { exact: true }).waitFor();
   assert.equal(await page.getByText('已闭店 · 历史位置').count(), 0);
   assert(requests.some((item) => item.path === '/api/venues/charts'));
+  assert.equal(
+    await page.getByRole('button', { name: '重试加载机厅曲目', exact: true }).count(),
+    0,
+  );
   checks.push('Mouse click on SVG jacket opens paginated AP album without operating status');
+  const selectedURL = new URL(page.url());
+  assert.equal(selectedURL.searchParams.get('venue'), '【上海】测试机厅');
+  assert.equal(selectedURL.searchParams.get('view'), 'completion');
+  assert.equal(selectedURL.hash, '#venues');
+  await page.reload();
+  const album = page.getByRole('region', { name: '机厅详情' });
+  await album.getByText('Fixture AP', { exact: true }).waitFor();
+  assert.equal(await album.locator('.venue-album-chart').count(), 48);
+  checks.push('Selected venue survives reload without replacing the hash or other query options');
+  failAlbum = 'empty';
+  await album.getByRole('button', { name: '下一页', exact: true }).click();
+  await album.getByRole('button', { name: '重试加载机厅曲目', exact: true }).waitFor();
+  await page.locator('#toast').filter({ hasText: '服务暂时不可用，请稍后重试' }).waitFor();
+  assert.equal(await album.locator('.venue-album-chart').count(), 0);
+  assert.equal(await album.locator('.venue-album-pagination').count(), 0);
+  const retryPadding = await album.locator('.venue-album-error').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return [Number.parseFloat(style.paddingTop), Number.parseFloat(style.paddingBottom)];
+  });
+  assert(retryPadding.every((value) => value >= 12));
+  await album.screenshot({ path: path.join(output, 'album-retry-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await album.screenshot({ path: path.join(output, 'album-retry-mobile.png') });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  failAlbum = 'html';
+  await Promise.all([
+    page.waitForResponse(
+      (response) => response.url().includes('/api/venues/charts?') && response.status() === 503,
+    ),
+    album.getByRole('button', { name: '重试加载机厅曲目', exact: true }).click(),
+  ]);
+  await album.getByRole('button', { name: '重试加载机厅曲目', exact: true }).waitFor();
+  await page.locator('#toast').filter({ hasText: '服务暂时不可用，请稍后重试' }).waitFor();
+  assert.equal(await album.locator('.venue-album-chart').count(), 0);
+  await album.getByRole('button', { name: '重试加载机厅曲目', exact: true }).click();
+  await album.getByText('Second-page AP', { exact: true }).waitFor();
+  assert.equal(await album.locator('.venue-album-chart').count(), 1);
+  assert.equal(await album.getByText('Fixture AP', { exact: true }).count(), 0);
+  assert.equal(
+    await album.getByRole('button', { name: '重试加载机厅曲目', exact: true }).count(),
+    0,
+  );
+  await album.getByRole('button', { name: '上一页', exact: true }).click();
+  await album.getByText('Fixture AP', { exact: true }).waitFor();
+  checks.push(
+    'Empty 502 and HTML 503 failures show a toast without stale charts; a spaced retry loads the failed page',
+  );
   await page.getByRole('button', { name: '编辑位置', exact: true }).click();
   const editor = page.getByRole('dialog');
   await editor.waitFor();
@@ -213,10 +294,7 @@ try {
   await editor.getByRole('button', { name: '取消', exact: true }).click();
   checks.push('An existing toast is promoted above a later modal for new errors');
   await page.reload();
-  await page
-    .getByRole('button', { name: /【上海】测试机厅.*2 AP/ })
-    .last()
-    .click();
+  await album.getByText('Fixture AP', { exact: true }).waitFor();
   await page.getByRole('button', { name: '编辑位置', exact: true }).click();
   await editor.locator('.venue-map-picked').waitFor();
   await editor.getByRole('button', { name: '取消', exact: true }).click();
@@ -232,7 +310,7 @@ try {
   assert.equal(writes.at(-1).latitude, 31.24);
   assert.equal(writes.at(-1).longitude, 121.49);
   assert.equal(writes.at(-1).name, '【测试】新门店');
-  await page.getByText('4 家机厅 · 3 AP', { exact: true }).waitFor();
+  await page.getByText('4 家机厅 · 50 AP', { exact: true }).waitFor();
   checks.push('New venue uses a search result plus display name without inventing AP records');
   await page.screenshot({ path: path.join(output, 'desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -258,6 +336,8 @@ try {
   await editor.getByRole('button', { name: '取消', exact: true }).click();
   await page.screenshot({ path: path.join(output, 'mobile.png') });
   checks.push('390px layout fits viewport; browser touch input selects a map coordinate');
+  assert.deepEqual(downloads, []);
+  checks.push('Venue navigation, refresh and retry never trigger browser downloads');
   assert.deepEqual(errors, []);
   await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ checks, errors }, null, 2));
   console.log(JSON.stringify({ checks: checks.length, errors }));

@@ -28,6 +28,7 @@ function VenueAlbum({
     const controller = new AbortController();
     setBusy(true);
     setError('');
+    setCharts([]);
     api<ChartList>(
       '/venues/charts?' +
         new URLSearchParams({ name: venue.name, offset: String(offset), limit: '48' }),
@@ -48,17 +49,21 @@ function VenueAlbum({
   }, [venue.name, revision, offset, retry]);
   return (
     <div className="venue-album" aria-busy={busy}>
-      {error && (
-        <div>
-          <button type="button" className="btn" onClick={() => setRetry((value) => value + 1)}>
-            重试
-          </button>
-        </div>
-      )}
       {busy ? (
         <p className="empty-state" role="status">
           正在加载曲绘…
         </p>
+      ) : error ? (
+        <div className="venue-album-error">
+          <button
+            type="button"
+            className="btn"
+            aria-label="重试加载机厅曲目"
+            onClick={() => setRetry((value) => value + 1)}
+          >
+            重试
+          </button>
+        </div>
       ) : (
         <>
           <div className="venue-album-grid">
@@ -81,7 +86,7 @@ function VenueAlbum({
               </button>
             ))}
           </div>
-          {!charts.length && !error && <p className="empty-state">还没有已确认的 AP</p>}
+          {!charts.length && <p className="empty-state">还没有已确认的 AP</p>}
           {total > 48 && (
             <div className="venue-album-pagination">
               <button
@@ -127,7 +132,9 @@ export function VenuesPage({
   const [reload, setReload] = useState(0);
   useToastMessage(error);
   const [search, setSearch] = useState('');
-  const [selection, setSelection] = useState<string | null>(null);
+  const [selection, setSelection] = useState<string | null>(() =>
+    new URLSearchParams(location.search).get('venue'),
+  );
   const [editing, setEditing] = useState<{ name: string; location: VenuePlace['location'] } | null>(
     null,
   );
@@ -156,6 +163,9 @@ export function VenuesPage({
   >();
   function select(name: string) {
     setSelection(name);
+    const url = new URL(window.location.href);
+    url.searchParams.set('venue', name);
+    history.replaceState(null, '', url);
     const location = venuePoint(venues.find((venue) => venue.name === name)?.location || null);
     if (location) setFocus({ ...location, zoom: 15 });
   }
@@ -290,7 +300,7 @@ export function VenuesPage({
           onClose={() => setEditing(null)}
           onSaved={(name) => {
             setEditing(null);
-            setSelection(name);
+            select(name);
             setReload((value) => value + 1);
             notify('机厅位置已保存');
             void onChanged().catch((error) => notify(messageOf(error)));
