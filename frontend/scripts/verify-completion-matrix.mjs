@@ -604,6 +604,8 @@ try {
             text: text.textContent,
             left: bounds.left,
             right: bounds.right,
+            width: bounds.width,
+            height: bounds.height,
             labelLeft: label.left,
             labelRight: label.right,
             labelHeight: label.height,
@@ -613,8 +615,10 @@ try {
         }),
       );
       measurements.push({ name: `${name}-navigation`, navigation });
-      assert.equal(navigation.length, 6);
+      assert.equal(navigation.length, 4);
       for (const [index, item] of navigation.entries()) {
+        assert(item.width >= 44 && item.height >= 44, `${name}: navigation touch target`);
+        assert(Math.abs(item.width - navigation[0].width) < 1, `${name}: equal navigation widths`);
         assert.equal(item.whiteSpace, 'nowrap', `${name}: ${item.text} uses a single line`);
         assert(item.labelHeight <= item.lineHeight + 1, `${name}: ${item.text} wraps`);
         assert(
@@ -633,19 +637,18 @@ try {
       }
       await audit(page, `${name}-matrix`);
       await page.screenshot({ path: path.join(output, `${name}-viewport.png`) });
-      checks.push(
-        `${name}: all six navigation labels remain single-line within their slots without overlap`,
-      );
+      checks.push(`${name}: four equal navigation targets remain single-line without overlap`);
       await context.close();
       activePage = null;
       continue;
     }
     assert.equal(await page.getByRole('heading', { name: '完成统计', exact: true }).count(), 1);
-    assert.equal(await page.locator('a.nav-item.active').getAttribute('aria-label'), '完成统计');
+    assert.equal(await page.locator('a.nav-item.active').getAttribute('aria-label'), 'AP 图鉴');
     assert.equal(
       await page.locator('a.nav-item.active').innerText(),
-      name === 'mobile' ? '统计' : '完成统计',
+      name === 'mobile' ? '图鉴' : 'AP 图鉴',
     );
+    assert.equal(await page.locator('.section-nav [aria-current="page"]').innerText(), '完成统计');
     assert.equal(await page.getByRole('combobox', { name: '难度', exact: true }).inputValue(), '');
     assert.equal(await page.locator('.matrix-table th[title="maimai"]').textContent(), '初');
     assert.equal(await page.locator('.matrix-table th[title="maimai PLUS"]').textContent(), '真');

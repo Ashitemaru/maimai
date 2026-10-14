@@ -73,7 +73,10 @@ def title_for(chart, body, original):
     if body.title_override is not None:
         title = body.title_override.strip()
     elif body.bvid == MIRROR_BVID:
-        title = original
+        token = re.match(r"^(?:\+PA|PA)(?=\s)", original)
+        if token is None:
+            raise BilibiliError("镜像稿件标题需以 PA 或 +PA 开头，请手动确认标题", status=422)
+        title = ("+PA" if body.combo == "app" else "PA") + original[token.end() :]
     else:
         is_utage = chart.get("type") == "utage" or chart.get("difficulty_index") == 5
         if is_utage:

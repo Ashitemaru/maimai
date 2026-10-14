@@ -15,6 +15,17 @@ await fs.mkdir(output, { recursive: true });
 const checks = [];
 const errors = [];
 const bvid = 'BV1iWMh6iECe';
+const plusBvid = 'BV1PLUS11111';
+const ordinaryBvid = 'BV1PLAIN1111';
+const titleFixtures = new Map([
+  [plusBvid, '【maimai】Our Wrenally Expert13.0 AP＋'],
+  [ordinaryBvid, '【maimai】Our Wrenally Expert13.0 AP'],
+  ['BV1MUSIC1111', '【maimai】AP+ Expert13.0'],
+  ['BV1bJouBSEiH', '+PA 0.31trepxE yllanerW ruO【iamiam】'],
+  ['BV1OTHER1111', '+PA 0.31trepxE yllanerW ruO【iamiam】'],
+]);
+const appBadge =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><circle cx="40" cy="40" r="35" fill="#0cfa69"/><path d="M20 40h40M40 20v40" stroke="white" stroke-width="7"/></svg>';
 const chart = {
   id: 9200,
   song_id: 9200,
@@ -104,6 +115,7 @@ try {
     let persistedJob = null;
     let blockedOrder = false;
     let orderChecks = 0;
+    let expectedAchievement = '100.5000';
     const requests = [];
     const prepared = [];
     const applied = [];
@@ -118,7 +130,10 @@ try {
         return route.fulfill({
           json: {
             assets: Object.fromEntries(
-              ['dx', 'standard', 'ap', 'app'].map((key) => [key, { file: 'badge.png' }]),
+              ['dx', 'standard', 'ap', 'app'].map((key) => [
+                key,
+                { file: key === 'app' ? 'app.svg' : 'badge.png' },
+              ]),
             ),
             number_sets: {
               achievement: {
@@ -137,6 +152,8 @@ try {
       }
       if (url.pathname.endsWith('/badge.png'))
         return route.fulfill({ contentType: 'image/png', body: badgePNG });
+      if (url.pathname.endsWith('/app.svg'))
+        return route.fulfill({ contentType: 'image/svg+xml', body: appBadge });
       return route.fulfill(asset);
     });
     await context.route('**/api/**', async (route) => {
@@ -168,6 +185,14 @@ try {
           title: 'Our Wrenally old title',
           revision: '1',
           mirror_horizontal: false,
+        });
+      const extraBvid = pathname.match(/^\/api\/bilibili\/videos\/(BV[0-9A-Za-z]{10})$/)?.[1];
+      if (titleFixtures.has(extraBvid))
+        return send({
+          bvid: extraBvid,
+          title: titleFixtures.get(extraBvid),
+          revision: '1',
+          mirror_horizontal: extraBvid === 'BV1bJouBSEiH',
         });
       if (pathname === '/api/bilibili/collections') {
         if (ambiguous) await new Promise((resolve) => setTimeout(resolve, 900));
@@ -231,14 +256,14 @@ try {
       if (pathname === '/api/bilibili/prepare') {
         const input = request.postDataJSON();
         assert.equal(input.chart_key, chart.chart_key);
-        assert.equal(input.achievement, '100.5000');
+        assert.equal(input.achievement, expectedAchievement);
         assert.equal(input.section_id, 8);
         prepared.push(input);
         latestPlan = {
           ...input,
           plan_id: `plan-${++planCount}`,
-          old_title: 'Our Wrenally old title',
-          title: '【maimai】Our Wrenally Expert13.0 AP',
+          old_title: titleFixtures.get(input.bvid) || 'Our Wrenally old title',
+          title: `【maimai】Our Wrenally Expert13.0 ${input.combo === 'app' ? 'AP+' : 'AP'}`,
           chart,
           expires_at: '2030-01-01T00:00:00Z',
           order: blockedOrder
@@ -248,7 +273,11 @@ try {
                 target_position: null,
                 unmatched: [unresolvedVideo],
               }
-            : desiredOrder,
+            : {
+                ...desiredOrder,
+                target_bvid: input.bvid,
+                desired: [previousVideo, { ...targetVideo, bvid: input.bvid }, nextVideo],
+              },
         };
         return send(latestPlan);
       }
@@ -295,6 +324,20 @@ try {
     const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(origin + '/#publishing');
+    await page.getByRole('button', { name: '生成封面', exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole('navigation', { name: '主导航' }).getByRole('link').count(),
+      4,
+    );
+    assert.equal(
+      await page.getByRole('link', { name: '投稿整理', exact: true }).getAttribute('aria-current'),
+      'page',
+    );
+    assert.equal(
+      requests.filter((item) => item.method === 'POST').length,
+      0,
+      'Opening the cover tool must be available before Bilibili connection',
+    );
     await page.getByRole('button', { name: '扫码连接' }).click();
     const qr = page.getByAltText('Bilibili 登录二维码');
     await qr.waitFor();
@@ -504,6 +547,119 @@ try {
     );
     assert.equal(applied.length, 1);
     assert.equal(retryCount, 1);
+    ambiguous = false;
+    failLogo = false;
+    await page.getByRole('button', { name: '刷新', exact: true }).click();
+    await page.getByRole('button', { name: '刷新', exact: true }).click({ trial: true });
+    async function loadFixtureVideo(value) {
+      await page.getByLabel('BV 号或视频链接').fill(value);
+      await page.getByRole('button', { name: '载入稿件', exact: true }).click();
+      await page.getByRole('button', { name: '载入稿件', exact: true }).click({ trial: true });
+    }
+    async function selectFixtureChart() {
+      await page.getByLabel('谱面', { exact: true }).fill('Our Wrenally');
+      await page.getByRole('button', { name: /Our Wrenally STD/ }).click();
+    }
+    async function appBadgePixels() {
+      return page.evaluate(async () => {
+        const images = [...document.querySelectorAll('.publishing-cover-previews img')];
+        return Promise.all(
+          images.map(async (image) => {
+            await image.decode();
+            const canvas = document.createElement('canvas');
+            canvas.width = image.naturalWidth;
+            canvas.height = image.naturalHeight;
+            const context = canvas.getContext('2d');
+            context.drawImage(image, 0, 0);
+            const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+            let count = 0;
+            for (let index = 0; index < pixels.length; index += 4)
+              if (pixels[index] === 12 && pixels[index + 1] === 250 && pixels[index + 2] === 105)
+                count += 1;
+            return count;
+          }),
+        );
+      });
+    }
+    await loadFixtureVideo(plusBvid);
+    assert.equal(
+      await page.getByLabel('完成标记').inputValue(),
+      'app',
+      'Read AP+ from the actual video title, including a fullwidth plus',
+    );
+    assert.equal(
+      await page.getByLabel('录像达成率').inputValue(),
+      '',
+      'AP+ title must not infer the video achievement from personal best',
+    );
+    await selectFixtureChart();
+    assert.equal(
+      await page.getByLabel('完成标记').inputValue(),
+      'app',
+      'Choosing a chart must preserve the video combo',
+    );
+    expectedAchievement = '101.0000';
+    await page.getByLabel('录像达成率').fill(expectedAchievement);
+    await page.getByRole('button', { name: '生成预览', exact: true }).click();
+    await page.getByAltText('16:9 投稿封面预览').waitFor();
+    assert.equal(prepared.at(-1).combo, 'app');
+    assert.equal(
+      await page.locator('.publishing-title-comparison dd').nth(1).innerText(),
+      '【maimai】Our Wrenally Expert13.0 AP+',
+    );
+    const appPixels = await appBadgePixels();
+    assert.equal(appPixels.length, 2);
+    assert(
+      appPixels.every((count) => count > 100),
+      'Both cover ratios must render the AP+ asset from the frozen combo',
+    );
+    await page.getByLabel('完成标记').selectOption('ap');
+    expectedAchievement = '100.5000';
+    await page.getByLabel('录像达成率').fill(expectedAchievement);
+    await page.getByRole('button', { name: '生成预览', exact: true }).click();
+    await page.getByAltText('16:9 投稿封面预览').waitFor();
+    assert.equal(
+      prepared.at(-1).combo,
+      'ap',
+      'Explicit user selection takes precedence over the video title',
+    );
+    assert.equal(
+      await page.locator('.publishing-title-comparison dd').nth(1).innerText(),
+      '【maimai】Our Wrenally Expert13.0 AP',
+    );
+    assert.deepEqual(await appBadgePixels(), [0, 0], 'AP must not reuse the AP+ badge');
+    await loadFixtureVideo(plusBvid);
+    assert.equal(
+      await page.getByLabel('完成标记').inputValue(),
+      'ap',
+      'Reloading the same video preserves its explicit combo selection',
+    );
+    await page.getByLabel('完成标记').selectOption('app');
+    await loadFixtureVideo(ordinaryBvid);
+    assert.equal(
+      await page.getByLabel('完成标记').inputValue(),
+      'ap',
+      'Changing videos must clear the previous video combo override',
+    );
+    await loadFixtureVideo('BV1MUSIC1111');
+    assert.equal(
+      await page.getByLabel('完成标记').inputValue(),
+      'ap',
+      'AP+ inside a song title is not a terminal result marker',
+    );
+    await loadFixtureVideo('BV1bJouBSEiH');
+    assert.equal(
+      await page.getByLabel('完成标记').inputValue(),
+      'app',
+      'Recognize the mirrored result prefix only for the known mirrored video',
+    );
+    await loadFixtureVideo('BV1OTHER1111');
+    assert.equal(
+      await page.getByLabel('完成标记').inputValue(),
+      'ap',
+      'Do not reverse arbitrary video titles',
+    );
+    assert.equal(applied.length, 1, 'AP+ previews must not trigger an extra publish');
     checks.push({
       width,
       prepares: prepared.length,
@@ -515,6 +671,8 @@ try {
       orderBlockedPreventsSubmission: true,
       orderRetryVerified: true,
       legacyPlanWithoutOrderBlocked: true,
+      apPlusVideoTitleAndBothCovers: true,
+      explicitComboPreserved: true,
     });
     await context.close();
   }

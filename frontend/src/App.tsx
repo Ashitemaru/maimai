@@ -51,20 +51,22 @@ const pageLabels: Record<Page, string> = {
   ap: 'AP 图鉴',
   statistics: '完成统计',
   pending: '待核记录',
-  cover: '封面工坊',
+  cover: '生成封面',
   publishing: '投稿整理',
   venues: '我的机厅',
   settings: '数据与同步',
 };
-const mobilePageLabels: Record<Page, string> = {
-  ap: '图鉴',
-  statistics: '统计',
-  pending: '待核',
-  cover: '封面',
-  publishing: '投稿',
-  venues: '机厅',
-  settings: '设置',
-};
+const primaryNavigation = [
+  { page: 'ap', label: 'AP 图鉴', mobileLabel: '图鉴', icon: 'grid' },
+  { page: 'venues', label: '我的机厅', mobileLabel: '机厅', icon: 'pin' },
+  { page: 'publishing', label: '投稿整理', mobileLabel: '投稿', icon: 'sync' },
+  { page: 'settings', label: '设置', mobileLabel: '设置', icon: 'settings' },
+] as const;
+const collectionNavigation = [
+  { page: 'ap', label: '谱面图鉴' },
+  { page: 'statistics', label: '完成统计' },
+  { page: 'pending', label: '待核记录' },
+] as const;
 const num = (value = 0) => value.toLocaleString('en-US');
 const chartName = (c: Chart) => c.display_title || c.title || '（空白曲名）';
 function Icon({ name }: { name: string }) {
@@ -902,6 +904,8 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
       记录 AP
     </button>
   );
+  const isCollectionPage = collectionNavigation.some((item) => item.page === page);
+  const activePrimaryPage = isCollectionPage ? 'ap' : page === 'cover' ? 'publishing' : page;
   return (
     <>
       <div className="shell">
@@ -915,50 +919,25 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               <small>PERSONAL PLAY RECORD</small>
             </div>
           </a>
-          <div className="nav-label">MY COLLECTION</div>
-          {(
-            [
-              ['ap', 'grid'],
-              ['statistics', 'table'],
-              ['pending', 'clock'],
-              ['cover', 'image'],
-              ['publishing', 'sync'],
-              ['venues', 'pin'],
-            ] as const
-          ).map(([p, icon]) => (
-            <a
-              key={p}
-              href={'#' + p}
-              className={'nav-item ' + (page === p ? 'active' : '')}
-              aria-label={pageLabels[p]}
-            >
-              <Icon name={icon} />
-              <span className="nav-full-label" aria-hidden="true">
-                {pageLabels[p]}
-              </span>
-              <span className="nav-mobile-label" aria-hidden="true">
-                {mobilePageLabels[p]}
-              </span>
-              {p === 'pending' && records.count > 0 && (
-                <small className="nav-count">{records.count}</small>
-              )}
-            </a>
-          ))}
-          <div className="nav-sep" />
-          <div className="nav-label">PREFERENCES</div>
-          <a
-            href="#settings"
-            className={'nav-item ' + (page === 'settings' ? 'active' : '')}
-            aria-label={pageLabels.settings}
-          >
-            <Icon name="settings" />
-            <span className="nav-full-label" aria-hidden="true">
-              数据与同步
-            </span>
-            <span className="nav-mobile-label" aria-hidden="true">
-              设置
-            </span>
-          </a>
+          <nav className="primary-navigation" aria-label="主导航">
+            {primaryNavigation.map(({ page: destination, label, mobileLabel, icon }) => (
+              <a
+                key={destination}
+                href={'#' + destination}
+                className={'nav-item ' + (activePrimaryPage === destination ? 'active' : '')}
+                aria-label={label}
+                aria-current={activePrimaryPage === destination ? 'page' : undefined}
+              >
+                <Icon name={icon} />
+                <span className="nav-full-label" aria-hidden="true">
+                  {label}
+                </span>
+                <span className="nav-mobile-label" aria-hidden="true">
+                  {mobileLabel}
+                </span>
+              </a>
+            ))}
+          </nav>
           <div className="sidebar-bottom">
             <div className="profile">
               <div className="avatar">AS</div>
@@ -992,6 +971,23 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               </span>
             </div>
           </div>
+          {isCollectionPage && (
+            <nav className="section-nav" aria-label="AP 图鉴页面">
+              {collectionNavigation.map(({ page: destination, label }) => (
+                <a
+                  key={destination}
+                  href={'#' + destination}
+                  className="section-nav-link"
+                  aria-current={page === destination ? 'page' : undefined}
+                >
+                  {label}
+                  {destination === 'pending' && records.count > 0 && (
+                    <span className="section-nav-count">{records.count}</span>
+                  )}
+                </a>
+              ))}
+            </nav>
+          )}
           {error ? (
             <div className="empty-state">
               <button
@@ -1401,7 +1397,11 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
               )}
               {page === 'publishing' && (
                 <Suspense fallback={<div className="empty-state">加载投稿整理…</div>}>
-                  <PublishingPage />
+                  <PublishingPage
+                    onOpenCover={() => {
+                      location.hash = 'cover';
+                    }}
+                  />
                 </Suspense>
               )}
               {page === 'venues' && (

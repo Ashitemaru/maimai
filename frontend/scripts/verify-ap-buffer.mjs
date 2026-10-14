@@ -342,12 +342,13 @@ try {
   const save = () => drawer.getByRole('button', { name: '保存待核记录', exact: true }).click();
   const close = () => drawer.getByRole('button', { name: '关闭', exact: true }).click();
   const startSync = async () => {
-    await page.getByRole('link', { name: '数据与同步', exact: true }).click();
+    await page.getByRole('link', { name: '设置', exact: true }).click();
     await page.getByLabel('或粘贴二维码内容', { exact: true }).fill('fixture-qr');
     await page.getByRole('button', { name: '同步华立成绩', exact: true }).click();
   };
   const syncAndReturn = async () => {
     await startSync();
+    await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
     await page.getByRole('link', { name: /待核记录/ }).click();
   };
   const settle = async () => {

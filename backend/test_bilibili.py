@@ -169,7 +169,11 @@ class FakeClient:
     def section(self, section_id):
         episodes = []
         for episode in self.collection_members[section_id]:
-            defaults = {"cid": 789, "bvid": BV, "title": "【maimai】Example Master13.9 AP"}
+            defaults = {
+                "cid": 789,
+                "bvid": self.data["archive"]["bvid"],
+                "title": "【maimai】Example Master13.9 AP",
+            }
             episodes.append(defaults | copy.deepcopy(episode))
         return {
             "section": {"id": section_id, "seasonId": 1, "type": 0, "title": str(section_id)},
@@ -179,7 +183,10 @@ class FakeClient:
     def videos(self, page):
         return {
             "items": [
-                {"bvid": BV, "title": self.data["archive"]["title"]},
+                {
+                    "bvid": self.data["archive"]["bvid"],
+                    "title": self.data["archive"]["title"],
+                },
                 *getattr(self, "extra_videos", []),
             ],
             "page": 1,
@@ -409,6 +416,31 @@ class BilibiliServiceTests(unittest.TestCase):
         body = preparation().model_copy(update={"achievement": "101.0000", "combo": "app"})
         self.assertTrue(self.service.prepare(body)["title"].endswith(" AP+"))
 
+    def test_ap_plus_survives_preview_and_metadata_submission(self):
+        self.client.data["archive"]["title"] = "【maimai】Example[STD] Master13.8 AP+"
+        body = preparation().model_copy(update={"combo": "app"})
+        plan = self.service.prepare(body)
+        self.assertEqual(plan["combo"], "app")
+        self.assertEqual(plan["title"], "【maimai】Example[STD] Master13.9 AP+")
+        result = self.apply(plan)
+        self.assertEqual(result["state"], "complete", result)
+        self.assertEqual(self.client.edit_payloads[0]["title"], plan["title"])
+
+    def test_mirrored_combo_matches_plan_and_submitted_title_in_both_directions(self):
+        mirror_bvid = "BV1bJouBSEiH"
+        suffix = " 9.31retsaM elpmaxE【iamiam】"
+        self.client.data["archive"].update(bvid=mirror_bvid, title="PA" + suffix)
+        for combo, prefix in (("app", "+PA"), ("ap", "PA")):
+            with self.subTest(combo=combo):
+                body = preparation().model_copy(update={"bvid": mirror_bvid, "combo": combo})
+                plan = self.service.prepare(body)
+                self.assertEqual(plan["combo"], combo)
+                self.assertTrue(plan["mirror_horizontal"])
+                self.assertEqual(plan["title"], prefix + suffix)
+                result = self.apply(plan)
+                self.assertEqual(result["state"], "complete", result)
+                self.assertEqual(self.client.edit_payloads[-1]["title"], prefix + suffix)
+
     def test_restart_marks_interrupted_running_job_without_losing_step(self):
         self.client.fail = "edit"
         result = self.apply(self.prepare())
@@ -584,7 +616,36 @@ class BilibiliProtocolTests(unittest.TestCase):
         body = preparation().model_copy(update={"constant": "13+?"})
         self.assertEqual(title_for(utage, body, ""), "【maimai】Song Utage13+? AP")
         mirror = preparation().model_copy(update={"bvid": "BV1bJouBSEiH"})
-        self.assertEqual(title_for(chart, mirror, "REVERSED"), "REVERSED")
+        mirrored_title = "PA 9.31retsaM gnoS【iamiam】"
+        self.assertEqual(title_for(chart, mirror, mirrored_title), mirrored_title)
+
+    def test_title_ap_plus_and_explicit_ap_override(self):
+        chart = {"title": "Example", "difficulty_index": 4, "type": "standard"}
+        original = "【maimai】Example Re:Master13.9 AP+"
+        plus = preparation().model_copy(update={"combo": "app"})
+        self.assertEqual(title_for(chart, plus, original), original)
+        self.assertEqual(
+            title_for(chart, preparation(), original), "【maimai】Example Re:Master13.9 AP"
+        )
+        utage = {"title": "Example", "difficulty_index": 0, "type": "utage"}
+        plus = plus.model_copy(update={"constant": "13+?"})
+        self.assertEqual(title_for(utage, plus, ""), "【maimai】Example Utage13+? AP+")
+        mirror = plus.model_copy(update={"bvid": "BV1bJouBSEiH"})
+        mirrored_title = "+PA 9.31retsaM elpmaxE【iamiam】"
+        self.assertEqual(title_for(chart, mirror, mirrored_title), mirrored_title)
+
+    def test_mirror_only_changes_recognized_combo_token_and_respects_override(self):
+        chart = {"title": "Example", "difficulty_index": 3, "type": "standard"}
+        mirror = preparation().model_copy(update={"bvid": "BV1bJouBSEiH", "combo": "app"})
+        suffix = "  9.31retsaM elpmaxE【iamiam】"
+        self.assertEqual(title_for(chart, mirror, "PA" + suffix), "+PA" + suffix)
+        for original in ("REVERSED", "PAExample", "AP Example", "++PA Example", "PA"):
+            with self.subTest(original=original):
+                with self.assertRaises(BilibiliError) as error:
+                    title_for(chart, mirror, original)
+                self.assertEqual(error.exception.status, 422)
+        override = mirror.model_copy(update={"title_override": "Explicit title AP+"})
+        self.assertEqual(title_for(chart, override, "REVERSED"), "Explicit title AP+")
 
     def test_cdn_aliases_equal_but_external_host_not_equal(self):
         self.assertEqual(

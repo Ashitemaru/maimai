@@ -320,7 +320,9 @@ try {
     document.dispatchEvent(new Event('visibilitychange'));
     window.dispatchEvent(new Event('focus'));
   });
-  await page.waitForFunction(() => document.querySelector('.nav-count')?.textContent === '2');
+  await page.waitForFunction(
+    () => document.querySelector('.section-nav-count')?.textContent === '2',
+  );
   await settle();
   checks.push(
     'A later focus waits for an old inflight snapshot, then refreshes to retain cross-device queue updates',

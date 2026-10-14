@@ -374,6 +374,7 @@ async function mock(context, { completionItems } = {}) {
         (chart) => chart.chart_key === decodeURIComponent(pathname.split('/').at(-1)),
       );
     } else if (pathname === '/api/summary') value = summary(filtered(url.searchParams));
+    else if (pathname === '/api/bilibili/status') value = { connected: false, account: null };
     else if (pathname === '/api/chart-filters')
       value = { constants: [1, 5, 10, 13.9, 15], cn_versions: cnVersions, versions: jpVersions };
     else if (pathname === '/api/settings/preferences')
@@ -1773,6 +1774,34 @@ try {
     });
     await page.goto(origin + '/#ap', { waitUntil: 'networkidle' });
     await page.locator('.chart-table tbody tr').first().waitFor();
+    assert.deepEqual(
+      await page.locator('.primary-navigation a').evaluateAll((links) =>
+        links.map((link) => ({
+          href: link.getAttribute('href'),
+          label: link.getAttribute('aria-label'),
+        })),
+      ),
+      [
+        { href: '#ap', label: 'AP 图鉴' },
+        { href: '#venues', label: '我的机厅' },
+        { href: '#publishing', label: '投稿整理' },
+        { href: '#settings', label: '设置' },
+      ],
+    );
+    assert.deepEqual(await page.locator('.section-nav a').allTextContents(), [
+      '谱面图鉴',
+      '完成统计',
+      '待核记录',
+    ]);
+    await page.getByRole('link', { name: '待核记录', exact: true }).click();
+    await page.getByRole('heading', { name: '待核记录', exact: true }).waitFor();
+    assert.equal(await page.locator('.nav-item.active').getAttribute('href'), '#ap');
+    assert.equal(
+      await page.locator('.section-nav [aria-current="page"]').getAttribute('href'),
+      '#pending',
+    );
+    await page.getByRole('link', { name: '谱面图鉴', exact: true }).click();
+    await page.locator('.chart-table tbody tr').first().waitFor();
     // Preferences intentionally initialize an explicit range; exercise clearing before the unfiltered baseline.
     await page.getByRole('button', { name: '清除筛选', exact: true }).click();
     await waitFor(
@@ -1858,7 +1887,9 @@ try {
     await page.keyboard.press('Escape');
     assert.equal(await page.getByRole('dialog').count(), 0);
     await page.goto(origin + '/#cover', { waitUntil: 'networkidle' });
-    await page.getByRole('heading', { name: '封面工坊' }).waitFor();
+    await page.getByRole('heading', { name: '生成封面' }).waitFor();
+    assert.equal(await page.locator('.nav-item.active').getAttribute('href'), '#publishing');
+    assert.equal(await page.getByRole('link', { name: '返回投稿整理', exact: true }).count(), 1);
     assert.equal(await page.getByRole('button', { name: '记录 AP', exact: true }).count(), 0);
     await page.getByRole('button', { name: '选择谱面', exact: true }).click();
     await page.locator('.pick-song').first().click();
@@ -1903,6 +1934,16 @@ try {
     );
     await badges(page.locator('.cover-song'), `${name}-cover selection`);
     await audit(page, `${name}-cover`);
+    await page.getByRole('link', { name: '返回投稿整理', exact: true }).click();
+    await page.getByRole('button', { name: '扫码连接', exact: true }).waitFor();
+    assert.equal(await page.locator('.section-nav').count(), 0);
+    await page.getByRole('button', { name: '生成封面', exact: true }).click();
+    assert.equal(await page.locator('#cover-score').inputValue(), '100.9876');
+    assert.equal(await aspect.inputValue(), '16:9');
+    assert.equal(await page.locator('.cover-song img').count(), 1);
+    checks.push(
+      `${name}: four main destinations retain AP subpages and a standalone cover tool accessible before Bilibili login, preserving cover inputs across navigation`,
+    );
     await page.goto(origin + '/#venues', { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: '汇总表', exact: true }).click();
     await page.locator('.venue-summary-entry').first().waitFor();

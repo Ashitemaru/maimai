@@ -160,7 +160,12 @@ export function CoverPage({
       <div className="heading">
         <div>
           <div className="eyebrow">MAKE YOUR PERFECT VISIBLE</div>
-          <h1>封面工坊</h1>
+          <h1>生成封面</h1>
+        </div>
+        <div className="heading-actions">
+          <a className="btn" href="#publishing">
+            返回投稿整理
+          </a>
         </div>
       </div>
       <div className="cover-workspace">

@@ -283,6 +283,7 @@ try {
         return;
       }
       const fixtures = {
+        '/api/bilibili/status': { connected: false, account: null },
         '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
         '/api/sync/status': idleScoreSync,
         '/api/settings/divingfish': { configured: false, source: null, sync: null },
@@ -401,7 +402,9 @@ try {
       );
     }
 
-    await page.getByRole('link', { name: '封面工坊', exact: true }).tap();
+    await page.getByRole('link', { name: '投稿整理', exact: true }).tap();
+    await page.getByRole('button', { name: '生成封面', exact: true }).tap();
+    assert.equal(await page.locator('.nav-item.active').getAttribute('href'), '#publishing');
     await page.getByRole('button', { name: '选择谱面', exact: true }).tap();
     await page
       .getByRole('dialog', { name: '选择谱面', exact: true })

@@ -324,7 +324,7 @@ try {
   checks.push(
     'Fresh server status blocks a maintenance-window QR POST with one toast; after 07:00 a stale tab recovers on click and an already-running job continues',
   );
-  await page.getByRole('link', { name: '数据与同步', exact: true }).click();
+  await page.getByRole('link', { name: '设置', exact: true }).click();
   assert.equal(await panel.getByText(receipt.notice, { exact: true }).count(), 0);
   await noInlinePrompts();
   await panel.getByText('2026-10-13 04:20', { exact: true }).waitFor();

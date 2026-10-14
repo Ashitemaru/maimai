@@ -493,7 +493,9 @@ try {
     await page.locator('#toast').filter({ hasText: '偏好设置已保存' }).waitFor();
     assert.equal(await panel.locator('.form-message, .preferences-saved').count(), 0);
     for (const route of ['ap', 'statistics']) {
-      await page.locator(`a.nav-item[href="#${route}"]`).click();
+      await page
+        .locator(`a.${route === 'ap' ? 'nav-item' : 'section-nav-link'}[href="#${route}"]`)
+        .click();
       await range(page, name, route === 'ap' ? 'charts' : 'completion-matrix', 12.5, 14.5);
     }
     const marker = requests.length;

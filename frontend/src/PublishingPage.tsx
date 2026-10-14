@@ -9,6 +9,7 @@ import { formatTimestamp } from './dateTime';
 import type { Chart, ChartList } from './types';
 import {
   parseBvid,
+  videoTitleCombo,
   matchingCollectionSection,
   publishingState,
   publishingComplete,
@@ -192,7 +193,7 @@ function PublishingSteps({ steps }: { steps: PublishingJob['steps'] }) {
   );
 }
 
-export function PublishingPage() {
+export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {}) {
   const notify = useNotify();
   const [session, setSession] = useState<BilibiliSession | null>(null);
   const [login, setLogin] = useState<LoginRequest | null>(null);
@@ -226,6 +227,7 @@ export function PublishingPage() {
   } | null>(null);
   const [job, setJob] = useState<PublishingJob | null>(null);
   const videoRequest = useRef(0);
+  const manualCombo = useRef<{ bvid: string; value: 'ap' | 'app' } | null>(null);
   const loginId = login?.login_id;
   const loginExpired = login?.state === 'expired';
   const selectedSection = automaticSection
@@ -384,6 +386,7 @@ export function PublishingPage() {
       setVideo(null);
       setVideos([]);
       setJobs([]);
+      manualCombo.current = null;
       setOrderCheck(null);
       invalidate();
     } catch (error) {
@@ -408,7 +411,11 @@ export function PublishingPage() {
       setChart(null);
       setQuery('');
       setAchievement('');
-      setCombo('ap');
+      if (manualCombo.current?.bvid === result.bvid) setCombo(manualCombo.current.value);
+      else {
+        manualCombo.current = null;
+        setCombo(videoTitleCombo(result) || 'ap');
+      }
       setConstant('');
       setVersion('');
       setSection('');
@@ -512,6 +519,11 @@ export function PublishingPage() {
     <div className="publishing-page">
       <div className="heading">
         <h1>投稿整理</h1>
+        {onOpenCover && (
+          <button type="button" className="btn" onClick={onOpenCover}>
+            生成封面
+          </button>
+        )}
       </div>
       <section className="settings-panel publishing-account">
         <div>
@@ -703,7 +715,11 @@ export function PublishingPage() {
                     <select
                       aria-label="完成标记"
                       value={combo}
-                      onChange={(event) => setCombo(event.target.value as 'ap' | 'app')}
+                      onChange={(event) => {
+                        const value = event.target.value as 'ap' | 'app';
+                        manualCombo.current = { bvid: video.bvid, value };
+                        setCombo(value);
+                      }}
                     >
                       <option value="ap">AP</option>
                       <option value="app">AP+</option>
