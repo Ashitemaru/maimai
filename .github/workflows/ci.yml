@@ -66,6 +66,16 @@ jobs:
       - run: npm run format:check
       - run: npm run test:ci
       - run: npm run verify:webkit
+      - name: Save failed browser checks
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-failure-${{ github.sha }}
+          path: |
+            output/webkit-audit/
+            output/publishing-audit/
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Save built frontend
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
