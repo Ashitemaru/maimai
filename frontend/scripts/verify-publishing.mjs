@@ -6,6 +6,10 @@ import { launchBrowser } from './browser.mjs';
 import { badgePNG, fixtureAsset, useSystemCoverFont } from './fixtures.mjs';
 import { idleScoreSync } from './score-sync-fixture.mjs';
 import { verifyPublishingLoginLifecycle } from './publishing-login-fixture.mjs';
+import {
+  capturePublishingMirrorInputs,
+  verifyPublishingMirrors,
+} from './publishing-mirror-fixture.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const bundle = path.resolve(process.env.UI_DIST || path.join(root, 'frontend/dist'));
@@ -426,37 +430,16 @@ try {
       await orderPreview.getByText('本次会调整「13.0」小节顺序', { exact: true }).count(),
       1,
     );
-    const normal = await page.getByAltText('16:9 投稿封面预览').getAttribute('src');
     await page.getByLabel('封面左右镜像').check();
     assert.equal(
       await page.getByAltText('16:9 投稿封面预览').count(),
       0,
       'Changed fields invalidate the frozen preview',
     );
+    await capturePublishingMirrorInputs(page);
     await page.getByRole('button', { name: '生成预览', exact: true }).click();
     await page.getByAltText('16:9 投稿封面预览').waitFor();
-    const mirrorMatches = await page.evaluate(async (before) => {
-      async function pixels(src) {
-        const image = new Image();
-        image.src = src;
-        await image.decode();
-        const canvas = document.createElement('canvas');
-        canvas.width = image.naturalWidth;
-        canvas.height = image.naturalHeight;
-        const context = canvas.getContext('2d');
-        context.drawImage(image, 0, 0);
-        return context.getImageData(0, 0, canvas.width, canvas.height).data;
-      }
-      const original = await pixels(before);
-      const mirrored = await pixels(document.querySelector('img[alt="16:9 投稿封面预览"]').src);
-      for (let y = 0; y < 1080; y += 31)
-        for (let x = 0; x < 1920; x += 29)
-          for (let c = 0; c < 4; c++)
-            if (original[(y * 1920 + x) * 4 + c] !== mirrored[(y * 1920 + 1919 - x) * 4 + c])
-              return false;
-      return true;
-    }, normal);
-    assert(mirrorMatches, 'The entire rendered cover must mirror, not only the jacket');
+    await verifyPublishingMirrors(page, output, width);
     await page.getByRole('button', { name: '确认整理', exact: true }).click();
     await page.getByRole('button', { name: '重试整理', exact: true }).waitFor();
     assert.equal(
