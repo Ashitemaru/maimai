@@ -5,6 +5,7 @@ import path from 'node:path';
 import { launchBrowser } from './browser.mjs';
 import { badgePNG, fixtureAsset, useSystemCoverFont } from './fixtures.mjs';
 import { idleScoreSync } from './score-sync-fixture.mjs';
+import { verifyPublishingLoginLifecycle } from './publishing-login-fixture.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const bundle = path.resolve(process.env.UI_DIST || path.join(root, 'frontend/dist'));
@@ -100,6 +101,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await launchBrowser();
 try {
   for (const width of [390, 1280]) {
+    const loginLifecycle = await verifyPublishingLoginLifecycle(browser, origin, width, errors);
     const context = await browser.newContext({
       viewport: { width, height: 900 },
       isMobile: width < 600,
@@ -662,6 +664,7 @@ try {
     assert.equal(applied.length, 1, 'AP+ previews must not trigger an extra publish');
     checks.push({
       width,
+      loginLifecycle,
       prepares: prepared.length,
       applies: applied.length,
       dimensions: ['1920x1080', '1440x1080'],

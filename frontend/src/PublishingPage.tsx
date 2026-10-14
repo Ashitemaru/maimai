@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { api, messageOf } from './api';
 import { useNotify } from './Toast';
@@ -196,6 +196,7 @@ function PublishingSteps({ steps }: { steps: PublishingJob['steps'] }) {
 export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {}) {
   const notify = useNotify();
   const [session, setSession] = useState<BilibiliSession | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [login, setLogin] = useState<LoginRequest | null>(null);
   const [videos, setVideos] = useState<PublishingVideo[]>([]);
   const [page, setPage] = useState(1);
@@ -227,9 +228,11 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
   } | null>(null);
   const [job, setJob] = useState<PublishingJob | null>(null);
   const videoRequest = useRef(0);
+  const sessionGeneration = useRef(0);
   const manualCombo = useRef<{ bvid: string; value: 'ap' | 'app' } | null>(null);
   const loginId = login?.login_id;
   const loginExpired = login?.state === 'expired';
+  const publishingBusy = busy || loading || checkingSession;
   const selectedSection = automaticSection
     ? matchingCollectionSection(collections, constant)
     : collections.some((collection) =>
@@ -238,12 +241,48 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
       ? section
       : '';
 
+  const clearSession = useCallback(() => {
+    sessionGeneration.current += 1;
+    setCheckingSession(false);
+    setSession({ connected: false, account: null });
+    setLogin(null);
+    setVideo(null);
+    setVideos([]);
+    setCollections([]);
+    setJobs([]);
+    setPage(1);
+    setHasMore(false);
+    setLoading(false);
+    setBusy(false);
+    setCheckingOrder(false);
+    setCharts([]);
+    setChart(null);
+    setOrderCheck(null);
+    setPrepared(null);
+    setJob(null);
+    manualCombo.current = null;
+    videoRequest.current += 1;
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
+    const generation = sessionGeneration.current;
+    setCheckingSession(true);
     api<BilibiliSession>('/bilibili/status', { signal: controller.signal })
-      .then(setSession)
+      .then((next) => {
+        if (controller.signal.aborted || generation !== sessionGeneration.current) return;
+        if (next.connected) {
+          setLogin(null);
+          setSession(next);
+        } else clearSession();
+      })
       .catch((error) => {
-        if (!controller.signal.aborted) notify(messageOf(error));
+        if (!controller.signal.aborted && generation === sessionGeneration.current)
+          notify(messageOf(error));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && generation === sessionGeneration.current)
+          setCheckingSession(false);
       });
     loadBackgroundManifest()
       .then(setManifest)
@@ -251,11 +290,12 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
         if (!controller.signal.aborted) notify(messageOf(error));
       });
     return () => controller.abort();
-  }, [notify, refresh]);
+  }, [clearSession, notify, refresh]);
 
   useEffect(() => {
     if (!session?.connected) return;
     const controller = new AbortController();
+    const generation = sessionGeneration.current;
     setLoading(true);
     setCollections([]);
     Promise.all([
@@ -268,24 +308,27 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
       api<{ items: PublishingJob[] }>('/bilibili/jobs', { signal: controller.signal }),
     ])
       .then(([listing, groups, history]) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || generation !== sessionGeneration.current) return;
         setVideos(listing.items);
         setHasMore(listing.has_more);
         setCollections(groups.items);
         setJobs(history.items);
       })
       .catch((error) => {
-        if (!controller.signal.aborted) notify(messageOf(error));
+        if (!controller.signal.aborted && generation === sessionGeneration.current)
+          notify(messageOf(error));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted && generation === sessionGeneration.current)
+          setLoading(false);
       });
     return () => controller.abort();
   }, [session?.connected, page, refresh, notify]);
 
   useEffect(() => {
-    if (!loginId || loginExpired) return;
+    if (!loginId || loginExpired || session?.connected) return;
     const controller = new AbortController();
+    const generation = sessionGeneration.current;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
@@ -293,8 +336,9 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
           `/bilibili/login/${encodeURIComponent(loginId)}`,
           { signal: controller.signal },
         );
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || generation !== sessionGeneration.current) return;
         if (next.state === 'connected') {
+          sessionGeneration.current += 1;
           setLogin(null);
           setSession({ connected: true, account: next.account || null });
           notify('Bilibili 已连接');
@@ -304,7 +348,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
         if (next.state === 'expired') return;
         timer = setTimeout(poll, 2500);
       } catch (error) {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && generation === sessionGeneration.current) {
           notify(messageOf(error));
           setLogin((current) => (current ? { ...current, state: 'expired' } : null));
         }
@@ -315,7 +359,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [loginId, loginExpired, notify]);
+  }, [loginId, loginExpired, session?.connected, notify]);
 
   useEffect(() => {
     if (!video || !query.trim()) {
@@ -352,52 +396,55 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
   }
 
   async function checkOrder() {
-    if (checkingOrder || busy) return;
+    if (!session?.connected || checkingOrder || publishingBusy) return;
+    const generation = sessionGeneration.current;
     setCheckingOrder(true);
     try {
-      setOrderCheck(await api<PublishingOrderCheck>('/bilibili/collections/order'));
+      const result = await api<PublishingOrderCheck>('/bilibili/collections/order');
+      if (generation === sessionGeneration.current) setOrderCheck(result);
     } catch (error) {
-      notify(messageOf(error));
+      if (generation === sessionGeneration.current) notify(messageOf(error));
     } finally {
-      setCheckingOrder(false);
+      if (generation === sessionGeneration.current) setCheckingOrder(false);
     }
   }
 
   async function connect() {
+    if (!session || session.connected || checkingSession || busy) return;
+    const generation = ++sessionGeneration.current;
+    setLogin(null);
     setBusy(true);
     try {
       const result = await api<Omit<LoginRequest, 'image' | 'state'>>('/bilibili/login', {
         method: 'POST',
       });
       const image = await QRCode.toDataURL(result.url, { width: 320, margin: 2 });
+      if (generation !== sessionGeneration.current) return;
       setLogin({ ...result, image, state: 'pending' });
     } catch (error) {
-      notify(messageOf(error));
+      if (generation === sessionGeneration.current) notify(messageOf(error));
     } finally {
-      setBusy(false);
+      if (generation === sessionGeneration.current) setBusy(false);
     }
   }
 
   async function disconnect() {
+    if (!session?.connected || busy || checkingOrder) return;
+    const generation = ++sessionGeneration.current;
     setBusy(true);
     try {
       await api('/bilibili/session', { method: 'DELETE' });
-      setSession({ connected: false, account: null });
-      setVideo(null);
-      setVideos([]);
-      setJobs([]);
-      manualCombo.current = null;
-      setOrderCheck(null);
-      invalidate();
+      if (generation === sessionGeneration.current) clearSession();
     } catch (error) {
       notify(messageOf(error));
+      setRefresh((value) => value + 1);
     } finally {
       setBusy(false);
     }
   }
 
   async function selectVideo(value: string) {
-    if (busy || loading) return;
+    if (!session?.connected || publishingBusy) return;
     const bvid = parseBvid(value);
     if (!bvid) return notify('请填写 BV 号或视频链接');
     const request = ++videoRequest.current;
@@ -430,7 +477,8 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
 
   async function preview(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!video || !chart || busy || loading || !selectedSection) return;
+    if (!session?.connected || !video || !chart || publishingBusy || !selectedSection) return;
+    const generation = sessionGeneration.current;
     setBusy(true);
     invalidate();
     try {
@@ -447,24 +495,26 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
           section_id: Number(selectedSection),
         }),
       });
+      if (generation !== sessionGeneration.current) return;
       const images = plan.order?.status === 'blocked' ? null : await renderPublishingImages(plan);
-      setPrepared({ plan, images });
+      if (generation === sessionGeneration.current) setPrepared({ plan, images });
     } catch (error) {
-      notify(messageOf(error));
+      if (generation === sessionGeneration.current) notify(messageOf(error));
     } finally {
-      setBusy(false);
+      if (generation === sessionGeneration.current) setBusy(false);
     }
   }
 
   async function apply() {
     if (
+      !session?.connected ||
       !prepared?.images ||
       !prepared.plan.order ||
       prepared.plan.order.status === 'blocked' ||
-      busy ||
-      loading
+      publishingBusy
     )
       return;
+    const generation = sessionGeneration.current;
     setBusy(true);
     try {
       const result = prepared.retryJob
@@ -476,6 +526,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
             method: 'POST',
             body: JSON.stringify({ plan_id: prepared.plan.plan_id, ...prepared.images }),
           });
+      if (generation !== sessionGeneration.current) return;
       setJob(result);
       setJobs((current) => [result, ...current.filter((item) => item.job_id !== result.job_id)]);
       if (result.error)
@@ -484,19 +535,21 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
         );
       else notify(publishingState(result.state));
     } catch (error) {
-      notify(messageOf(error));
+      if (generation === sessionGeneration.current) notify(messageOf(error));
     } finally {
-      setBusy(false);
+      if (generation === sessionGeneration.current) setBusy(false);
     }
   }
 
   async function resume(previous: PublishingJob) {
-    if (busy) return;
+    if (!session?.connected || publishingBusy) return;
+    const generation = sessionGeneration.current;
     setBusy(true);
     try {
       const result = await api<PublishingJob & { plan: PublishingPlan; covers: PublishingImages }>(
         `/bilibili/jobs/${encodeURIComponent(previous.job_id)}`,
       );
+      if (generation !== sessionGeneration.current) return;
       if (publishingComplete(result.state)) {
         setJobs((current) =>
           current.map((item) => (item.job_id === result.job_id ? result : item)),
@@ -509,9 +562,9 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
       setPrepared({ plan: result.plan, images: result.covers, retryJob: previous.job_id });
       setJob(result);
     } catch (error) {
-      notify(messageOf(error));
+      if (generation === sessionGeneration.current) notify(messageOf(error));
     } finally {
-      setBusy(false);
+      if (generation === sessionGeneration.current) setBusy(false);
     }
   }
 
@@ -528,18 +581,34 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
       <section className="settings-panel publishing-account">
         <div>
           <h2>Bilibili</h2>
-          <span>{session?.connected ? session.account?.name || '已连接' : '尚未连接'}</span>
+          <span>
+            {session?.connected
+              ? session.account?.name || '已连接'
+              : checkingSession
+                ? '检查连接中…'
+                : session
+                  ? '尚未连接'
+                  : '连接状态未确认'}
+          </span>
         </div>
         {session?.connected ? (
           <button className="btn" disabled={busy || checkingOrder} onClick={disconnect}>
             断开连接
           </button>
+        ) : !session && !checkingSession ? (
+          <button className="btn" onClick={() => setRefresh((value) => value + 1)}>
+            重试连接检查
+          </button>
         ) : (
-          <button className="btn primary" disabled={busy} onClick={connect}>
+          <button
+            className="btn primary"
+            disabled={busy || checkingSession || !session}
+            onClick={connect}
+          >
             {login ? '重新获取二维码' : '扫码连接'}
           </button>
         )}
-        {login && (
+        {!session?.connected && login && (
           <div className="publishing-login">
             <img src={login.image} alt="Bilibili 登录二维码" />
             <span role="status">
@@ -567,7 +636,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
               <h2>合集顺序</h2>
               <button
                 className="btn"
-                disabled={busy || checkingOrder}
+                disabled={publishingBusy || checkingOrder}
                 onClick={() => void checkOrder()}
               >
                 {checkingOrder ? '检查中…' : '检查合集顺序'}
@@ -580,7 +649,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
               <h2>选择稿件</h2>
               <button
                 className="btn"
-                disabled={busy || loading}
+                disabled={publishingBusy}
                 onClick={() => {
                   setLoading(true);
                   setRefresh((value) => value + 1);
@@ -601,9 +670,9 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                 placeholder="BV 号或视频链接"
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                disabled={busy || loading}
+                disabled={publishingBusy}
               />
-              <button className="btn" disabled={busy || loading || !input.trim()}>
+              <button className="btn" disabled={publishingBusy || !input.trim()}>
                 载入稿件
               </button>
             </form>
@@ -614,7 +683,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                   key={item.bvid}
                   className="publishing-video"
                   aria-pressed={video?.bvid === item.bvid}
-                  disabled={busy || loading}
+                  disabled={publishingBusy}
                   onClick={() => void selectVideo(item.bvid)}
                 >
                   <img src={item.cover} alt="" loading="lazy" referrerPolicy="no-referrer" />
@@ -629,7 +698,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
               <div className="publishing-pagination">
                 <button
                   className="btn"
-                  disabled={page === 1 || loading || busy}
+                  disabled={page === 1 || publishingBusy}
                   onClick={() => setPage((value) => value - 1)}
                 >
                   上一页
@@ -637,7 +706,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                 <span>{page}</span>
                 <button
                   className="btn"
-                  disabled={!hasMore || loading || busy}
+                  disabled={!hasMore || publishingBusy}
                   onClick={() => setPage((value) => value + 1)}
                 >
                   下一页
@@ -659,7 +728,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
               <form onSubmit={preview}>
                 <fieldset
                   className="publishing-fields"
-                  disabled={busy || loading}
+                  disabled={publishingBusy}
                   onChange={invalidate}
                 >
                   <label className="field publishing-wide">
@@ -789,7 +858,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                   <div className="form-actions publishing-wide">
                     <button
                       className="btn"
-                      disabled={!chart || busy || loading || !achievement || !selectedSection}
+                      disabled={!chart || publishingBusy || !achievement || !selectedSection}
                     >
                       {busy ? '处理中…' : '生成预览'}
                     </button>
@@ -844,8 +913,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                   type="button"
                   className="btn primary"
                   disabled={
-                    busy ||
-                    loading ||
+                    publishingBusy ||
                     !prepared.images ||
                     !prepared.plan.order ||
                     prepared.plan.order.status === 'blocked' ||
@@ -879,7 +947,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                     <button
                       type="button"
                       className="btn"
-                      disabled={busy}
+                      disabled={publishingBusy}
                       onClick={() => void resume(item)}
                     >
                       继续整理
