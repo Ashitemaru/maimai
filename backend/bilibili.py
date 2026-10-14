@@ -12,6 +12,7 @@ import re
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -42,6 +43,7 @@ from .bilibili_order import (
 MAX_BODY = 16 * 1024 * 1024
 MIRROR_BVID = "BV1bJouBSEiH"
 DIFFICULTIES = ("Basic", "Advanced", "Expert", "Master", "Re:Master")
+HANDPLAY_COLLECTION = re.compile(r"maimai\s+\d{1,2}\+?\s+ap", re.IGNORECASE)
 
 
 class PrepareInput(BaseModel):
@@ -294,8 +296,23 @@ class BilibiliService:
         return {"connected": False, "account": None}
 
     def videos(self, page):
-        with self.client() as (client, _):
-            return client.videos(page)
+        # Collection membership is authoritative; mirrored and Utage titles need
+        # no special cases, and a maimai-like title cannot admit an unrelated video.
+        videos = {}
+        with self.client() as (client, account):
+            for collection in client.collections()["items"]:
+                title = unicodedata.normalize("NFKC", collection["title"]).strip()
+                if not HANDPLAY_COLLECTION.fullmatch(title):
+                    continue
+                for video in client.collection_videos(collection["id"], account["mid"]):
+                    videos[video["bvid"]] = video
+        items = sorted(videos.values(), key=lambda v: (v["created_at"], v["aid"]), reverse=True)
+        start = (page - 1) * 20
+        return {
+            "items": items[start : start + 20],
+            "page": page,
+            "has_more": start + 20 < len(items),
+        }
 
     def video(self, bvid):
         with self.client() as (client, account):

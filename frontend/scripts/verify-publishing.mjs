@@ -499,9 +499,10 @@ try {
     assert.equal(await page.getByLabel('合集', { exact: true }).inputValue(), '8');
     ambiguous = true;
     await page.getByRole('button', { name: '刷新', exact: true }).click();
-    assert(
-      await page.getByRole('button', { name: /Our Wrenally old title/ }).isDisabled(),
-      'Stale video selections must be disabled while collections refresh',
+    assert.equal(
+      await page.getByRole('button', { name: /Our Wrenally old title/ }).count(),
+      0,
+      'Stale video selections must be removed while collections refresh',
     );
     assert(
       await page.getByLabel('合集', { exact: true }).isDisabled(),

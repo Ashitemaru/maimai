@@ -63,6 +63,7 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
   let statusDelay = hold({ connected: true, account });
   let statusErrorOnce = false;
   let videosDelay = null;
+  let listingMode = 'normal';
   const oldPoll = hold({ state: 'connected', account });
   let secondPollCount = 0;
   let title = video.title;
@@ -101,8 +102,9 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
     return asset ? route.fulfill(asset) : route.continue();
   });
   await context.route('**/api/**', async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    requests.push({ pathname, method: route.request().method() });
+    const url = new URL(route.request().url());
+    const pathname = url.pathname;
+    requests.push({ pathname, search: url.search, method: route.request().method() });
     if (pathname === '/api/bilibili/status') {
       if (statusErrorOnce) {
         statusErrorOnce = false;
@@ -142,12 +144,24 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
       return route.fulfill({ json: { state: 'connected', account } });
     }
     if (pathname === '/api/bilibili/videos') {
+      if (listingMode === 'error')
+        return route.fulfill({ status: 503, json: { detail: '模拟合集稿件获取失败' } });
       const delay = videosDelay;
       videosDelay = null;
       return delay
         ? delay.reply(route)
-        : route.fulfill({ json: { items: [{ ...video, title }], page: 1, has_more: false } });
+        : route.fulfill({
+            json: {
+              items: listingMode === 'empty' ? [] : [{ ...video, title }],
+              page: Number(url.searchParams.get('page') || '1'),
+              has_more: listingMode === 'paged' && url.searchParams.get('page') === '1',
+            },
+          });
     }
+    if (pathname === '/api/bilibili/videos/BV1NEW111111')
+      return route.fulfill({
+        json: { bvid: 'BV1NEW111111', title: 'New handplay outside collections', revision: '1' },
+      });
     assert(fixtures[pathname], `Unexpected login lifecycle API: ${pathname}`);
     return route.fulfill({ json: fixtures[pathname] });
   });
@@ -189,6 +203,50 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
     );
     checkingStatus.release();
     await page.getByRole('button', { name: video.title, exact: false }).click({ trial: true });
+
+    const refreshListing = async () => {
+      await page.getByRole('button', { name: '刷新', exact: true }).click();
+      await page.getByRole('button', { name: '刷新', exact: true }).click({ trial: true });
+    };
+    listingMode = 'error';
+    await refreshListing();
+    await page.getByText('模拟合集稿件获取失败', { exact: true }).waitFor();
+    assert.equal(
+      await page.locator('.publishing-video').count(),
+      0,
+      'A failed refresh must not retain videos from the previous collection response',
+    );
+    assert.equal(
+      await page.getByText('暂无已加入合集的手元视频', { exact: true }).count(),
+      0,
+      'A failed request must not claim the collection has no videos',
+    );
+    listingMode = 'empty';
+    await refreshListing();
+    await page.getByText('暂无已加入合集的手元视频', { exact: true }).waitFor();
+    await page.getByLabel('BV 号或视频链接').fill('https://www.bilibili.com/video/BV1NEW111111');
+    await page.getByRole('button', { name: '载入稿件', exact: true }).click();
+    await page
+      .getByRole('link', { name: 'New handplay outside collections', exact: true })
+      .waitFor();
+    assert.equal(await page.locator('.publishing-video').count(), 0);
+
+    listingMode = 'paged';
+    await refreshListing();
+    await page.getByRole('button', { name: '下一页', exact: true }).click();
+    await page.getByRole('button', { name: '刷新', exact: true }).click({ trial: true });
+    assert.equal(
+      requests.filter((request) => request.pathname === '/api/bilibili/videos').at(-1).search,
+      '?page=2',
+    );
+    await refreshListing();
+    assert.equal(
+      requests.filter((request) => request.pathname === '/api/bilibili/videos').at(-1).search,
+      '?page=1',
+      'Refreshing collections must restart compact pagination at the first page',
+    );
+    assert(await page.getByRole('button', { name: '上一页', exact: true }).isDisabled());
+    listingMode = 'normal';
 
     await page.getByRole('button', { name: '断开连接', exact: true }).click();
     await assertDisconnected(page);
@@ -276,6 +334,10 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
       staleLoginIgnored: true,
       staleVideoIgnored: true,
       statusFailureRetry: true,
+      filteredListEmpty: true,
+      unlistedVideoManualLoad: true,
+      failedListCleared: true,
+      refreshPaginationReset: true,
     };
   } finally {
     for (const reply of pendingReplies) reply.release();

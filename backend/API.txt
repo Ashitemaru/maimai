@@ -318,7 +318,12 @@ POST /api/bilibili/login -> {login_id,url,expires_at}; QR authorization URL only
 GET /api/bilibili/login/{login_id} -> {state,account?}
 DELETE /api/bilibili/session -> removes the locally saved Bilibili session.
 GET /api/bilibili/videos?page=1 -> {items,has_more,page}
+  Only members of the signed-in account's handplay collections named
+  "maimai <level> AP" (for example maimai 13+ AP). Video titles are not filters.
+  Reads complete collection membership, deduplicates, sorts newest first and then
+  paginates 20 items. Incomplete upstream results fail instead of listing all uploads.
 GET /api/bilibili/videos/{bvid} -> existing title, both covers and revision.
+  Explicitly loading an owned BV remains available for new, uncollected handplays.
 GET /api/bilibili/collections -> {items:[{id,title,sections:[{id,title}]}]}
 GET /api/bilibili/collections/order -> {checked_at,sections:[OrderReport]}
   Explicit read-only inspection of all owned collection sections. Each OrderReport

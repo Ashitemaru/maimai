@@ -147,6 +147,32 @@ def archive_revision(data):
     return digest(edit_payload(data))
 
 
+def collection_video(row):
+    if not isinstance(row, dict):
+        raise BilibiliError("B 站合集稿件格式已变化")
+    bvid, aid, title = row.get("bvid"), row.get("aid"), row.get("title")
+    created_at = row.get("pubdate") or row.get("ctime")
+    if (
+        not isinstance(bvid, str)
+        or not BVID.fullmatch(bvid)
+        or type(aid) is not int
+        or aid <= 0
+        or not isinstance(title, str)
+        or not title
+        or type(created_at) is not int
+        or created_at < 0
+        or not isinstance(row.get("pic", ""), str)
+    ):
+        raise BilibiliError("B 站合集稿件信息不完整")
+    return {
+        "bvid": bvid,
+        "aid": aid,
+        "title": title,
+        "cover": row.get("pic", ""),
+        "created_at": created_at,
+    }
+
+
 class BilibiliClient:
     def __init__(self, cookies=(), *, transport=None):
         self.http = httpx.Client(
@@ -283,6 +309,57 @@ class BilibiliClient:
             raise BilibiliError("该稿件不属于当前登录账号", status=409)
         edit_payload(data)
         return data
+
+    def collection_videos(self, season_id, mid):
+        """Read a complete collection, without loading every video's edit payload."""
+        items = []
+        seen = set()
+        expected_total = None
+        for page in range(1, 101):
+            data = self.request(
+                "GET",
+                API,
+                "/x/polymer/web-space/seasons_archives_list",
+                params={
+                    "mid": mid,
+                    "season_id": season_id,
+                    "sort_reverse": "false",
+                    "page_num": page,
+                    "page_size": 100,
+                },
+            )
+            if not isinstance(data, dict):
+                raise BilibiliError("B 站合集稿件格式已变化")
+            meta, paging = data.get("meta"), data.get("page")
+            if not isinstance(meta, dict) or not isinstance(paging, dict):
+                raise BilibiliError("B 站未返回完整合集信息")
+            if meta.get("mid") != mid or meta.get("season_id") != season_id:
+                raise BilibiliError("B 站返回的合集与当前账号不一致")
+            size, total = paging.get("page_size"), paging.get("total")
+            if (
+                paging.get("page_num") != page
+                or type(size) is not int
+                or not 1 <= size <= 100
+                or type(total) is not int
+                or not 0 <= total <= 10000
+                or meta.get("total") != total
+            ):
+                raise BilibiliError("B 站合集分页信息不完整")
+            if expected_total is not None and expected_total != total:
+                raise BilibiliError("B 站合集内容发生变化，请刷新后重试")
+            expected_total = total
+            rows = data.get("archives")
+            if not isinstance(rows, list) or len(rows) != min(size, total - len(items)):
+                raise BilibiliError("B 站未返回完整合集稿件，请刷新后重试")
+            for row in rows:
+                item = collection_video(row)
+                if item["bvid"] in seen:
+                    raise BilibiliError("B 站合集分页出现重复稿件，请刷新后重试")
+                seen.add(item["bvid"])
+                items.append(item)
+            if len(items) == total:
+                return items
+        raise BilibiliError("合集稿件数量超出处理上限", status=409)
 
     def collections(self):
         items = []

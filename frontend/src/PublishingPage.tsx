@@ -206,6 +206,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
   const [checkingOrder, setCheckingOrder] = useState(false);
   const [jobs, setJobs] = useState<PublishingJob[]>([]);
   const [loading, setLoading] = useState(false);
+  const [listingLoaded, setListingLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [input, setInput] = useState('');
@@ -253,6 +254,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
     setPage(1);
     setHasMore(false);
     setLoading(false);
+    setListingLoaded(false);
     setBusy(false);
     setCheckingOrder(false);
     setCharts([]);
@@ -297,6 +299,9 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
     const controller = new AbortController();
     const generation = sessionGeneration.current;
     setLoading(true);
+    setListingLoaded(false);
+    setVideos([]);
+    setHasMore(false);
     setCollections([]);
     Promise.all([
       api<{ items: PublishingVideo[]; has_more: boolean }>(`/bilibili/videos?page=${page}`, {
@@ -313,6 +318,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
         setHasMore(listing.has_more);
         setCollections(groups.items);
         setJobs(history.items);
+        setListingLoaded(true);
       })
       .catch((error) => {
         if (!controller.signal.aborted && generation === sessionGeneration.current)
@@ -652,6 +658,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                 disabled={publishingBusy}
                 onClick={() => {
                   setLoading(true);
+                  setPage(1);
                   setRefresh((value) => value + 1);
                 }}
               >
@@ -694,6 +701,9 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                 </button>
               ))}
             </div>
+            {listingLoaded && !loading && videos.length === 0 && (
+              <p className="empty-state">暂无已加入合集的手元视频</p>
+            )}
             {(page > 1 || hasMore) && (
               <div className="publishing-pagination">
                 <button
