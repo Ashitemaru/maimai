@@ -3516,11 +3516,9 @@ textarea {
   gap: var(--space-4);
   margin-bottom: var(--space-4);
 }
-.qr-sync-form,
 .score-token-form {
   margin-top: var(--space-4);
 }
-.qr-image-row,
 .score-sync-progress,
 .score-sync-counts {
   display: flex;
@@ -3528,12 +3526,7 @@ textarea {
   flex-wrap: wrap;
   gap: var(--space-3);
 }
-.qr-image-row {
-  margin-bottom: var(--space-4);
-}
-.qr-image-row > span,
-.score-sync-receipt > time,
-.score-sync-panels .form-actions > time {
+.score-sync-receipt > time {
   color: var(--muted);
   font-size: var(--font-ui);
 }

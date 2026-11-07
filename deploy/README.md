@@ -13,9 +13,7 @@ the core `scripts/*.py` allowlist in `deploy_release.py`, `requirements.lock`,
 optionally `deploy/**` for manual bootstrap updates. It must contain no personal
 runtime data, catalogs, pictures, credentials, symlinks or private records.
 `dependencies/` contains only wheels and their public `manifest.json`.
-The only allowed deployment JSON is the public
-`deploy/wahlap-runtime.lock.json` manifest; the external score runtime and its
-binary files never enter a release. Requirements are exact version pins with no URLs or
+Releases contain no deployment JSON. Requirements are exact version pins with no URLs or
 pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other tests.
 
 ## One-time root bootstrap
@@ -161,36 +159,6 @@ before publishing the first bundle. It remains one standalone Python file;
 there is no new root helper or scheduled job. An older deployer intentionally
 rejects `dependencies/`, keeping the existing application running. Normal releases
 continue to leave this root-owned bootstrap file unchanged.
-
-## Direct game-score synchronization
-
-The Wahlap worker has separate, pinned dependencies and an explicitly provisioned
-runtime. See [Wahlap runtime setup](wahlap-runtime.md). Provision the runtime and
-`mai-journal-wahlap.socket` before setting `MAIMAI_WAHLAP_ENABLED=1` and
-`MAIMAI_WAHLAP_SOCKET=/run/mai-journal-wahlap.sock` in the application environment.
-Each private Unix socket connection starts a separate service using the current
-release, which launches the sandboxed worker. The web service retains its existing
-systemd hardening; only the broker disables `ProtectKernelTunables`, because its
-masked host `/proc` otherwise prevents bubblewrap from mounting a private `/proc`.
-The broker has no application EnvironmentFile, does not log the QR, and disables
-core dumps. The website can continue running if this optional runtime
-is unavailable. Only the worker's state directory is writable inside its Linux
-filesystem sandbox. The personal database, catalog and application credentials
-are not mounted there.
-
-The root-owned deployer must include the exact `wahlap-runtime.lock.json` allowlist
-entry before activating the first release that contains it. Normal CI releases
-do not replace that bootstrap script or install Wine/system packages. Existing
-personal scores and AP confirmations are migrated additively, without replacing
-their evidence. A runtime probe validates local dependencies only; an authenticated
-full score fetch and confirmed game logout are still required for end-to-end
-verification. Do not simulate those using unrelated accounts.
-
-For a cloud egress rejected by Wahlap, provision the [dedicated proxy namespace](../docs/WAHLAP_PROXY.md).
-It routes both Python and Wine through one selected node, without changing the
-web service's network. The manual network probe requests game configuration
-without a QR or player login; the ordinary status poll remains an imports check.
-Proxy credentials and binaries stay outside application releases.
 
 ## Venue map and place lookup
 

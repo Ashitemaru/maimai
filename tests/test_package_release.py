@@ -186,7 +186,6 @@ class PackageReleaseTest(unittest.TestCase):
                     "backend/store.py",
                     "scripts/catalog_pipeline.py",
                     "deploy/deploy_release.py",
-                    "deploy/wahlap-runtime.lock.json",
                     "requirements.lock",
                     "frontend/dist/index.html",
                     "RELEASE_SHA",

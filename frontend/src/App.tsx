@@ -777,7 +777,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
       body: JSON.stringify({ token }),
     });
     setSettings(result);
-    notify(token ? '已保存上传 Token' : '已移除上传 Token');
+    notify(token ? '已保存水鱼 Token' : '已移除水鱼 Token');
   }
   async function savePreferences(value: Preferences) {
     const saved = await api<Preferences>('/settings/preferences', {

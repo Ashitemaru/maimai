@@ -50,14 +50,8 @@ performed. The AP buffer regression verifies empty initial venue selection, choo
 
 ## Game score sync
 
-`verify:score-sync` decodes the original synthetic QR fixture with `jsQR` while
-`BarcodeDetector` is unavailable. It checks that no image is uploaded, only QR text
-is sent to the score endpoint, and the text is cleared after submission without
-browser persistence. It covers unavailable and unverified states, asynchronous
-job polling across page navigation, AP-buffer refresh, expired codes, failed jobs,
-and unreadable images. Uploading to DivingFish requires a saved Token and a prior
-Wahlap snapshot; it is a separate explicit action, reports skipped records, and
-never calls the old score-pull endpoint. The fixture makes no requests to game
-servers and does not prove that the live worker can read a real account or close
-a game session. Reports and 390px/desktop screenshots are saved under
+`verify:score-sync` checks that the settings page offers only the Diving-Fish panel,
+that sync stays disabled until a token is saved, and that a manual sync polls to
+completion, refreshes data and shows its receipt. It also covers failed jobs, refused
+starts and status-load retries. The fixture makes no requests to Diving-Fish. Reports and 390px/desktop screenshots are saved under
 `../output/score-sync-audit`.

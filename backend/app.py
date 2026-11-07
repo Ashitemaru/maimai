@@ -205,11 +205,6 @@ class APRecordInput(BaseModel):
     expected_revision: int = Field(ge=0, strict=True)
 
 
-class WahlapSyncInput(BaseModel):
-    model_config = {"extra": "forbid"}
-    qr_text: str = Field(min_length=1, max_length=4096, strict=True)
-
-
 class PreferencesInput(BaseModel):
     model_config = {"extra": "forbid"}
     default_constant_min: float = Field(
@@ -320,8 +315,6 @@ def create_app(store=None, updater=None):
     async def safe_validation(request: Request, exc):
         if request.url.path.startswith("/api/bilibili/"):
             return JSONResponse({"detail": "投稿参数无效，请检查后重试。"}, status_code=422)
-        if request.url.path == "/api/sync/wahlap":
-            return JSONResponse({"detail": "二维码内容无效，请重新扫描。"}, status_code=422)
         if request.url.path == "/api/auth/login":
             return JSONResponse({"detail": "Master key 格式无效。"}, status_code=422)
         if request.url.path == "/api/settings/divingfish":
@@ -815,26 +808,12 @@ def create_app(store=None, updater=None):
     def score_sync_status():
         return score_sync.status()
 
-    @app.post("/api/sync/wahlap/probe")
-    def probe_wahlap_network():
+    @app.post("/api/sync/divingfish", status_code=202)
+    def start_divingfish_sync():
         try:
-            return score_sync.probe_wahlap()
+            return score_sync.start()
         except ScoreSyncError as exc:
-            raise HTTPException(exc.status, exc.detail(), headers=exc.headers()) from None
-
-    @app.post("/api/sync/wahlap", status_code=202)
-    def start_wahlap_sync(value: WahlapSyncInput):
-        try:
-            return score_sync.start_wahlap(value.qr_text)
-        except ScoreSyncError as exc:
-            raise HTTPException(exc.status, exc.detail(), headers=exc.headers()) from None
-
-    @app.post("/api/sync/divingfish/upload", status_code=202)
-    def start_divingfish_upload():
-        try:
-            return score_sync.start_upload()
-        except ScoreSyncError as exc:
-            raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
+            raise HTTPException(exc.status, exc.detail()) from None
 
     @app.get("/jackets/thumbnails/{song_id}/{revision}.webp")
     def jacket_thumbnail(song_id: str, revision: str, request: Request):

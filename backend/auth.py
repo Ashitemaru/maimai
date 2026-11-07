@@ -219,7 +219,7 @@ class LoginBodyLimitMiddleware:
         if not (
             scope["type"] == "http"
             and scope["method"] == "POST"
-            and scope["path"] in {"/api/auth/login", "/api/sync/wahlap"}
+            and scope["path"] == "/api/auth/login"
         ):
             await self.app(scope, receive, send)
             return

@@ -128,8 +128,7 @@ let delaySync = null;
 let syncFailure = false;
 let scoreSyncStatus = {
   ...idleScoreSync,
-  wahlap: { ...idleScoreSync.wahlap, available: true, reason: null },
-  divingfish: { configured: true, last_upload: null },
+  divingfish: { configured: true, last_sync: null },
 };
 let syncSequence = 0;
 charts.forEach((chart, index) =>
@@ -219,7 +218,7 @@ try {
       await route.fulfill({ json: { chart } });
       return;
     }
-    if (pathname === '/api/sync/wahlap') {
+    if (pathname === '/api/sync/divingfish') {
       assert.equal(method, 'POST');
       if (delaySync) {
         const delay = delaySync;
@@ -229,7 +228,7 @@ try {
       }
       if (syncFailure) {
         syncFailure = false;
-        await route.fulfill({ status: 502, json: { detail: '华立暂时无法连接' } });
+        await route.fulfill({ status: 502, json: { detail: '暂时无法访问水鱼' } });
         return;
       }
       let confirmed = 0;
@@ -259,7 +258,7 @@ try {
       }
       const result = {
         ok: true,
-        source: 'wahlap',
+        source: 'divingfish',
         records: 2,
         matched: 2,
         unmatched: 0,
@@ -271,7 +270,7 @@ try {
       };
       const job = {
         id: result.sync_id,
-        kind: 'wahlap',
+        kind: 'divingfish',
         state: 'succeeded',
         stage: 'completed',
         error: null,
@@ -280,12 +279,7 @@ try {
       scoreSyncStatus = {
         ...scoreSyncStatus,
         job,
-        wahlap: {
-          ...scoreSyncStatus.wahlap,
-          verified: true,
-          last_sync: result,
-          has_snapshot: true,
-        },
+        divingfish: { ...scoreSyncStatus.divingfish, last_sync: result },
       };
       await route.fulfill({ json: job });
       return;
@@ -342,8 +336,7 @@ try {
   const close = () => drawer.getByRole('button', { name: '关闭', exact: true }).click();
   const startSync = async () => {
     await page.getByRole('link', { name: '设置', exact: true }).click();
-    await page.getByLabel('或粘贴二维码内容', { exact: true }).fill('fixture-qr');
-    await page.getByRole('button', { name: '同步华立成绩', exact: true }).click();
+    await page.getByRole('button', { name: '从水鱼同步', exact: true }).click();
   };
   const syncAndReturn = async () => {
     await startSync();
@@ -414,7 +407,7 @@ try {
   assert.equal(charts[0].is_ap, false);
   syncFailure = true;
   await syncAndReturn();
-  await page.locator('#toast').filter({ hasText: '华立暂时无法连接' }).waitFor();
+  await page.locator('#toast').filter({ hasText: '暂时无法访问水鱼' }).waitFor();
   assert.equal(queue().count, 1);
   checks.push('Non-AP results and failed sync retain pending rows and leave completion unchanged');
   syncStage = 1;

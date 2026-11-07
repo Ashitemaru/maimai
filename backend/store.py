@@ -612,7 +612,7 @@ class Store(APRecords):
             row = conn.execute("SELECT value FROM metadata WHERE key='last_sync'").fetchone()
             last_sync = json.loads(row[0]) if row else None
             provider_source = (last_sync or {}).get("source", "divingfish")
-            provider_label = "华立" if provider_source == "wahlap" else "水鱼"
+            provider_label = "水鱼"
         items = ChartList(
             cn_versions=catalog.cn_versions, cn_matrix_versions=catalog.cn_matrix_versions
         )

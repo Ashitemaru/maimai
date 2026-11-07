@@ -2,26 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections import Counter
 from uuid import uuid4
 
 from .clock import now
-from .wahlap import valid_score_level
 
 
 class RecordConflictError(Exception):
     """The venue claim changed since the client loaded it."""
-
-
-class ScoreAccountError(ValueError):
-    """A complete import belongs to a different already-bound game account."""
-
-
-class ScoreSourceError(ValueError):
-    """An older score provider may not replace the authoritative game snapshot."""
 
 
 def initialize_records(conn):
@@ -82,16 +72,14 @@ def read_record_state(conn):
     }
 
 
-def validate_score(record, *, ordinary, source="divingfish"):
+def validate_score(record, *, ordinary):
     """Validate before starting a transaction; unknown/宴 rows remain auditable."""
     if not isinstance(record, dict):
         raise ValueError("invalid record")
     song_id, difficulty = record["song_id"], record["level_index"]
     if isinstance(song_id, bool) or not str(song_id).isdigit() or int(song_id) <= 0:
         raise ValueError("invalid song id")
-    # Preserve Wahlap's native 宴 level (10) in snapshots and unmatched rows.
-    # Diving-Fish uses its own difficulty indices, so it keeps the existing range.
-    if not valid_score_level(int(song_id), difficulty) or (source != "wahlap" and difficulty == 10):
+    if type(difficulty) is not int or not 0 <= difficulty <= 5:
         raise ValueError("invalid difficulty")
     fc = record.get("fc", "")
     if not isinstance(fc, str) or fc.lower() not in ("", "fc", "fcp", "ap", "app"):
@@ -347,27 +335,10 @@ class APRecords:
             ]
         }
 
-    def import_provider(
-        self, payload, eligible_records=None, *, source="divingfish", account_id=None, outcome=None
-    ):
-        if source not in ("divingfish", "wahlap"):
-            raise ValueError("不支持的成绩来源。")
-        label = "华立" if source == "wahlap" else "水鱼"
+    def import_provider(self, payload, eligible_records=None):
+        source, label = "divingfish", "水鱼"
         if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
             raise ValueError(f"{label}返回的数据不含完整 records 列表。")
-        account_hash = None
-        if source == "wahlap":
-            if (
-                not isinstance(account_id, str)
-                or not account_id.isascii()
-                or not account_id.isdigit()
-                or not 0 < len(account_id) <= 20
-                or int(account_id) <= 0
-            ):
-                raise ScoreAccountError("华立账号信息不完整，未修改本地记录。")
-            account_hash = hashlib.sha256(f"wahlap:{int(account_id)}".encode()).hexdigest()
-            if not 0 < len(payload["records"]) <= 50000:
-                raise ValueError("华立未返回有效的完整成绩，未修改本地记录。")
         if eligible_records is None:
             eligible_records = self.pending_snapshot()
         catalog, waterfish_map = self._catalog_snapshot
@@ -376,30 +347,7 @@ class APRecords:
         incoming, details, unmatched, seen = [], [], [], set()
         try:
             for record in payload["records"]:
-                if source == "wahlap":
-                    required = {"song_id", "level_index", "achievements", "fc", "fs", "dxScore"}
-                    if not isinstance(record, dict) or set(record) != required:
-                        raise ValueError("incomplete game score")
-                    if (
-                        isinstance(record["achievements"], bool)
-                        or not isinstance(record["achievements"], int | float)
-                        or record["fs"] not in ("", "sync", "fs", "fsp", "fsd", "fsdp")
-                        or isinstance(record["dxScore"], bool)
-                        or not isinstance(record["dxScore"], int)
-                    ):
-                        raise ValueError("invalid game score")
-                if source == "wahlap":
-                    music_id = int(record["song_id"])
-                    ext = {
-                        "song_id": music_id
-                        if getattr(catalog, "schema_version", 1) >= 2
-                        else music_id - 10000
-                        if music_id >= 10000
-                        else music_id,
-                        "type": "dx" if music_id >= 10000 else "standard",
-                    }
-                else:
-                    ext = waterfish_map.get(str(record["song_id"]))
+                ext = waterfish_map.get(str(record["song_id"]))
                 key = None
                 if ext:
                     key = (
@@ -408,7 +356,7 @@ class APRecords:
                         else f"{ext['song_id']}:{ext['type']}:{record['level_index']}"
                     )
                 ordinary = key in known
-                achievement, fc, raw = validate_score(record, ordinary=ordinary, source=source)
+                achievement, fc, raw = validate_score(record, ordinary=ordinary)
                 source_key = f"{int(record['song_id'])}:{record['level_index']}"
                 if source_key in seen:
                     raise ValueError("duplicate record")
@@ -446,32 +394,11 @@ class APRecords:
             "confirmed": 0,
             "source": source,
         }
-        if source == "wahlap":
-            receipt.update(
-                {
-                    key: value
-                    for key, value in (outcome or {}).items()
-                    if key in ("logout_confirmed", "logout_status", "notice")
-                }
-            )
         scores = {row[0]: row for row in incoming}
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            binding = conn.execute(
-                "SELECT value FROM metadata WHERE key='wahlap_account_hash'"
-            ).fetchone()
-            if source == "divingfish" and binding:
-                raise ScoreSourceError("已启用华立直连，请扫描二维码更新成绩。")
-            if source == "wahlap":
-                if binding and json.loads(binding[0]) != account_hash:
-                    raise ScoreAccountError("二维码对应其他游戏账号，未修改本地记录。")
-                conn.execute(
-                    "INSERT OR IGNORE INTO metadata(key,value) VALUES('wahlap_account_hash',?)",
-                    (json.dumps(account_hash),),
-                )
             conn.execute(
-                "INSERT INTO score_sync_sources(sync_id,source,account_hash) VALUES(?,?,?)",
-                (sync_id, source, account_hash),
+                "INSERT INTO score_sync_sources(sync_id,source) VALUES(?,?)", (sync_id, source)
             )
             conn.execute("DELETE FROM provider")
             conn.executemany("INSERT INTO provider VALUES(?,?,?,?,?)", incoming)

@@ -91,110 +91,25 @@ GET /api/venues/search?q=&city= -> {items,provider,attribution,attribution_url}
 GET /api/settings/divingfish -> {configured,source:"environment"|"local"|null,sync}
 PUT /api/settings/divingfish {token:"Import-Token"} -> same public settings.
   Empty token clears local saved token. Token is never returned or logged.
-GET /api/sync/status -> {wahlap,job,divingfish}
-  wahlap={available,checking,reason,verified,last_sync,has_snapshot,maintenance}. available
-  describes whether the adapter/runtime can currently be invoked; it is not proof
-  of a live protocol check. During maintenance it is false, reason is the maintenance
-  message, and no adapter/runtime probe is issued. last_sync is the latest successful
-  Wahlap receipt or null.
-  maintenance={active,timezone:"Asia/Shanghai",start_time:"04:00",end_time:"07:00",
-  retry_at,retry_after_seconds,message}. The daily window includes 04:00 and excludes
-  07:00. retry_at is that day's 07:00 ISO timestamp with +08:00 offset when active;
-  otherwise it is null, retry_after_seconds=0 and message=null. The server clock is
-  authoritative, independent of the browser or host's display timezone.
-  verified requires that receipt to confirm logout; has_snapshot is true whenever
-  a complete score snapshot was successfully validated and committed.
-  divingfish={configured,last_upload}. last_upload is the latest explicit upload
-  attempt receipt (including failed attempts) or null. No token/player ID is exposed.
-  job=null or {id,kind,state,stage,message,error,result}, where kind is wahlap or
-  divingfish_upload; state is running, succeeded or failed; stage is starting,
-  fetching, validating, uploading, verifying, completed or failed. error is null or {code,message},
-  with retry_at and retry_after_seconds also present for maintenance rejection.
-  A worker failure may also include stage (configuration, authorization, preview,
-  login, scores) and http_status (100-599). Pagination failures may also include
-  pagination_reason (cursor_type, cursor_range, cursor_cycle, group_limit,
-  record_limit, page_limit). Score failures include logout_status
-  (confirmed, unverified, failed, not_attempted) and logout_confirmed when known.
-  These diagnostic values are validated;
-  no raw upstream response, URL query, token or player identifier is returned.
-POST /api/sync/wahlap/probe (no body) -> {ok:true,probe:"network",account_access:false}
-  Explicit uncached connectivity check through the same sandbox and proxy as score
-  sync. Fetches and validates game configuration only, without QR authorization,
-  account lookup, login, score reads or personal-data changes. Requires a session
-  and same-origin request. Uses the shared sync lease and submission cooldown;
-  overlapping probes, running score jobs and service shutdown reject the request.
-  Daily maintenance rejects with HTTP 503 and Retry-After. Runtime errors return
-  safe code/message plus optional stage/http_status as above. checking is true while
-  this bounded request is running; normal status polling never runs a network check.
-POST /api/sync/wahlap {qr_text} -> HTTP 202, job object
-  New jobs during daily maintenance are rejected with HTTP 503 and Retry-After in
-  seconds. detail={code:"maintenance",message,retry_at,retry_after_seconds}.
-  The worker checks again immediately before starting its game request, so a job
-  accepted just before 04:00 may finish as failed/maintenance without contacting
-  the game server. An already running game request is allowed to finish, save its
-  valid scores and perform session logout. No scheduling, automatic retry or stored
-  QR credential is introduced. Site reads, AP claims and DivingFish uploads remain
-  available throughout maintenance.
-  Requires the decoded SGWCMAID login QR text, not an image or URL. The request body
-  is limited to 8192 bytes; validation errors never echo the credential. QR text is
-  held in a bounded worker's memory only, never written to job state, logs or SQLite.
-  No credential/job recovery occurs after restart. Successful receipts remain durable.
-  Records match official musicId:difficulty directly; DX IDs already include 10000.
-  No DivingFish catalog or account request is required to import or confirm scores.
-  Strictly validates every record (ID, difficulty, achievement, fc, fs, DX score),
-  duplicates and account identity before any transaction. The first successful
-  import binds a hash of the game account; later different accounts are rejected.
-  The eligible pending IDs/revisions are captured at job start. Only unchanged
-  claims whose latest complete response has fc=ap/app can promote their venues.
-  All score data, AP evidence, venue confirmations, source provenance, account binding
-  and receipt commit together. Missing/non-AP scores stay pending. Unmatched/deleted
-  and Utage records remain in the full raw snapshot without invented chart matches.
-  Receipt={ok,source:"wahlap",records,matched,unmatched,synced_at,sync_id,confirmed,
-  pending,conflicts,venue_pending,logout_confirmed,logout_status,notice}.
-  Valid scores may commit with logout_status=unverified/failed; verified remains false
-  and notice explains the unresolved session exit. HTTP success alone never confirms it.
-POST /api/sync/divingfish/upload (no body) -> HTTP 202, job object
-  Explicit optional upload of the latest successful complete Wahlap snapshot. Nothing
-  is uploaded automatically by game sync or pending-claim confirmation. Requires an
-  Import-Token. Looks up exact official song IDs in DivingFish /music_data to attach
-  the title/type required by its /player/update_records API; sends a JSON list with
-  song_id, level_index, achievements, fc, fs, dxScore, title and type, authenticated
-  by Import-Token. Before any POST, GET /player/records with the same token and match
-  by (song_id, level_index). Achievement, combo badge, sync badge and DX score are
-  independent bests: retain the higher value of each field. Only new or improved
-  records are sent. A fully unchanged/higher remote result succeeds without a POST.
-  Missing/deleted/unsupported charts are skipped with a count and up to 50 reasons.
-  A wholly unmappable snapshot, duplicate ID/title mapping or malformed catalog fails
-  before sending. No deletion/clear operation is sent. The complete local snapshot
-  remains intact regardless of upload outcome. A write requires the upstream success
-  marker and creates+updates count to equal the uploaded record count, then another
-  GET /player/records must confirm every retained/submitted field is at least its
-  expected value. This includes records outside the upload snapshot, even removed
-  songs and native utage entries. Derived catalog/rating fields are not compared.
-  Malformed/duplicate remote records fail closed; a post-write read failure is an
-  unverified write, never reported as success. No automatic write retry or rollback.
-  Success receipt={ok:true,source:"divingfish_upload",attempted_at,uploaded_at,sync_id,
-  records,uploaded_count,snapshot_records,skipped_count,skipped:[{song_id,level_index,reason}],
-  compared_count,new_count,improved_count,unchanged_count,preserved_count,
-  outside_upload_count,remote_records_before,remote_records_after,verified_count,
-  verified_at,write_attempted,upload_confirmed,verification_state:"verified",
-  mismatch_count:0,mismatches:[]}.
-  preserved_count counts matched charts for which one or more remote fields were higher.
-  outside_upload_count counts prior remote charts outside the matched snapshot;
-  verified_count includes both matched and outside records. No-op uploaded_count is 0.
-  Failure receipt={ok:false,source:"divingfish_upload",attempted_at,sync_id,error,
-  write_attempted,upload_confirmed,verification_state,...available comparison counts}.
-  verification_state is not_started, unverified, mismatch, or verified. A mismatch
-  includes mismatch_count and up to 50 mismatches=[{song_id,level_index,fields}].
-  Changing the saved token while preparing aborts before upload. A request already
-  started uses its captured token; status polling and settings remain responsive.
-  Upstream timeout/error may leave an externally partial upload; local data is retained
-  and failure is explicit, never retried automatically.
-  The upstream API overwrites fields and offers no conditional/atomic update. The
-  preflight protects the retrieved baseline; it cannot exclude a simultaneous write
-  by another client between the read and POST. Avoid parallel imports elsewhere.
-  All score jobs share a nonblocking process/file lease (busy -> 409); starts have a
-  short cooldown (429). Network operations have bounded timeouts. UI polls status.
+GET /api/sync/status -> {job,divingfish}
+  divingfish={configured,last_sync}. last_sync is the latest successful receipt or null.
+  job=null or {id,kind:"divingfish",state,stage,message,error,result}; state is
+  running, succeeded or failed; stage is fetching, validating, completed or failed.
+  error is null or {code,message}. No token is exposed.
+POST /api/sync/divingfish (no body) -> HTTP 202, job object
+  Manual only; there is no scheduled pull. Requires a saved Import-Token (409 no_token).
+  Reads the complete /player/records with the Import-Token header, 30 s timeout,
+  no redirects. The eligible pending IDs/revisions are captured at job start. Only
+  unchanged claims whose latest complete response has fc=ap/app promote their venues.
+  An AP without a claim still counts as AP and reports venue_pending when a venue is
+  required. Observed AP evidence is never revoked by a later missing or lower record.
+  Scores, evidence, venue confirmations and receipt commit together; a malformed or
+  failed response leaves all personal data untouched. Changing the token during the
+  request discards the response (token_changed).
+  Receipt={ok,source:"divingfish",records,matched,unmatched,synced_at,sync_id,confirmed,
+  pending,conflicts,venue_pending}.
+  Jobs share a nonblocking process/file lease (busy -> 409); starts have a short
+  cooldown (429). The UI polls status.
 Chart fields:
 id, difficulty, chart_key (id:difficulty), lxns_song_id, song_id (alias of id),
 title, display_title, artist, type, difficulty_index (alias of difficulty),
@@ -203,7 +118,7 @@ jp_release_version, jp_release_version_candidate, release_status,
 group(low/high/catalog), in_original_table, requires_venue, legacy_complete, legacy_venue,
 manual_ap(null/true/false), manual_venue, venue, note, manual_date,
 achievement(null or number, explicit manual score preferred),
-provider_achievement, provider_fc, provider_synced_at, provider_source(wahlap/divingfish/null),
+provider_achievement, provider_fc, provider_synced_at, provider_source(divingfish/null; older rows may show wahlap),
 provider_fs, provider_dx_score, provider_rate, provider_ra,
 pending_record(null or {id,venue,created_at,updated_at,revision,reason}),
 record_revision, venue_pending, ap_confirmed_at, venue_confirmed_at,

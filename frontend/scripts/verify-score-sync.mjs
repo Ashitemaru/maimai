@@ -9,7 +9,7 @@ const root = path.resolve(import.meta.dirname, '../..');
 const bundle = path.resolve(process.env.UI_DIST || path.join(root, 'frontend/dist'));
 const output = process.env.SCORE_SYNC_AUDIT_OUTPUT || path.join(root, 'output/score-sync-audit');
 await fs.mkdir(output, { recursive: true });
-const qr = 'MAIMAI-SYNC-FIXTURE-NOT-A-REAL-CREDENTIAL';
+const token = 'DIVINGFISH-FIXTURE-NOT-A-REAL-TOKEN';
 const checks = [],
   errors = [],
   requests = [];
@@ -39,29 +39,13 @@ let syncStatus = structuredClone(idleScoreSync);
 let configured = false,
   postError = '',
   statusError = '',
-  tokenError = '',
-  probeError = '',
-  finishProbe = null,
   failJob = false,
   pollReady = false,
   jobSequence = 0;
 let pendingCount = 1;
-let uploadCount = 118;
-const maintenanceMessage = '华立每日04:00–07:00维护，请07:00后重试';
-const setMaintenance = (active) => {
-  syncStatus.wahlap.available = !active;
-  syncStatus.wahlap.reason = active ? maintenanceMessage : null;
-  syncStatus.wahlap.maintenance = {
-    ...idleScoreSync.wahlap.maintenance,
-    active,
-    message: active ? maintenanceMessage : null,
-    retry_at: active ? '2026-10-13T07:00:00+08:00' : null,
-    retry_after_seconds: active ? 7200 : 0,
-  };
-};
 const receipt = {
   ok: true,
-  source: 'wahlap',
+  source: 'divingfish',
   records: 120,
   matched: 119,
   unmatched: 1,
@@ -70,9 +54,6 @@ const receipt = {
   conflicts: 0,
   synced_at: '2026-10-13T04:20:00+08:00',
   sync_id: 'fixture-sync',
-  logout_confirmed: false,
-  logout_status: 'unverified',
-  notice: '成绩已同步，机台退出状态尚未确认。',
 };
 const catalog = {
   revision: 'score-sync',
@@ -86,69 +67,31 @@ try {
     isMobile: true,
     hasTouch: true,
   });
-  await context.addInitScript(() => {
-    window.BarcodeDetector = undefined;
-  });
   await context.route('**/api/**', async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     requests.push({ path: pathname, method: request.method(), body: request.postData() });
     const send = (json, status = 200) => route.fulfill({ status, json });
-    if (pathname === '/api/sync/wahlap/probe') {
+    if (pathname === '/api/sync/divingfish') {
       assert.equal(request.method(), 'POST');
       assert.equal(request.postData(), null);
-      if (syncStatus.wahlap.maintenance.active)
-        return send({ detail: { code: 'maintenance', message: maintenanceMessage } }, 503);
-      if (probeError)
-        return send({ detail: { code: 'upstream_empty_response', message: probeError } }, 502);
-      await new Promise((resolve) => {
-        finishProbe = resolve;
-      });
-      finishProbe = null;
-      return send({ ok: true, probe: 'network', account_access: false });
-    }
-    if (pathname === '/api/sync/wahlap') {
-      assert.equal(request.method(), 'POST');
-      const data = request.postDataJSON();
-      assert.deepEqual(Object.keys(data), ['qr_text']);
-      assert(data.qr_text.length <= 4096);
       if (postError) {
         const detail = postError;
         postError = '';
-        return send({ detail }, typeof detail === 'string' ? 422 : 503);
+        return send({ detail }, 409);
       }
       syncStatus.job = {
         id: `sync-${++jobSequence}`,
-        kind: 'wahlap',
+        kind: 'divingfish',
         state: 'running',
         stage: 'fetching',
-        message: '正在读取华立成绩…',
-        error: null,
-        result: null,
-      };
-      return send(syncStatus.job, 202);
-    }
-    if (pathname === '/api/sync/divingfish/upload') {
-      assert.equal(request.method(), 'POST');
-      assert.equal(request.postData(), null);
-      assert(syncStatus.divingfish.configured && syncStatus.wahlap.has_snapshot);
-      syncStatus.job = {
-        id: `upload-${++jobSequence}`,
-        kind: 'divingfish_upload',
-        state: 'running',
-        stage: 'uploading',
-        message: '正在上传水鱼…',
+        message: '正在读取水鱼成绩',
         error: null,
         result: null,
       };
       return send(syncStatus.job, 202);
     }
     if (pathname === '/api/settings/divingfish' && request.method() === 'PUT') {
-      if (tokenError) {
-        const message = tokenError;
-        tokenError = '';
-        return send({ detail: message }, 422);
-      }
       configured = !!request.postDataJSON().token;
       syncStatus.divingfish.configured = configured;
       return send({ configured, source: configured ? 'local' : null, sync: null });
@@ -166,12 +109,11 @@ try {
             ...syncStatus.job,
             state: 'failed',
             stage: 'failed',
-            error: { code: 'test_failed', message: '华立暂时无法连接' },
+            error: { code: 'network_error', message: '暂时无法访问水鱼，本地记录已保留。' },
           };
           failJob = false;
-        } else if (syncStatus.job.kind === 'wahlap') {
-          syncStatus.wahlap.last_sync = receipt;
-          syncStatus.wahlap.has_snapshot = true;
+        } else {
+          syncStatus.divingfish.last_sync = receipt;
           syncStatus.job = {
             ...syncStatus.job,
             state: 'succeeded',
@@ -179,26 +121,6 @@ try {
             result: receipt,
           };
           pendingCount = 0;
-        } else {
-          const uploaded = {
-            ok: true,
-            source: 'divingfish_upload',
-            uploaded_at: '2026-10-13T04:25:00+08:00',
-            records: uploadCount,
-            uploaded_count: uploadCount,
-            verification_state: 'verified',
-            verified_count: 118,
-            skipped_count: 2,
-            snapshot_records: 120,
-            sync_id: receipt.sync_id,
-          };
-          syncStatus.divingfish.last_upload = uploaded;
-          syncStatus.job = {
-            ...syncStatus.job,
-            state: 'succeeded',
-            stage: 'completed',
-            result: uploaded,
-          };
         }
       }
       return send(syncStatus);
@@ -244,277 +166,62 @@ try {
     if (!/\/api\/.* due to access control checks\.$/.test(error.message))
       errors.push(error.message);
   });
+  const toast = (text) => page.locator('#toast').filter({ hasText: text }).waitFor();
+  const syncPosts = () => requests.filter((item) => item.path === '/api/sync/divingfish').length;
   await page.goto(origin + '/#settings');
-  const panel = page.getByRole('region', { name: '同步游戏成绩', exact: true });
-  const uploadPanel = page.getByRole('region', { name: '上传水鱼', exact: true });
-  const submit = () => panel.getByRole('button', { name: '同步华立成绩', exact: true });
-  const upload = () => uploadPanel.getByRole('button', { name: '上传到水鱼', exact: true });
-  const toast = () => page.locator('#toast');
-  const showToast = (text) => toast().filter({ hasText: text }).waitFor();
-  const noInlinePrompts = async () => {
-    assert.equal(
-      await page.locator('.score-sync-panels .form-message, .score-sync-panels .error-box').count(),
-      0,
-    );
-    assert.equal(await panel.getByText('首次同步尚未验证。', { exact: true }).count(), 0);
-  };
-  await page.waitForLoadState('networkidle');
-  await noInlinePrompts();
-  assert.equal(await panel.getByText('测试环境未启用华立同步', { exact: true }).count(), 0);
-  await submit().click();
-  await showToast('测试环境未启用华立同步');
-  await upload().click();
-  await showToast('请先保存水鱼 Token');
-  assert.equal(requests.filter((item) => item.method === 'POST').length, 0);
-  syncStatus.wahlap.available = true;
-  syncStatus.wahlap.reason = null;
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await page.waitForLoadState('networkidle');
-  await submit().click();
-  await showToast('请选择二维码截图或粘贴二维码内容');
-  await page.screenshot({ path: path.join(output, 'mobile-ready.png'), fullPage: true });
-  checks.push(
-    'Prerequisite messages appear only after an action; missing QR, Token, and unavailable service send no POST',
-  );
-  // Entering maintenance after the tab was opened must be caught before any QR POST.
-  setMaintenance(true);
-  await panel.getByLabel('或粘贴二维码内容').fill('fixture-maintenance-cleared');
-  await submit().click();
-  await showToast(maintenanceMessage);
-  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
-  assert.equal(requests.filter((item) => item.method === 'POST').length, 0);
-  await noInlinePrompts();
-  assert.equal(await panel.getByText(maintenanceMessage, { exact: true }).count(), 0);
-  assert(await submit().isEnabled());
-  // A click after 07:00 rechecks the server even when this tab still holds the closed state.
-  setMaintenance(false);
-  await panel
-    .getByLabel('二维码截图', { exact: true })
-    .setInputFiles(path.join(import.meta.dirname, 'fixtures/maimai-sync-qr.png'));
-  await showToast('二维码已识别');
-  assert.equal(requests.filter((item) => item.method === 'POST').length, 0);
-  assert(
-    await page.evaluate(
-      (value) => !Object.values(localStorage).some((item) => item.includes(value)),
-      qr,
-    ),
-  );
-  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), qr);
-  await submit().click();
-  await panel.getByText('正在读取华立成绩…', { exact: true }).waitFor();
-  assert.equal(
-    JSON.parse(requests.find((item) => item.path === '/api/sync/wahlap').body).qr_text,
-    qr,
-  );
-  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
-  assert.equal(await panel.getByLabel('二维码截图').inputValue(), '');
-  assert(await panel.getByRole('button', { name: '正在同步…', exact: true }).isDisabled());
-  setMaintenance(true);
-  const refreshBefore = requests.filter((item) => item.path === '/api/ap-records').length;
-  await page.getByRole('link', { name: 'AP 图鉴', exact: true }).click();
-  await page.reload();
-  await page.getByRole('link', { name: 'AP 图鉴', exact: true }).waitFor();
-  await page.waitForLoadState('networkidle');
+  const panel = page.getByRole('region', { name: '同步水鱼成绩', exact: true });
+  const syncButton = () => panel.getByRole('button', { name: /从水鱼同步|正在同步…/ });
+  await panel.waitFor();
+  assert.equal(await page.getByText(/华立|二维码/).count(), 0, 'No Wahlap or QR controls remain');
+  assert(await syncButton().isDisabled(), 'Sync needs a saved token');
+  checks.push('Settings show only the Diving-Fish sync panel; sync is disabled without a token');
+
+  await panel.getByLabel(/Import-Token/).fill(token);
+  await panel.getByRole('button', { name: '保存 Token', exact: true }).click();
+  await toast('已保存水鱼 Token');
+  await panel.getByText('Import-Token · 已保存', { exact: true }).waitFor();
+  assert.equal(await panel.getByLabel(/Import-Token/).inputValue(), '');
+  assert(!(await syncButton().isDisabled()));
+  checks.push('Saving a token clears the field and enables manual sync');
+
+  await syncButton().click();
+  await panel.getByRole('status').filter({ hasText: '正在读取水鱼成绩' }).waitFor();
+  assert(await syncButton().isDisabled(), 'A running sync blocks a second start');
   pollReady = true;
-  await showToast('华立成绩已同步，待核记录已核对');
-  await showToast(receipt.notice);
-  assert(requests.filter((item) => item.path === '/api/ap-records').length > refreshBefore);
-  await page.getByRole('link', { name: /待核记录/ }).click();
-  await page.getByText('0 条待核记录', { exact: true }).waitFor();
-  checks.push(
-    'Screenshot decodes without BarcodeDetector, sends only QR text, clears input, and the running job resumes after page navigation and a full reload',
-  );
-  checks.push(
-    'Fresh server status blocks a maintenance-window QR POST with one toast; after 07:00 a stale tab recovers on click and an already-running job continues',
-  );
-  await page.getByRole('link', { name: '设置', exact: true }).click();
-  assert.equal(await panel.getByText(receipt.notice, { exact: true }).count(), 0);
-  await noInlinePrompts();
-  await panel.getByText('2026-10-13 04:20', { exact: true }).waitFor();
-  await upload().click();
-  await showToast('请先保存水鱼 Token');
-  tokenError = 'Token 格式无效';
-  await uploadPanel.getByLabel('Import-Token', { exact: true }).fill('synthetic-upload-token');
-  await uploadPanel.getByRole('button', { name: '保存 Token', exact: true }).click();
-  await showToast('Token 格式无效');
-  await noInlinePrompts();
-  await uploadPanel.getByRole('button', { name: '保存 Token', exact: true }).click();
-  await uploadPanel.getByLabel('Import-Token · 已保存', { exact: true }).waitFor();
-  await page.waitForLoadState('networkidle');
-  await page.waitForFunction(() =>
-    [...document.querySelectorAll('button')].some(
-      (item) => item.textContent === '上传到水鱼' && !item.disabled,
-    ),
-  );
-  assert.equal(requests.filter((item) => item.path === '/api/sync/divingfish/upload').length, 0);
-  await upload().click();
-  await uploadPanel.getByText('2026-10-13 04:25', { exact: true }).waitFor();
-  await uploadPanel.getByText('已上传 118 条并核对 · 跳过 2 条', { exact: true }).waitFor();
-  assert.equal(requests.filter((item) => item.path === '/api/sync/divingfish/upload').length, 1);
-  await page.screenshot({ path: path.join(output, 'mobile-complete.png'), fullPage: true });
-  checks.push(
-    'Upload remains available during Wahlap maintenance, is explicit, requires Token and snapshot, reports skipped rows, and no exit confirmation is invented',
-  );
-  uploadCount = 0;
-  await upload().click();
-  await uploadPanel.getByText('水鱼成绩已是最新 · 跳过 2 条', { exact: true }).waitFor();
-  await showToast('水鱼成绩已是最新');
-  checks.push(
-    'A verified no-change upload reports that scores are current without claiming an upload',
-  );
-  setMaintenance(false);
-  const beforeStatusError = requests.filter((item) => item.path === '/api/sync/wahlap').length;
-  statusError = '暂时无法获取同步状态';
-  await panel.getByLabel('或粘贴二维码内容').fill('fixture-status-failure');
-  await submit().click();
-  await showToast('暂时无法获取同步状态');
-  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
-  assert.equal(
-    requests.filter((item) => item.path === '/api/sync/wahlap').length,
-    beforeStatusError,
-  );
-  postError = {
-    code: 'maintenance',
-    message: maintenanceMessage,
-    retry_at: '2026-10-13T07:00:00+08:00',
-    retry_after_seconds: 10800,
-  };
-  await panel.getByLabel('或粘贴二维码内容').fill('fixture-crossed-maintenance-boundary');
-  await submit().click();
-  await showToast(maintenanceMessage);
-  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
-  const rejectedPosts = requests.filter((item) => item.path === '/api/sync/wahlap').length;
-  assert.equal(rejectedPosts, beforeStatusError + 1);
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await page.waitForTimeout(2200);
-  assert.equal(requests.filter((item) => item.path === '/api/sync/wahlap').length, rejectedPosts);
+  await toast('水鱼成绩已同步，待核记录已核对');
+  await panel.locator('.score-sync-receipt').waitFor();
+  const counts = await panel.locator('.score-sync-counts').innerText();
+  assert.match(counts, /已同步\s*119/);
+  assert.match(counts, /核准\s*1/);
+  assert.equal(syncPosts(), 1);
   assert(
-    await page.evaluate(() =>
-      [localStorage, sessionStorage].every((storage) =>
-        Object.values(storage).every(
-          (value) => !/fixture-maintenance|fixture-crossed|fixture-status/.test(value),
-        ),
-      ),
+    !requests.some(
+      (item) => item.body?.includes(token) && item.path !== '/api/settings/divingfish',
     ),
   );
-  checks.push(
-    'Failed status refresh sends no QR POST; a server-side boundary rejection shows a toast, clears QR, and never automatically retries or persists the code',
-  );
-  postError = '二维码已过期，请重新获取';
-  await panel.getByLabel('或粘贴二维码内容').fill('fixture-expired');
-  await submit().click();
-  await showToast('二维码已过期，请重新获取');
-  await noInlinePrompts();
-  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
-  assert.equal(pendingCount, 0);
+  checks.push('Manual sync polls to completion, refreshes data and shows the receipt');
+
   pollReady = false;
   failJob = true;
-  await panel.getByLabel('或粘贴二维码内容').fill('fixture-job-failure');
-  await submit().click();
-  await panel.getByText('正在读取华立成绩…', { exact: true }).waitFor();
+  await syncButton().click();
   pollReady = true;
-  await showToast('华立暂时无法连接');
-  await noInlinePrompts();
-  assert.equal(syncStatus.wahlap.last_sync.synced_at, receipt.synced_at);
-  assert.equal(pendingCount, 0);
-  await toast().waitFor({ state: 'hidden' });
-  for (let i = 0; i < 2; i += 1) {
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.waitForLoadState('networkidle');
-  }
-  assert.equal(await toast().filter({ hasText: '华立暂时无法连接' }).count(), 0);
-  checks.push(
-    'Expired QR and asynchronous failures produce toasts without page messages or replacing successful data',
-  );
-  await panel.getByLabel('二维码截图').setInputFiles({
-    name: 'blank.svg',
-    mimeType: 'image/svg+xml',
-    buffer: Buffer.from(
-      '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="white"/></svg>',
-    ),
-  });
-  await showToast('没有识别到二维码，请选择完整清晰的截图');
-  assert.equal(await panel.getByLabel('或粘贴二维码内容').inputValue(), '');
-  syncStatus.wahlap.has_snapshot = false;
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await page.waitForLoadState('networkidle');
-  await upload().click();
-  await showToast('请先完成一次华立同步');
-  await noInlinePrompts();
-  assert.equal(requests.filter((item) => item.path === '/api/sync/divingfish').length, 0);
-  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
-  await page.screenshot({ path: path.join(output, 'mobile.png'), fullPage: true });
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.screenshot({ path: path.join(output, 'desktop.png'), fullPage: true });
-  checks.push(
-    'Unreadable image stays local; no snapshot blocks upload with a toast; mobile layout fits; old pull endpoint is unused',
-  );
+  await toast('暂时无法访问水鱼，本地记录已保留。');
+  await panel.locator('.score-sync-receipt').waitFor();
+  checks.push('A failed sync reports the error and keeps the previous receipt');
+
+  postError = { code: 'sync_busy', message: '水鱼同步正在进行，请等待完成。' };
+  await syncButton().click();
+  await toast('水鱼同步正在进行，请等待完成。');
+  checks.push('A refused start reports the server message');
+
+  statusError = '同步状态暂时不可用';
   await page.reload();
-  await page.waitForLoadState('networkidle');
-  await noInlinePrompts();
-  assert.equal(await toast().filter({ hasText: '华立暂时无法连接' }).count(), 0);
-  assert.equal(await toast().filter({ hasText: receipt.notice }).count(), 0);
-  await panel.getByText('2026-10-13 04:20', { exact: true }).waitFor();
-  for (let i = 0; i < 2; i += 1) {
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.waitForLoadState('networkidle');
-  }
-  assert.equal(await toast().filter({ hasText: '华立暂时无法连接' }).count(), 0);
-  assert.equal(await toast().filter({ hasText: receipt.notice }).count(), 0);
-  checks.push(
-    'Reload and repeated status refresh preserve receipt data without replaying historical job errors or logout notices',
-  );
-  const networkCheck = () => panel.getByRole('button', { name: '检查连接', exact: true });
-  const receiptBeforeProbe = structuredClone(syncStatus.wahlap.last_sync);
-  await panel.getByLabel('或粘贴二维码内容').fill('fixture-probe-keeps-qr-local');
-  const beforeProbe = requests.length;
-  await networkCheck().click();
-  await panel.getByRole('button', { name: '正在检查…', exact: true }).waitFor();
-  assert(await panel.getByRole('button', { name: '正在检查…', exact: true }).isDisabled());
-  assert(await submit().isDisabled());
-  assert(await upload().isDisabled());
-  assert.equal(
-    await panel.getByLabel('或粘贴二维码内容').inputValue(),
-    'fixture-probe-keeps-qr-local',
-  );
-  assert.equal(requests.filter((item) => item.path === '/api/sync/wahlap/probe').length, 1);
-  assert.equal(requests.at(-1).body, null);
-  assert(finishProbe, 'Manual network check must be held until the mock responds');
-  finishProbe();
-  await showToast('华立连接正常');
-  await page.waitForLoadState('networkidle');
-  assert(await networkCheck().isEnabled());
-  assert.deepEqual(syncStatus.wahlap.last_sync, receiptBeforeProbe);
-  assert.deepEqual(
-    requests
-      .slice(beforeProbe)
-      .filter((item) => item.method === 'POST')
-      .map((item) => item.path),
-    ['/api/sync/wahlap/probe'],
-  );
-  probeError = '华立返回空响应，请检查取分代理出口';
-  await networkCheck().click();
-  await showToast(probeError);
-  await page.waitForLoadState('networkidle');
-  assert.equal(await panel.getByText(probeError, { exact: true }).count(), 0);
-  await noInlinePrompts();
-  probeError = '';
-  setMaintenance(true);
-  await networkCheck().click();
-  await showToast(maintenanceMessage);
-  await page.waitForLoadState('networkidle');
-  assert.equal(await panel.getByText(maintenanceMessage, { exact: true }).count(), 0);
-  setMaintenance(false);
-  const probeCount = requests.filter((item) => item.path === '/api/sync/wahlap/probe').length;
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await page.waitForLoadState('networkidle');
-  assert.equal(
-    requests.filter((item) => item.path === '/api/sync/wahlap/probe').length,
-    probeCount,
-  );
-  checks.push(
-    'Manual network check sends no QR, disables overlapping actions, preserves scores, and reports success, network errors and maintenance only through toast; status refresh never probes',
-  );
+  await toast('同步状态暂时不可用');
+  await panel.getByRole('button', { name: '重试', exact: true }).click();
+  await panel.locator('.score-sync-receipt').waitFor();
+  checks.push('Status load failures can be retried without losing the receipt');
+
+  await page.screenshot({ path: path.join(output, 'score-sync-mobile.png'), fullPage: true });
   assert.deepEqual(errors, []);
   await fs.writeFile(
     path.join(output, 'report.json'),
@@ -527,5 +234,5 @@ try {
   console.log(`Score sync UI: ${checks.length} checks passed.`);
 } finally {
   await browser.close();
-  await new Promise((resolve) => server.close(resolve));
+  server.close();
 }

@@ -10,13 +10,13 @@
 - 人工裁决 SQLite、当前及前一版曲库、曲绘、封面素材。
 - 当前代码及依赖锁文件、应用与部署环境配置、Caddy 和本站 systemd 单元。
 - 登录会话数据库、水鱼凭据文件及 `shared/runtime/bilibili-session.json` 中的 B 站登录凭据（若存在）。凭据只进入加密备份，不进入 Git。
-- 华立代理的四个固定恢复文件（若安装）：`/etc/mai-journal-wahlap-proxy/egress.json`、`tun.json`、`/etc/netns/mai-wahlap/resolv.conf`、`/etc/systemd/system/mai-journal-wahlap@.service.d/proxy.conf`。不会扫描代理目录中的其他节点、订阅或临时配置。
+- 已停用的华立代理配置文件（若服务器上仍存在）：`/etc/mai-journal-wahlap-proxy/egress.json`、`tun.json`、`/etc/netns/mai-wahlap/resolv.conf`、`/etc/systemd/system/mai-journal-wahlap@.service.d/proxy.conf`。华立同步已移除，服务器删除这些文件后备份只会把它们记为缺失。
 
-代理恢复文件全部不存在时会记录缺失；已有部分文件却缺少其余文件时，备份验证失败，不能把缺失网络隔离配置的快照报告为完整。这些文件在临时备份目录中均收紧到 `0600`，目录 `0700`，不改变线上源文件权限。新版清单使用 schema 3，并继续校验已有的 schema 1 和 2 快照；旧快照没有代理配置时必须重新准备代理后才能启用华立同步，没有 B 站凭据时重新扫码即可。
+新版清单使用 schema 3，并继续校验已有的 schema 1 和 2 快照；没有 B 站凭据时重新扫码即可。
 
-导出图片、缩略图、缓存、历史部署包、旧曲库快照、Wine 状态和外部华立运行环境不备份。可以重新生成的内容不占长期保留空间。当前及前一曲库可恢复；状态文件内更早的历史记录不代表那些版本仍可回退。
+导出图片、缩略图、缓存、历史部署包和旧曲库快照不备份。可以重新生成的内容不占长期保留空间。当前及前一曲库可恢复；状态文件内更早的历史记录不代表那些版本仍可回退。
 
-为避免 SQLite、曲库指针和素材之间不一致，备份先持有部署锁，停止主应用并等它完成当前请求，再锁定曲库发布并复制。复制并关闭文件后就恢复应用，等待 `/api/ready` 校验通过并释放锁；然后只对独立副本进行数据库完整性和行数检查、逐文件 fsync、清单生成、两次完整文件哈希核对。普通文件的持久化等待在恢复应用之后完成，SQLite 仍在停服期间通过备份 API 复制成无旁文件的独立数据库；未经完整验证的暂存目录可随时丢弃，不算有效备份。验证通过后才开始加密写库及保留期清理。网站在停止、复制和重新就绪期间不可用，后续落盘、验证与加密不会延长停服；不会为了备份强制终止独立华立会话。任何阶段异常都会尝试恢复原先运行的应用；独立 `ExecStopPost` 也会处理进程意外退出留下的恢复标记。原先停用的应用保持停用。
+为避免 SQLite、曲库指针和素材之间不一致，备份先持有部署锁，停止主应用并等它完成当前请求，再锁定曲库发布并复制。复制并关闭文件后就恢复应用，等待 `/api/ready` 校验通过并释放锁；然后只对独立副本进行数据库完整性和行数检查、逐文件 fsync、清单生成、两次完整文件哈希核对。普通文件的持久化等待在恢复应用之后完成，SQLite 仍在停服期间通过备份 API 复制成无旁文件的独立数据库；未经完整验证的暂存目录可随时丢弃，不算有效备份。验证通过后才开始加密写库及保留期清理。网站在停止、复制和重新就绪期间不可用，后续落盘、验证与加密不会延长停服。任何阶段异常都会尝试恢复原先运行的应用；独立 `ExecStopPost` 也会处理进程意外退出留下的恢复标记。原先停用的应用保持停用。
 
 `status.json` 的 `capture_seconds` 包含复制和在线验证，不能作为停服时长。`service_pause_seconds` 单独记录发起停止到应用重新就绪的用时；应用原先未运行时为 0，恢复未完成时为 null。验证副本失败同样会让备份失败，不会加密或清理旧快照。实际停服仍受文件数量、磁盘复制和应用启动速度影响。
 
@@ -81,21 +81,15 @@ restic -r "$HOME/Backups/mai-journal" \
 python3 -c 'from pathlib import Path; from deploy.backup_data import verify; verify(Path("/tmp/mai-journal-restore-check/payload")); print("verified")'
 ```
 
-此命令验证数据可恢复，不包含服务启动验收。完整恢复还需执行下面的整机恢复顺序；每次实际演练应分别记录文件/数据库、应用 HTTPS、华立沙箱与代理的结果，不能用其中一项代替其他项。
+此命令验证数据可恢复，不包含服务启动验收。完整恢复还需执行下面的整机恢复顺序；每次实际演练应分别记录文件/数据库与应用 HTTPS 的结果，不能用其中一项代替另一项。
 
 最近一次实际启动验收见 [2026-10-14 恢复演练](recovery-drill-20261014.md)，其中分别记录已通过项目和未覆盖的机器切换步骤。
 
 ## 整机故障后的恢复顺序
 
 1. 在新服务器完成 [基础部署](README.md) 的用户、Python、Caddy、目录和权限准备，保持应用及部署定时器停止。取回仓库与匹配密码，完成上述隔离恢复校验。
-2. 将 `payload/shared`、`payload/releases` 及相对 `current` 链接复制到空的 `/srv/mai-journal`，设为 `maimai:maimai`；数据库/凭据 0600，私有目录 0700。将 `config/mai-journal` 恢复到 `/etc/mai-journal`，root:root 0600。先将应用环境中的 `MAIMAI_WAHLAP_ENABLED` 设为 `0`，保持取分 socket 停止。手动安装并检查 `config/system` 中的代理、单元及 sudoers，不直接覆盖不同机器的系统配置。
+2. 将 `payload/shared`、`payload/releases` 及相对 `current` 链接复制到空的 `/srv/mai-journal`，设为 `maimai:maimai`；数据库/凭据 0600，私有目录 0700。将 `config/mai-journal` 恢复到 `/etc/mai-journal`，root:root 0600。手动安装并检查 `config/system` 中的单元及 sudoers，不直接覆盖不同机器的系统配置。
 3. 在恢复后的最终 release 路径重建 venv；不要复制旧 venv（启动脚本包含绝对路径）。新版快照包含 `dependencies/manifest.json` 和固定哈希 wheel，使用已审核部署引导代码的 `dependency_bundle(release, check_host=True)` / `Host().install(release)` 验证并离线安装，目标为 CPython 3.14 / Linux x86_64，glibc 下限以清单为准。旧快照没有 wheel 时，须在受控构建机按该快照的 `requirements.lock` 构建并验证匹配的 wheel 包，再传入恢复机；禁止随手换成最新依赖或跳过哈希。灾难恢复后清空 `shared/runtime/auth.sqlite3` 中的 `sessions` 表，让设备重新使用 Master Key 登录，避免恢复已撤销的旧会话。此操作在清单验证之后执行。
-4. 从当前 release 的 `deploy/` 恢复 root 管理的部署/备份引导代码。按照 [华立运行环境](wahlap-runtime.md) 重建 Wine/bubblewrap 和独立 worker，安装脚本从备份的 `release_sha` 对应 Git 提交取得，严格使用其 `wahlap-runtime.lock.json`。按照 [独立代理出口](../docs/WAHLAP_PROXY.md) 重装固定哈希的 Mihomo、专用用户和网络服务：从备份的 `egress.json` 私密提取选定节点交给安装器，重新生成成对的本地 SOCKS 口令和 `0640` 对应组权限，恢复 DNS 及 broker drop-in。不要只恢复 broker 基础单元而漏掉 drop-in。二进制、外部运行环境和 `/run` 内的命名空间没有包含在备份里，网页恢复不等于华立链路恢复。完成无账号连接探测与断网不回退检查后，再启用 socket 和 `MAIMAI_WAHLAP_ENABLED=1`；找不到可用出口时维持禁用，网站其他功能仍可恢复。
-5. `systemctl daemon-reload` 后启动应用，确认本地 `/api/ready` 中 release_sha 与备份一致，再确认 HTTPS、Master Key 登录、AP 数量、待核 buffer、机厅和人工裁决。无需真实二维码即可做这些检查。
+4. 从当前 release 的 `deploy/` 恢复 root 管理的部署/备份引导代码。备份中若带有旧的华立代理或 `mai-journal-wahlap*` 单元，不要恢复。
+5. `systemctl daemon-reload` 后启动应用，确认本地 `/api/ready` 中 release_sha 与备份一致，再确认 HTTPS、Master Key 登录、AP 数量、待核 buffer、机厅和人工裁决。
 6. 最后恢复部署、备份定时器和 Mac 拉取，重新建立一次加密快照。替换服务器后须独立验证新 SSH 主机密钥并更新 Mac 的 known_hosts。
-
-## 华立维护时段
-
-每天 **Asia/Shanghai 04:00（含）至 07:00（不含）** 禁止发起新的华立同步。后端在接收和真正调用 worker 前都检查；维护期间不探测 worker，不存本次二维码，返回 503、维护原因与 Retry-After。前端用 toast 提示，07:00 后再次点击即可同步，无需刷新。
-
-维护前已经开始的任务继续读取、保存和正常退出游戏，不在边界强行打断。本站 AP 待核记录、查看图鉴以及显式上传水鱼保持可用。维护结束不自动重试，也不保留二维码等待定时执行。
