@@ -239,7 +239,11 @@ try {
     return send(fixtures[pathname]);
   });
   const page = await context.newPage();
-  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('pageerror', (error) => {
+    // WebKit reports fetches cancelled by a reload as uncaught access-control errors.
+    if (!/\/api\/.* due to access control checks\.$/.test(error.message))
+      errors.push(error.message);
+  });
   await page.goto(origin + '/#settings');
   const panel = page.getByRole('region', { name: '同步游戏成绩', exact: true });
   const uploadPanel = page.getByRole('region', { name: '上传水鱼', exact: true });
