@@ -189,17 +189,6 @@ class APRecordTests(unittest.TestCase):
             saved = conn.execute("SELECT receipt_json FROM provider_syncs").fetchone()[0]
             self.assertEqual(json.loads(saved), receipt)
 
-    def test_retired_manual_routes_cannot_create_or_remove_ap(self):
-        before = self.store.chart(self.key)
-        with TestClient(create_app(self.store, updater=FakeUpdater())) as client:
-            path = f"/api/charts/{self.key}/manual"
-            for response in (
-                client.put(path, json={"ap": True, "achievement": 101, "venue": "bypass"}),
-                client.delete(path),
-            ):
-                self.assertEqual(response.status_code, 410)
-        self.assertEqual(self.store.chart(self.key), before)
-
     def test_confirmed_evidence_survives_missing_or_reduced_remote_score(self):
         self.save()
         self.sync("app", achievements=101)
@@ -360,7 +349,7 @@ class APRecordTests(unittest.TestCase):
             results = list(pool.map(save, ["one", "two"]))
         self.assertCountEqual(results, ["saved", "stale"])
 
-    def test_api_contract_and_sync_snapshot_precedes_network_request(self):
+    def test_ap_record_api_contract(self):
         with TestClient(create_app(self.store, updater=FakeUpdater())) as client:
             path = f"/api/charts/{self.key}/ap-record"
             self.assertEqual(client.put(path, json={"venue": "机厅"}).status_code, 422)
@@ -371,20 +360,6 @@ class APRecordTests(unittest.TestCase):
             self.assertEqual(
                 client.put(path, json={**body, "request_id": "stale"}).status_code, 409
             )
-            self.store.save_token("test-not-a-real-token")
-
-            def response(*args, **kwargs):
-                chart = self.store.chart(self.key)
-                self.save(
-                    venue="期间修改", request_id="during-fetch", revision=chart["record_revision"]
-                )
-                result = unittest.mock.Mock(status_code=200)
-                result.json.return_value = {"records": [self.score()]}
-                return result
-
-            with patch("backend.app.httpx.get", side_effect=response):
-                receipt = client.post("/api/sync/divingfish").json()
-            self.assertEqual((receipt["confirmed"], receipt["pending"]), (0, 1))
             chart = self.store.chart(self.key)
             self.assertEqual(
                 client.delete(

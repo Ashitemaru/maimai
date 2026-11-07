@@ -43,8 +43,8 @@ class FakeUpdater:
     def start(self):
         return self.operation("update")
 
-    def retry_remy(self, recheck=False):
-        return self.operation("recheck" if recheck else "remy")
+    def retry_remy(self):
+        return self.operation("remy")
 
     def record_review(self):
         return {"records": [], "revision": "r1", "decision_revision": 0}
@@ -66,9 +66,6 @@ class FakeUpdater:
 
     def reapply_decisions(self):
         return self.operation("reapply")
-
-    def rollback(self):
-        return self.operation("rollback")
 
     def close(self):
         self.closed = True
@@ -743,32 +740,15 @@ class AppTests(unittest.TestCase):
             self.assertEqual([c["chart_key"] for c in listing["items"]], [f"90001:{difficulty}"])
             self.assertEqual(listing["items"][0]["cn_version"], version + 4)
 
-    def test_legacy_decision_endpoint_cannot_bypass_whole_chart_gate(self):
-        payload = {
-            "base_catalog_revision": "r1",
-            "base_decision_revision": 0,
-            "object_key": "1:dx:ordinary",
-            "kind": "version",
-            "action": "set",
-            "version": "DX",
-        }
-        self.assertEqual(self.client.post("/api/catalog/decisions", json=payload).status_code, 410)
+    def test_decision_reapply_route_rejects_cross_origin(self):
         self.assertEqual(
             self.client.post(
-                "/api/catalog/decisions", json=payload | {"date": "invalid"}
-            ).status_code,
-            410,
-        )
-        self.assertEqual(
-            self.client.post(
-                "/api/catalog/decisions",
-                json=payload,
+                "/api/catalog/decisions/reapply",
                 headers={"Origin": "https://external.example"},
             ).status_code,
             403,
         )
         self.assertEqual(self.client.post("/api/catalog/decisions/reapply").status_code, 202)
-        self.assertEqual(self.client.post("/api/catalog/remy/recheck").status_code, 202)
 
     def test_chart_decision_api_validates_primary_key_complete_payload_and_origin(self):
         self.assertEqual(self.client.get("/api/catalog/records/review").json()["records"], [])
@@ -922,7 +902,6 @@ class AppTests(unittest.TestCase):
             for route, operation in (
                 ("update", "update"),
                 ("remy/retry", "remy"),
-                ("rollback", "rollback"),
             ):
                 with self.subTest(route=route):
                     result = client.post(f"/api/catalog/{route}")
@@ -930,10 +909,10 @@ class AppTests(unittest.TestCase):
                     self.assertEqual(result.json()["operation"], operation)
                     self.updater.error = BusyError("更新正在进行")
                     self.assertEqual(client.post(f"/api/catalog/{route}").status_code, 409)
-                    self.updater.error = ValueError("没有可回滚的版本")
+                    self.updater.error = ValueError("操作无效")
                     self.assertEqual(client.post(f"/api/catalog/{route}").status_code, 422)
                     self.updater.error = None
-            self.assertEqual(self.updater.calls, ["update", "remy", "rollback"])
+            self.assertEqual(self.updater.calls, ["update", "remy"])
             self.assertEqual(
                 client.post(
                     "/api/catalog/update", headers={"Origin": "https://external.example"}
@@ -1083,7 +1062,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.json(), expected)
         self.assertEqual(response.headers["cache-control"], "no-store")
 
-    def test_legacy_manual_records_are_readable_but_http_writes_are_retired(self):
+    def test_legacy_manual_records_remain_readable(self):
         key = "22:standard:4"
         with self.store.db() as conn:
             conn.execute(
@@ -1093,16 +1072,9 @@ class AppTests(unittest.TestCase):
         self.store.import_provider(
             {"records": [{"song_id": 22, "level_index": 4, "fc": "fc", "achievements": 100.2}]}
         )
-        before = self.client.get(f"/api/charts/{key}").json()
-        self.assertTrue(before["conflict"])
-        self.assertEqual((before["venue"], before["achievement"]), ("测试机厅", 100.9876))
-        for response in (
-            self.client.put(f"/api/charts/{key}/manual", json={"ap": True}),
-            self.client.delete(f"/api/charts/{key}/manual"),
-        ):
-            self.assertEqual(response.status_code, 410)
-            self.assertEqual(response.json()["detail"]["code"], "manual_retired")
-        self.assertEqual(self.client.get(f"/api/charts/{key}").json(), before)
+        chart = self.client.get(f"/api/charts/{key}").json()
+        self.assertTrue(chart["conflict"])
+        self.assertEqual((chart["venue"], chart["achievement"]), ("测试机厅", 100.9876))
 
     def test_venue_policy_is_exposed_and_low_claim_needs_no_venue(self):
         high, low = "131:standard:3", "30:standard:0"
@@ -1160,9 +1132,8 @@ class AppTests(unittest.TestCase):
         ]
         self.assertTrue(all(c["type"] == "dx" and c["song_id"] == 30 for c in charts))
 
-    def test_sync_without_token_is_honest_and_secret_never_echoed(self):
+    def test_token_settings_never_echo_secret(self):
         with patch.dict(os.environ, {"DIVINGFISH_IMPORT_TOKEN": ""}):
-            self.assertEqual(self.client.post("/api/sync/divingfish").status_code, 409)
             value = "test-not-a-real-token"
             response = self.client.put("/api/settings/divingfish", json={"token": value})
             self.assertTrue(response.json()["configured"])
@@ -1172,18 +1143,6 @@ class AppTests(unittest.TestCase):
             invalid = self.client.put("/api/settings/divingfish", json={"token": value + "\n"})
             self.assertEqual(invalid.status_code, 422)
             self.assertNotIn(value, invalid.text)
-            with patch("backend.app.httpx.get") as fetch:
-                fetch.return_value.status_code = 200
-                fetch.return_value.json.return_value = {
-                    "records": [
-                        {"song_id": 30, "level_index": 0, "fc": "ap", "achievements": 100.5}
-                    ]
-                }
-                result = self.client.post("/api/sync/divingfish")
-                self.assertEqual(result.status_code, 200)
-                self.assertEqual(result.json()["matched"], 1)
-                self.assertEqual(fetch.call_args.kwargs["headers"], {"Import-Token": value})
-                self.assertFalse(fetch.call_args.kwargs["follow_redirects"])
 
     def test_failed_sync_keeps_existing_provider_snapshot(self):
         self.store.import_provider(

@@ -129,7 +129,6 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(state["main"]["diff"]["charts_added"], 4)
         self.assertTrue(all(isinstance(w, str) for w in state["main"]["warnings"]))
         self.assertEqual(state["remy"]["status"], "complete")
-        self.assertTrue(state["can_rollback"])
         self.assertEqual(digest(self.root / "catalog.sqlite"), before)
         self.assertEqual(self.store.catalog["1:dx:4"]["constant"], 1)
         self.assertEqual(self.store.personal["1:dx:4"]["venue"], "机厅")
@@ -147,7 +146,7 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse((self.root / "current").exists())
         self.assertEqual(self.store.catalog["1:dx:4"]["constant"], 0)
 
-    def test_duplicate_update_rejected_and_rollback_preserves_personal(self):
+    def test_duplicate_update_rejected_and_personal_preserved(self):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
 
@@ -163,9 +162,6 @@ class UpdateTests(unittest.TestCase):
             service.start()
         release.set()
         self.finish(service)
-        service.rollback()
-        self.finish(service, remy=False)
-        self.assertEqual(self.store.catalog["1:dx:4"]["constant"], 0)
         self.assertEqual(service.status()["main"]["status"], "succeeded")
         self.assertTrue(self.store.personal["1:dx:4"]["ap"])
 
@@ -239,9 +235,7 @@ class UpdateTests(unittest.TestCase):
         self.finish(service)
         self.assertTrue(service.status()["revision"].startswith("remy-"))
         self.assertEqual(self.store.catalog["1:dx:4"]["jp_release_version"], "FESTiVAL")
-        service.rollback()
-        self.finish(service, remy=False)
-        self.assertEqual(self.store.catalog["1:dx:4"]["constant"], 0)
+        self.assertFalse(service._state["previous_snapshot"].startswith("remy-"))
 
     def test_remy_failure_does_not_fail_catalog(self):
         def fail(*a, **kw):
@@ -440,7 +434,7 @@ class UpdateTests(unittest.TestCase):
             if key != "choices"
         }
 
-    def test_chart_decisions_survive_source_update_rollback_restart_until_explicit_revoke(self):
+    def test_chart_decisions_survive_source_update_restart_until_explicit_revoke(self):
         service = self.service()
         self.chart_fixture(service)
         self.assertEqual(self.store.catalog, {})
@@ -451,9 +445,6 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(service.record_review()["records"], [])
         service.start()
         self.finish(service)
-        self.assertEqual(self.store.catalog["10001:4"]["constant"], 13.9)
-        service.rollback()
-        self.finish(service, remy=False)
         self.assertEqual(self.store.catalog["10001:4"]["constant"], 13.9)
         restarted = self.service(build_fn=service._build)
         self.assertEqual(len(restarted.manual_records()["records"][0]["fields"]), 2)
@@ -506,21 +497,16 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(service.status()["revision"], revision)
         self.assertEqual(self.store.catalog["10001:4"]["artist"], "Selected Artist")
 
-    def test_recheck_is_explicit_and_conflicts_publish_without_additions(self):
-        called = []
+    def test_new_conflicts_publish_without_additions(self):
         conflict = {"chart_key": "1:dx:4", "reason": "different_release", "candidates": []}
+        results = iter([no_remy(), no_remy() | {"conflicts": [conflict]}])
 
-        def remy(*a, **kw):
-            called.append(kw.get("recheck", False))
-            return no_remy() | {"conflicts": [conflict] if kw.get("recheck") else []}
-
-        service = self.service(remy_fn=remy)
+        service = self.service(remy_fn=lambda *a, **kw: next(results))
         service.start()
         self.finish(service)
         previous = service.status()["revision"]
-        service.retry_remy(recheck=True)
+        service.retry_remy()
         service._remy_future.result(timeout=5)
-        self.assertEqual(called, [False, True])
         self.assertNotEqual(service.status()["revision"], previous)
         path = self.store.catalog_directory() / "remy_conflicts.json"
         self.assertEqual(read(path)["conflicts"], [conflict])
@@ -543,16 +529,6 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(conflict_fingerprint(value), conflict_fingerprint(saved))
         saved["candidates"][0]["jp_release_version"] = "DX"
         self.assertNotEqual(conflict_fingerprint(value), conflict_fingerprint(saved))
-
-    def test_blocked_recheck_does_not_claim_finished(self):
-        def remy(*a, **kw):
-            return no_remy() | {"recheck_complete": False, "fetch_errors": [{"kind": "http_403"}]}
-
-        service = self.service(remy_fn=remy)
-        service.retry_remy(recheck=True)
-        service._remy_future.result(timeout=5)
-        self.assertEqual(service.status()["remy"]["status"], "pending")
-        self.assertIn("重核未完成", service.status()["remy"]["message"])
 
     def test_whole_chart_gate_rejects_partial_invalid_cross_chart_and_duplicate_requests(self):
         service = self.service()
@@ -801,53 +777,6 @@ class UpdateTests(unittest.TestCase):
             (manual["id"], manual["difficulty"], manual["chart_key"]), (10001, 4, "10001:4")
         )
         self.assertEqual({f["field_key"] for f in manual["fields"]}, {"artist", "constant"})
-
-    def test_decision_migration_is_explicit_auditable_and_idempotent(self):
-        service = self.service()
-        service.decisions.save(
-            {
-                "object_key": "field:1:song.artist",
-                "kind": "field",
-                "action": "select",
-                "value": "Selected Artist",
-            },
-            0,
-        )
-        original = service.decisions.snapshot()
-
-        def migrate(document, directory):
-            self.assertEqual(document, original)
-            return {
-                "schema_version": 2,
-                "revision": document["revision"],
-                "migration": {"converted_count": 1},
-                "decisions": [
-                    {
-                        "object_key": "chart:10001:4:artist",
-                        "kind": "chart_field",
-                        "id": 10001,
-                        "difficulty": 4,
-                        "field_key": "artist",
-                        "action": "select",
-                        "value": "Selected Artist",
-                    }
-                ],
-            }
-
-        with patch.dict(
-            sys.modules,
-            {"scripts.catalog_chart_compiler": SimpleNamespace(migrate_decisions=migrate)},
-        ):
-            migrated = service.migrate_legacy_decisions()
-            self.assertEqual(migrated["schema_version"], 2)
-            self.assertEqual(migrated["revision"], 2)
-            self.assertEqual(service.migrate_legacy_decisions(), migrated)
-        self.assertTrue(service.status()["decisions_pending"])
-        self.assertEqual(len(service.decisions.history()), 2)
-        self.assertEqual(
-            service.decisions.history()[0]["previous"]["decisions"], original["decisions"]
-        )
-        self.assertIsNone(service._main_future)
 
     def test_public_warning_counts_only_unadmitted_charts_not_resolved_raw_differences(self):
         built = {

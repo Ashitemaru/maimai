@@ -28,6 +28,7 @@ import type { CatalogUpdateControl } from './useCatalogUpdate';
 import { ScoreSyncPanel } from './ScoreSyncPanel';
 import { useScoreSync, type ScoreSyncControl } from './useScoreSync';
 import { useNotify, useToastMessage } from './Toast';
+import { chartName } from './chartLabels';
 
 const PublishingPage = lazy(() =>
   import('./PublishingPage').then((module) => ({ default: module.PublishingPage })),
@@ -68,7 +69,6 @@ const collectionNavigation = [
   { page: 'pending', label: '待核记录' },
 ] as const;
 const num = (value = 0) => value.toLocaleString('en-US');
-const chartName = (c: Chart) => c.display_title || c.title || '（空白曲名）';
 function Icon({ name }: { name: string }) {
   return (
     <svg

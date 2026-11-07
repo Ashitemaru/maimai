@@ -179,12 +179,25 @@ try {
         connected = true;
         return send({ state: 'connected', account: { mid: 1, name: 'Fixture user' } });
       }
-      if (pathname === '/api/bilibili/videos')
+      if (pathname === '/api/bilibili/videos') {
+        if (ambiguous) await new Promise((resolve) => setTimeout(resolve, 900));
         return send({
           items: [{ bvid, title: 'Our Wrenally old title', cover: '/jackets/9200.png' }],
           page: 1,
           has_more: false,
+          collections: [
+            {
+              id: 3,
+              title: 'AP collection',
+              sections: [
+                { id: 8, title: '13.0' },
+                ...(ambiguous ? [{ id: 9, title: '13.0' }] : []),
+              ],
+            },
+          ],
+          unavailable_collections: [],
         });
+      }
       if (pathname === `/api/bilibili/videos/${bvid}`)
         return send({
           bvid,
@@ -200,21 +213,6 @@ try {
           revision: '1',
           mirror_horizontal: extraBvid === 'BV1bJouBSEiH',
         });
-      if (pathname === '/api/bilibili/collections') {
-        if (ambiguous) await new Promise((resolve) => setTimeout(resolve, 900));
-        return send({
-          items: [
-            {
-              id: 3,
-              title: 'AP collection',
-              sections: [
-                { id: 8, title: '13.0' },
-                ...(ambiguous ? [{ id: 9, title: '13.0' }] : []),
-              ],
-            },
-          ],
-        });
-      }
       if (pathname === '/api/bilibili/collections/order') {
         assert.equal(request.method(), 'GET');
         orderChecks += 1;

@@ -9,7 +9,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -35,14 +35,6 @@ class DeploymentTests(unittest.TestCase):
 
     def new_store(self):
         return Store(runtime=self.root / "runtime", catalog_dir=self.catalog)
-
-    def response(self, fc="ap"):
-        return Mock(
-            status_code=200,
-            json=lambda: {
-                "records": [{"song_id": 30, "level_index": 0, "fc": fc, "achievements": 100.5}]
-            },
-        )
 
     def test_parallel_token_saves_are_atomic_private_and_leave_no_temporary_files(self):
         barrier = threading.Barrier(8)
@@ -80,76 +72,6 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn("private-synthetic", response.text)
         self.store.save_token("replacement")
         self.assertTrue(self.client.get("/api/settings/divingfish").json()["configured"])
-
-    def test_sync_lease_rejects_overlap_and_is_released_after_completion(self):
-        self.store.save_token("synthetic")
-        entered, release = threading.Event(), threading.Event()
-
-        def fetch(*args, **kwargs):
-            entered.set()
-            if not release.wait(timeout=5):
-                raise AssertionError("test did not release provider response")
-            return self.response("fc")
-
-        with (
-            patch("backend.app.httpx.get", side_effect=fetch) as upstream,
-            ThreadPoolExecutor(max_workers=1) as pool,
-        ):
-            request = pool.submit(self.client.post, "/api/sync/divingfish")
-            try:
-                self.assertTrue(entered.wait(timeout=5))
-                blocked = self.client.post("/api/sync/divingfish")
-                self.assertEqual(blocked.status_code, 409)
-                self.assertEqual(blocked.json()["detail"]["code"], "sync_busy")
-                self.assertEqual(upstream.call_count, 1)
-            finally:
-                release.set()
-            self.assertEqual(request.result(timeout=5).status_code, 200)
-        with patch("backend.app.httpx.get", return_value=self.response()):
-            self.assertEqual(self.client.post("/api/sync/divingfish").status_code, 200)
-        self.assertTrue(self.store.chart("30:standard:0")["is_ap"])
-
-    def test_token_change_invalidates_inflight_response_without_touching_scores(self):
-        self.store.save_token("synthetic-old")
-        self.store.import_provider(self.response().json())
-        before = self.store.meta("last_sync")
-        entered, release = threading.Event(), threading.Event()
-
-        def fetch(*args, **kwargs):
-            entered.set()
-            if not release.wait(timeout=5):
-                raise AssertionError("test did not release provider response")
-            return self.response("fc")
-
-        with (
-            patch("backend.app.httpx.get", side_effect=fetch),
-            ThreadPoolExecutor(max_workers=1) as pool,
-        ):
-            request = pool.submit(self.client.post, "/api/sync/divingfish")
-            try:
-                self.assertTrue(entered.wait(timeout=5))
-                self.assertEqual(
-                    self.client.put(
-                        "/api/settings/divingfish", json={"token": "synthetic-new"}
-                    ).status_code,
-                    200,
-                )
-            finally:
-                release.set()
-            result = request.result(timeout=5)
-        self.assertEqual(result.status_code, 409)
-        self.assertEqual(result.json()["detail"]["code"], "token_changed")
-        self.assertTrue(self.store.chart("30:standard:0")["is_ap"])
-        self.assertEqual(self.store.meta("last_sync"), before)
-        with patch("backend.app.httpx.get", return_value=self.response()):
-            self.assertEqual(self.client.post("/api/sync/divingfish").status_code, 200)
-
-    def test_sync_failure_releases_lease(self):
-        self.store.save_token("synthetic")
-        with patch("backend.app.httpx.get", return_value=Mock(status_code=500)):
-            self.assertEqual(self.client.post("/api/sync/divingfish").status_code, 502)
-        with patch("backend.app.httpx.get", return_value=self.response()):
-            self.assertEqual(self.client.post("/api/sync/divingfish").status_code, 200)
 
     def test_stale_claim_put_and_delete_cannot_overwrite_newer_record(self):
         with self.store.db() as conn:

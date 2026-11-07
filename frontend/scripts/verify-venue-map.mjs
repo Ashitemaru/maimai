@@ -146,7 +146,6 @@ const server = http.createServer(async (req, res) => {
         revision: 'test',
         main: { status: 'succeeded', warnings: [], diff: {} },
         remy: { status: 'complete', pending_count: 0, verified_count: 0, updated_count: 0 },
-        can_rollback: false,
       });
     if (url.pathname.startsWith('/api/'))
       throw new Error('Unexpected API request: ' + url.pathname);

@@ -13,6 +13,7 @@ export interface PublishingVideo {
   cover43?: string;
   revision?: string;
   mirror_horizontal?: boolean;
+  organized?: boolean;
 }
 export interface PublishingCollection {
   id: number;

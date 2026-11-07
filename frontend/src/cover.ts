@@ -109,10 +109,15 @@ export function loadCoverFont() {
       throw error;
     }));
 }
+// Least-recently-used, so batch renders do not keep every decoded jacket alive.
+const imageCacheSize = 64;
 const images = new Map<string, Promise<HTMLImageElement>>();
 function loadImage(url: string) {
   let pending = images.get(url);
-  if (!pending) {
+  if (pending) {
+    images.delete(url);
+    images.set(url, pending);
+  } else {
     pending = new Promise<HTMLImageElement>((resolve, reject) => {
       const image = new Image();
       image.onload = () => resolve(image);
@@ -123,6 +128,10 @@ function loadImage(url: string) {
       image.src = url;
     });
     images.set(url, pending);
+    for (const oldest of images.keys()) {
+      if (images.size <= imageCacheSize) break;
+      images.delete(oldest);
+    }
   }
   return pending;
 }

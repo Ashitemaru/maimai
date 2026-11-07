@@ -192,7 +192,6 @@ const status = {
     updated_count: 0,
     message: '',
   },
-  can_rollback: true,
 };
 const reviewRecords = [1, 2, 3].map((difficulty) => ({
   id: 383,

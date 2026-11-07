@@ -78,7 +78,6 @@ const catalog = {
   revision: 'score-sync',
   main: { status: 'succeeded', warnings: [], diff: {} },
   remy: { status: 'complete', pending_count: 0, verified_count: 0, updated_count: 0 },
-  can_rollback: false,
 };
 const browser = await launchBrowser();
 try {

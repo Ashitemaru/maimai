@@ -19,7 +19,6 @@ GET /api/catalog/update/report -> {diff,issues,sources,source_policy} from the a
   Missing diff/issues/sources default to {}, [] and []; Cache-Control: no-store.
 POST /api/catalog/update -> HTTP 202, starts the catalog update job
 POST /api/catalog/remy/retry -> HTTP 202, retries Japanese chart-release research
-POST /api/catalog/rollback -> HTTP 202, starts rollback to the previous snapshot
   No request body. A concurrent job returns HTTP 409; invalid operation -> HTTP 422.
   Jobs are owned by app.state.catalog_updates and closed on application shutdown.
   Public catalog updates do not replace the personal SQLite database.
@@ -63,7 +62,6 @@ PUT /api/charts/{chart_key}/ap-record {venue,request_id,expected_revision}
   cannot replace a recorded venue with a previously queued correction.
 DELETE /api/charts/{chart_key}/ap-record?expected_revision=N -> {chart}
   Cancels only the pending claim; previous AP evidence and confirmed venue survive.
-PUT/DELETE /api/charts/{chart_key}/manual -> 410; obsolete immediate-AP writes.
 GET /api/venues -> {items:[{name,count,last_used_at}]}
   Includes recent pending venue choices; count includes only completed charts.
 GET /api/venues/map -> {items:[{name,city,total,pending_count,location,jackets}]}
@@ -197,22 +195,6 @@ POST /api/sync/divingfish/upload (no body) -> HTTP 202, job object
   by another client between the read and POST. Avoid parallel imports elsewhere.
   All score jobs share a nonblocking process/file lease (busy -> 409); starts have a
   short cooldown (429). Network operations have bounded timeouts. UI polls status.
-POST /api/sync/divingfish (no body)
-  Compatibility only; disabled with 409 after the first successful Wahlap binding,
-  so an older source cannot replace newer game scores or confirm pending records.
-  -> {ok,source:"divingfish",records,matched,unmatched,conflicts,synced_at,sync_id,confirmed,pending,venue_pending}
-  Reads full records from official /player/records endpoint, Import-Token header.
-  No credentials configured -> HTTP 409, detail {code:"not_configured",message:...}.
-  Never uploads/modifies game or waterfish records. Sync preserves local records.
-  The eligible pending IDs/revisions are captured before the network request.
-  Only an unchanged eligible claim whose latest full response has fc=ap/app is
-  confirmed. Scores, venue confirmations, evidence and sync receipt commit together.
-  Missing/non-AP records stay pending with a reason. A malformed/network response
-  leaves all existing personal data untouched. Overlapping syncs return 409.
-  Full raw records are retained in sync history, including unmatched Utage records;
-  Utage scores can exceed 101 and are not added to the ordinary chart statistics.
-  Scores can confirm chart-level AP, not a particular play's venue or date.
-
 Chart fields:
 id, difficulty, chart_key (id:difficulty), lxns_song_id, song_id (alias of id),
 title, display_title, artist, type, difficulty_index (alias of difficulty),
@@ -288,7 +270,7 @@ POST /api/catalog/records/decisions/batch -> CatalogUpdateState (202)
   Invalid or incomplete -> 422, stale or busy -> 409, with no partial decision writes.
   A failure in the last chart never saves the earlier charts or starts a rebuild.
   Version/date stay paired. Server resolves values/evidence from submitted option IDs.
-  Selected values persist through source changes/rebuilds/rollback until explicit revoke.
+  Selected values persist through source changes/rebuilds until explicit revoke.
   Failed publication keeps prior snapshot and saved decisions; decisions_pending=true.
 POST /api/catalog/records/decisions -> CatalogUpdateState (202)
   {base_catalog_revision,base_decision_revision,id,difficulty,
@@ -300,16 +282,10 @@ POST /api/catalog/records/decisions/revoke -> CatalogUpdateState (202)
   {base_catalog_revision,base_decision_revision,id,difficulty,field_keys?}
   Omit field_keys to revoke all fields for this chart; otherwise revoke the selected fields.
   Revocation restores comparison and may withdraw the entire chart to pending admission.
-POST /api/catalog/decisions -> 410 (legacy per-object/identity writes disabled).
-GET /api/catalog/review -> legacy read-only provenance report; not the new adjudication API.
 POST /api/catalog/decisions/reapply -> CatalogUpdateState (202), no network.
 GET /api/catalog/decisions/history?object_key=&limit=100 -> {items:[events]}
   Events include original value, revision, timestamp and batch_id; revoke retains history.
-POST /api/catalog/remy/recheck -> CatalogUpdateState (202)
-  Bounded deterministic evidence check. Missing evidence alone does not block admission.
-  Does not claim completion when rate limits or request budget interrupt work.
 State includes decision_revision,applied_decision_revision,decisions_pending.
-Rollback rebuilds prior raw data with current permanent choices.
 Personal records for pending charts remain stored and can reattach after admission.
 
 Bilibili post-upload organization (existing own videos only):
@@ -317,14 +293,17 @@ GET /api/bilibili/status -> {connected,account:{mid,name}|null}
 POST /api/bilibili/login -> {login_id,url,expires_at}; QR authorization URL only.
 GET /api/bilibili/login/{login_id} -> {state,account?}
 DELETE /api/bilibili/session -> removes the locally saved Bilibili session.
-GET /api/bilibili/videos?page=1 -> {items,has_more,page}
+GET /api/bilibili/videos?page=1
+  -> {items,has_more,page,collections:[{id,title,sections:[{id,title}]}],unavailable_collections}
   Only members of the signed-in account's handplay collections named
   "maimai <level> AP" (for example maimai 13+ AP). Video titles are not filters.
   Reads complete collection membership, deduplicates, sorts newest first and then
   paginates 20 items. Incomplete upstream results fail instead of listing all uploads.
+  A collection the public listing refuses (draft/under review) is skipped and named in
+  unavailable_collections. Page 1 re-reads B 站; later pages reuse that snapshot for
+  up to 5 minutes. Applying a publishing job clears the snapshot.
 GET /api/bilibili/videos/{bvid} -> existing title, both covers and revision.
   Explicitly loading an owned BV remains available for new, uncollected handplays.
-GET /api/bilibili/collections -> {items:[{id,title,sections:[{id,title}]}]}
 GET /api/bilibili/collections/order -> {checked_at,sections:[OrderReport]}
   Explicit read-only inspection of all owned collection sections. Each OrderReport
   has season_id, season_title, section_id, section_title, revision,

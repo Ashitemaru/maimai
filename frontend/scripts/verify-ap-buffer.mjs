@@ -79,7 +79,6 @@ const catalog = {
   snapshot_at: null,
   main: { status: 'succeeded', stage: '', message: '', warnings: [], diff: {} },
   remy: { status: 'complete', pending_count: 0, verified_count: 0, updated_count: 0, message: '' },
-  can_rollback: false,
 };
 function deferred() {
   let resolve;

@@ -26,10 +26,15 @@ MAX_RESPONSE = 4 * 1024 * 1024
 
 
 class BilibiliError(Exception):
-    def __init__(self, message, *, status=502, uncertain=False):
+    def __init__(self, message, *, status=502, uncertain=False, code=None):
         super().__init__(message)
         self.status = status
         self.uncertain = uncertain
+        self.code = code
+
+
+class CollectionUnavailableError(BilibiliError):
+    """The public listing refuses this collection, e.g. while it is a draft or under review."""
 
 
 def validate_bvid(value):
@@ -228,7 +233,9 @@ class BilibiliClient:
         if result["code"] in (-101, -111):
             raise BilibiliError("B 站登录已失效，请重新扫码", status=409)
         if result["code"] != 0:
-            raise BilibiliError(f"B 站未接受请求（{result['code']}）", status=409)
+            raise BilibiliError(
+                f"B 站未接受请求（{result['code']}）", status=409, code=result["code"]
+            )
         return result.get("data") or {}
 
     def account(self):
@@ -316,21 +323,28 @@ class BilibiliClient:
         seen = set()
         expected_total = None
         for page in range(1, 101):
-            data = self.request(
-                "GET",
-                API,
-                "/x/polymer/web-space/seasons_archives_list",
-                params={
-                    "mid": mid,
-                    "season_id": season_id,
-                    "sort_reverse": "false",
-                    "page_num": page,
-                    "page_size": 100,
-                },
-            )
+            try:
+                data = self.request(
+                    "GET",
+                    API,
+                    "/x/polymer/web-space/seasons_archives_list",
+                    params={
+                        "mid": mid,
+                        "season_id": season_id,
+                        "sort_reverse": "false",
+                        "page_num": page,
+                        "page_size": 100,
+                    },
+                )
+            except BilibiliError as exc:
+                if exc.code is None:
+                    raise
+                raise CollectionUnavailableError("B 站暂不公开该合集", status=409) from None
             if not isinstance(data, dict):
                 raise BilibiliError("B 站合集稿件格式已变化")
             meta, paging = data.get("meta"), data.get("page")
+            if page == 1 and not meta and not paging:
+                raise CollectionUnavailableError("B 站暂不公开该合集", status=409)
             if not isinstance(meta, dict) or not isinstance(paging, dict):
                 raise BilibiliError("B 站未返回完整合集信息")
             if meta.get("mid") != mid or meta.get("season_id") != season_id:

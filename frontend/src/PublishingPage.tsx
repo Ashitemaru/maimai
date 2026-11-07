@@ -202,6 +202,7 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [collections, setCollections] = useState<PublishingCollection[]>([]);
+  const [unavailableCollections, setUnavailableCollections] = useState<string[]>([]);
   const [orderCheck, setOrderCheck] = useState<PublishingOrderCheck | null>(null);
   const [checkingOrder, setCheckingOrder] = useState(false);
   const [jobs, setJobs] = useState<PublishingJob[]>([]);
@@ -303,20 +304,22 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
     setVideos([]);
     setHasMore(false);
     setCollections([]);
+    setUnavailableCollections([]);
     Promise.all([
-      api<{ items: PublishingVideo[]; has_more: boolean }>(`/bilibili/videos?page=${page}`, {
-        signal: controller.signal,
-      }),
-      api<{ items: PublishingCollection[] }>('/bilibili/collections', {
-        signal: controller.signal,
-      }),
+      api<{
+        items: PublishingVideo[];
+        has_more: boolean;
+        collections: PublishingCollection[];
+        unavailable_collections: string[];
+      }>(`/bilibili/videos?page=${page}`, { signal: controller.signal }),
       api<{ items: PublishingJob[] }>('/bilibili/jobs', { signal: controller.signal }),
     ])
-      .then(([listing, groups, history]) => {
+      .then(([listing, history]) => {
         if (controller.signal.aborted || generation !== sessionGeneration.current) return;
         setVideos(listing.items);
         setHasMore(listing.has_more);
-        setCollections(groups.items);
+        setCollections(listing.collections);
+        setUnavailableCollections(listing.unavailable_collections);
         setJobs(history.items);
         setListingLoaded(true);
       })
@@ -696,13 +699,21 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
                   <img src={item.cover} alt="" loading="lazy" referrerPolicy="no-referrer" />
                   <span>
                     <strong>{item.title}</strong>
-                    <span>{item.bvid}</span>
+                    <span>
+                      {item.bvid}
+                      <span className="pill">{item.organized ? '已整理' : '待整理'}</span>
+                    </span>
                   </span>
                 </button>
               ))}
             </div>
             {listingLoaded && !loading && videos.length === 0 && (
-              <p className="empty-state">暂无已加入合集的手元视频</p>
+              <p className="empty-state">暂无稿件</p>
+            )}
+            {listingLoaded && unavailableCollections.length > 0 && (
+              <p className="empty-state" role="status">
+                以下合集暂未公开，其中的稿件未列出：{unavailableCollections.join('、')}
+              </p>
             )}
             {(page > 1 || hasMore) && (
               <div className="publishing-pagination">

@@ -65,7 +65,6 @@ let status = {
     updated_count: 0,
     message: '',
   },
-  can_rollback: false,
 };
 const fields = [
   {

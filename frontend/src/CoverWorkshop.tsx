@@ -10,6 +10,7 @@ import { ImageSaveActions } from './ImageSaveActions';
 import { downloadImage, needsSaveGesture, prepareImage } from './imageSave';
 import type { PreparedImage } from './imageSave';
 import { useToastMessage } from './Toast';
+import { chartName } from './chartLabels';
 export interface CoverState {
   chart: Chart | null;
   score: string;
@@ -19,7 +20,6 @@ export interface CoverState {
 }
 const validScore = (value: string) =>
   /^\d{1,3}(\.\d{1,4})?$/.test(value) && Number(value) >= 0 && Number(value) <= 101;
-const chartName = (chart: Chart) => chart.display_title || chart.title || '（空白曲名）';
 const chartType = (chart: Chart) =>
   chart.type === 'dx' ? 'DX' : chart.type === 'utage' ? 'UTAGE' : 'STD';
 export function CoverPage({

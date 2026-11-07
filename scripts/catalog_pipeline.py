@@ -7,8 +7,10 @@ import copy
 import hashlib
 import json
 import math
+import os
 import time
 import urllib.request
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,14 +41,26 @@ def now():
     return datetime.now(UTC).isoformat()
 
 
-def atomic_bytes(path: Path, content: bytes):
+def atomic_bytes(path, content: bytes):
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_bytes(content)
-    temporary.replace(path)
+    temporary = path.with_name(f".{path.name}-{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
-def atomic_json(path: Path, value):
+def atomic_json(path, value):
     atomic_bytes(path, (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode())
 
 

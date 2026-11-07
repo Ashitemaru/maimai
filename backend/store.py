@@ -16,10 +16,10 @@ import weakref
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 from .ap_records import APRecords, initialize_records, pending_record, read_record_state
+from .clock import now
 
 ROOT = Path(__file__).resolve().parents[1]
 DIFFICULTIES = {"BAS": 0, "ADV": 1, "EXP": 2, "MAS": 3, "ReM": 4}
@@ -56,10 +56,6 @@ CN_VERSION_SHORT_LABELS = {
     "DX2025": "镜",
     "DX2026": "彩",
 }
-
-
-def now():
-    return datetime.now(UTC).isoformat()
 
 
 def normalized(value):
@@ -819,12 +815,6 @@ class Store(APRecords):
                 os.close(descriptor)
         finally:
             self._sync_lock.release()
-
-    def publish_sync(self, payload, generation, eligible_records=None):
-        with self._token_lock:
-            if generation != self._token_generation:
-                raise SyncTokenChangedError()
-            return self.import_provider(payload, eligible_records)
 
     def readiness(self):
         checks = {"catalog": False, "personal": False}

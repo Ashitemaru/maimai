@@ -11,19 +11,9 @@ from collections import defaultdict
 from copy import deepcopy
 
 try:
-    from .catalog_versions import (
-        fingerprint,
-        identity_candidates,
-        normalize,
-        validate_bound_decision,
-    )
+    from .catalog_versions import exact_identity, fingerprint, normalize
 except ImportError:
-    from catalog_versions import (
-        fingerprint,
-        identity_candidates,
-        normalize,
-        validate_bound_decision,
-    )
+    from catalog_versions import exact_identity, fingerprint, normalize
 
 
 GENRES = {
@@ -191,29 +181,16 @@ def _arcade_record_membership(song, rows, version_items):
             r for r in rows if any(s.get("type") == source_type for s in r.get("sheets", []))
         ]
         item = version_items.get(kind)
-        identity = None
         if item:
-            decisions = [d for d in item["decisions"] if d["kind"] == "identity"]
-            if len(decisions) == 1:
-                try:
-                    identity = validate_bound_decision(item, decisions[0])
-                except ValueError:
-                    pass
-            _, eligible, exact = identity_candidates(
-                item["candidates"], song["title"], song["artist"], identity
-            )
+            exact = exact_identity(item["candidates"], song["title"], song["artist"])
             exact_ids = {c["external_id"] for c in exact if c["source"] == "arcade_songs"}
             if exact_ids:
                 chosen = exact_ids
-                match = (
-                    "identity_selected"
-                    if identity and identity["action"] == "select"
-                    else "matched"
-                    if len(exact_ids) == 1
-                    else "identity_ambiguous"
-                )
+                match = "matched" if len(exact_ids) == 1 else "identity_ambiguous"
             else:
-                chosen = {c["external_id"] for c in eligible if c["source"] == "arcade_songs"}
+                chosen = {
+                    c["external_id"] for c in item["candidates"] if c["source"] == "arcade_songs"
+                }
                 match = "identity_ambiguous" if len(exact_ids) > 1 else "artist_mismatch"
         else:
             exact = [r for r in typed_rows if normalize(r["artist"]) == normalize(song["artist"])]
@@ -236,7 +213,7 @@ def build_record_review(
     fish,
     arcade,
     version_review=None,
-    adjudications=None,
+    decision_revision=0,
 ):
     """Compare complete local song records; retain distinct region/scope meanings."""
     fish_by_id, arcade_by_title = defaultdict(list), defaultdict(list)
@@ -422,7 +399,7 @@ def build_record_review(
                 "selectable": True,
                 "status": item["status"],
                 "has_difference": item["status"] in ("pending", "conflict"),
-                "decision": next((d for d in item["decisions"] if d["kind"] == "version"), None),
+                "decision": None,
                 "reasons": item["reasons"],
             }
             field = fields["version:" + object_key]
@@ -445,6 +422,6 @@ def build_record_review(
         )
     return {
         "schema_version": 1,
-        "decision_revision": (adjudications or {}).get("revision", 0),
+        "decision_revision": decision_revision,
         "records": records,
     }

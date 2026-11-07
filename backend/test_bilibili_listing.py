@@ -9,8 +9,13 @@ from unittest.mock import Mock
 
 import httpx
 
-from backend.bilibili import BilibiliService
-from backend.bilibili_client import API, BilibiliClient, BilibiliError
+from backend.bilibili import LISTING_TTL, BilibiliService
+from backend.bilibili_client import (
+    API,
+    BilibiliClient,
+    BilibiliError,
+    CollectionUnavailableError,
+)
 from backend.test_bilibili import ACCOUNT, BV, FakeClient, FakeStore
 
 
@@ -67,6 +72,20 @@ class CollectionProtocolTests(unittest.TestCase):
             self.assertEqual(request.url.params["page_num"], str(number))
             self.assertEqual(request.url.params["page_size"], "100")
             self.assertEqual(request.url.params["sort_reverse"], "false")
+
+    def test_rejected_collection_is_unavailable_but_transport_errors_are_not(self):
+        def respond(request):
+            if request.url.params["season_id"] == "11":
+                return httpx.Response(200, json={"code": -404, "data": None})
+            return httpx.Response(412)
+
+        client = BilibiliClient(transport=httpx.MockTransport(respond))
+        self.addCleanup(client.close)
+        with self.assertRaises(CollectionUnavailableError):
+            client.collection_videos(11, ACCOUNT["mid"])
+        with self.assertRaises(BilibiliError) as failure:
+            client.collection_videos(12, ACCOUNT["mid"])
+        self.assertNotIsInstance(failure.exception, CollectionUnavailableError)
 
     def test_empty_collection(self):
         self.assertEqual(
@@ -129,47 +148,88 @@ class HandplayListingTests(unittest.TestCase):
         self.client.collection_videos = Mock(
             side_effect=lambda season_id, mid: copy.deepcopy(self.members[season_id])
         )
-        self.client.videos = Mock(side_effect=AssertionError("Do not list all account uploads"))
+        self.uploads = []
+        self.client.videos = Mock(side_effect=self.upload_page)
         self.service = BilibiliService(FakeStore(temp.name), client_factory=self.client)
         self.service._save_session(ACCOUNT, self.client)
         self.addCleanup(self.service.close)
 
-    def test_only_collection_members_regardless_of_video_title(self):
-        self.members[11] = [video(1, bvid="BV1bJouBSEiH", title="PA reversed title")]
-        self.members[12] = [video(2, bvid="BV1mf796VEhd", title="【maimai】宴 AP+")]
-        self.members[13] = [video(3, bvid=BV)]
+    def upload_page(self, page):
+        start = (page - 1) * 20
+        return {
+            "items": copy.deepcopy(self.uploads[start : start + 20]),
+            "page": page,
+            "has_more": start + 20 < len(self.uploads),
+        }
+
+    def test_new_upload_is_listed_first_as_unorganized(self):
+        self.uploads = [video(3, title="raw test upload"), video(2), video(1)]
+        self.members[11] = [video(1)]
+        self.members[13] = [video(2)]
         result = self.service.videos(1)
-        self.assertEqual([v["bvid"] for v in result["items"]], [BV, "BV1mf796VEhd", "BV1bJouBSEiH"])
+        self.assertEqual(
+            [(v["aid"], v["organized"]) for v in result["items"]],
+            [(3, False), (2, True), (1, True)],
+        )
         self.assertFalse(result["has_more"])
         self.assertEqual(
             [call.args for call in self.client.collection_videos.call_args_list],
             [(11, ACCOUNT["mid"]), (12, ACCOUNT["mid"]), (13, ACCOUNT["mid"])],
         )
-        self.assertEqual(self.client.calls, [])
 
-    def test_deduplicates_before_pagination_and_sorts_newest_first(self):
-        self.members[11] = [video(i) for i in range(1, 16)]
-        self.members[12] = [video(i) for i in range(10, 26)]
+    def test_unorganized_before_organized_then_newest_first(self):
+        self.uploads = [video(i) for i in range(25, 0, -1)]
+        self.members[11] = [video(i) for i in range(1, 21)]
+        self.members[12] = [video(i) for i in range(15, 21)]
         first, second, third = [self.service.videos(page) for page in (1, 2, 3)]
-        self.assertEqual([v["aid"] for v in first["items"]], list(range(25, 5, -1)))
+        self.assertEqual(
+            [v["aid"] for v in first["items"]], [25, 24, 23, 22, 21, *range(20, 5, -1)]
+        )
         self.assertTrue(first["has_more"])
         self.assertEqual([v["aid"] for v in second["items"]], [5, 4, 3, 2, 1])
         self.assertFalse(second["has_more"])
-        self.assertEqual(third, {"items": [], "has_more": False, "page": 3})
+        self.assertEqual((third["items"], third["has_more"]), ([], False))
+        self.assertEqual(self.client.videos.call_count, 2)
+        self.assertEqual(self.client.collections.call_count, 1)
+        self.assertEqual(len(first["collections"]), 5)
 
-    def test_refresh_reads_membership_again_and_handles_empty_collections(self):
+    def test_refresh_reads_uploads_and_membership_again(self):
+        self.uploads = [video(1)]
+        self.assertFalse(self.service.videos(1)["items"][0]["organized"])
         self.members[11] = [video(1)]
-        self.assertEqual(len(self.service.videos(1)["items"]), 1)
-        self.members[11] = []
-        self.assertEqual(self.service.videos(1), {"items": [], "has_more": False, "page": 1})
-        self.client.collections.return_value = {"items": []}
+        self.assertTrue(self.service.videos(1)["items"][0]["organized"])
+        self.uploads = []
         self.assertEqual(self.service.videos(1)["items"], [])
 
-    def test_incomplete_collection_does_not_fall_back_to_all_uploads(self):
+    def test_collection_read_failure_is_reported(self):
+        self.uploads = [video(1)]
         self.client.collection_videos.side_effect = BilibiliError("upstream failed")
         with self.assertRaisesRegex(BilibiliError, "upstream failed"):
             self.service.videos(1)
-        self.client.videos.assert_not_called()
+
+    def test_unavailable_collection_is_reported_without_hiding_uploads(self):
+        self.uploads = [video(2), video(1)]
+        self.members[11] = [video(1)]
+
+        def members(season_id, mid):
+            if season_id == 12:
+                raise CollectionUnavailableError("draft")
+            return copy.deepcopy(self.members[season_id])
+
+        self.client.collection_videos.side_effect = members
+        result = self.service.videos(1)
+        self.assertEqual(
+            [(v["aid"], v["organized"]) for v in result["items"]], [(2, False), (1, True)]
+        )
+        self.assertEqual(result["unavailable_collections"], ["maimai 13+ AP"])
+
+    def test_expired_listing_snapshot_is_reread_for_later_pages(self):
+        self.uploads = [video(i) for i in range(25, 0, -1)]
+        self.service.videos(1)
+        self.service._listing_cache["at"] -= LISTING_TTL
+        self.uploads = [video(i) for i in range(21, 0, -1)]
+        self.assertEqual([v["aid"] for v in self.service.videos(2)["items"]], [1])
+        self.assertEqual(self.client.collections.call_count, 2)
 
     def test_manual_bv_load_accepts_new_uncollected_owned_video(self):
         self.assertEqual(self.service.videos(1)["items"], [])

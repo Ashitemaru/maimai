@@ -541,17 +541,13 @@ class ScoreSyncTests(unittest.TestCase):
         self.assertNotIn("secret-not-a-qr", str(failure.exception))
         self.assertIsNone(jobs.status()["job"])
 
-    def test_api_validation_and_legacy_pull_are_redacted_and_no_network(self):
+    def test_api_validation_is_redacted(self):
         self.import_game()
         with TestClient(create_app(self.store, updater=FakeUpdater())) as client:
             for body in ({"qr_text": {"secret": TEST_QR}}, {"qr_text": TEST_QR, "extra": TEST_QR}):
                 result = client.post("/api/sync/wahlap", json=body)
                 self.assertEqual(result.status_code, 422)
                 self.assertNotIn(TEST_QR, result.text)
-            with patch("backend.app.httpx.get") as get:
-                result = client.post("/api/sync/divingfish")
-            self.assertEqual(result.status_code, 409)
-            get.assert_not_called()
 
     def prepare_upload(self, records=None):
         self.import_game(records)

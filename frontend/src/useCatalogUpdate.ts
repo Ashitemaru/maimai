@@ -32,7 +32,6 @@ export interface CatalogUpdateState {
     updated_count: number;
     message: string;
   };
-  can_rollback: boolean;
 }
 
 type Action = 'update' | 'remy/retry' | 'decisions/reapply';

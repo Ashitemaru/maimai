@@ -4,6 +4,7 @@ import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
 import { ConstantRange } from './ConstantRange';
 import type { Chart, ChartFilters, ChartList } from './types';
 import { useToastMessage } from './Toast';
+import { difficultyNames } from './chartLabels';
 
 type Counts = { complete: number; total: number; remaining: number };
 type MatrixVersion = { value: string; label: string; title: string };
@@ -23,7 +24,6 @@ type Selection = {
   status: 'all' | 'incomplete';
 };
 const emptyCounts: Counts = { complete: 0, total: 0, remaining: 0 };
-const difficultyNames = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master'];
 const pageSize = 20;
 const countText = (counts: Counts, display: Display) =>
   !counts.total
@@ -347,7 +347,7 @@ export function CompletionMatrix({
             <span>难度</span>
             <select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}>
               <option value="">全部难度</option>
-              {difficultyNames.map((name, index) => (
+              {difficultyNames.slice(0, 5).map((name, index) => (
                 <option value={index} key={name}>
                   {name}
                 </option>

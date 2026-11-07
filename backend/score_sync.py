@@ -10,7 +10,8 @@ from uuid import uuid4
 
 import httpx
 
-from .ap_records import ScoreAccountError, ScoreSourceError, timestamp
+from .ap_records import ScoreAccountError, ScoreSourceError
+from .clock import now
 from .divingfish_upload import personal_records, plan_upload, verify_records
 from .maintenance import maintenance_status, utc_now
 from .store import SyncBusyError, SyncTokenChangedError
@@ -426,7 +427,7 @@ class ScoreSync:
         if not receipt:
             raise ScoreSyncError(409, "no_snapshot", "请先从华立读取一次完整成绩。")
         sync_id = receipt["sync_id"]
-        attempted_at = timestamp()
+        attempted_at = now()
         progress = {
             "write_attempted": False,
             "upload_confirmed": False,
@@ -500,13 +501,13 @@ class ScoreSync:
             progress.update(
                 verification_state="verified",
                 verified_count=len(plan.expected),
-                verified_at=timestamp(),
+                verified_at=now(),
             )
             result = {
                 **progress,
                 "ok": True,
                 "source": "divingfish_upload",
-                "uploaded_at": timestamp(),
+                "uploaded_at": now(),
                 "attempted_at": attempted_at,
                 "records": len(body),
                 "sync_id": sync_id,

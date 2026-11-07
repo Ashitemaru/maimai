@@ -45,7 +45,6 @@ const data = {
       updated_count: 0,
       message: '',
     },
-    can_rollback: false,
   },
 };
 const server = http.createServer(async (request, response) => {

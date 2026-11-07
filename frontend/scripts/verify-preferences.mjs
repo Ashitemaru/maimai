@@ -153,7 +153,6 @@ const catalog = {
   snapshot_at: '2026-10-11T01:00:00Z',
   main: { status: 'succeeded', stage: '', message: 'Fixture only', diff: {}, warnings: [] },
   remy: { status: 'complete', pending_count: 0, verified_count: 0, updated_count: 0, message: '' },
-  can_rollback: false,
 };
 async function mock(context, name) {
   const control = {

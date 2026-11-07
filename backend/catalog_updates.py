@@ -15,10 +15,12 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
+from scripts.catalog_pipeline import atomic_json as write
 from scripts.remy_release import RemyFetcher
 from scripts.remy_release import run as resolve_remy
 
 from .catalog_decisions import CatalogDecisions, StaleDecisionError
+from .clock import now
 
 
 class BusyError(Exception):
@@ -29,20 +31,8 @@ class Cancelled(Exception):
     pass
 
 
-def now():
-    return datetime.now(UTC).isoformat()
-
-
 def read(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
-def write(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp.replace(path)
 
 
 def digest(path):
@@ -276,10 +266,7 @@ class CatalogUpdates:
     def status(self):
         with self._lock:
             result = deepcopy(self._state)
-            previous = result.pop("previous_snapshot", None)
-            result["can_rollback"] = bool(
-                previous and (self.snapshots / previous / "catalog.sqlite").is_file()
-            )
+            result.pop("previous_snapshot", None)
             document = self.decisions.snapshot()
             path = self.store.catalog_directory() / "catalog_adjudications.json"
             applied = read(path).get("revision", 0) if path.exists() else 0
@@ -289,58 +276,6 @@ class CatalogUpdates:
                 decisions_pending=document["revision"] != applied,
             )
             return result
-
-    def review(self):
-        from scripts.build_catalog import JP_VERSION_BOUNDARIES
-
-        with self._lock:
-            current = self.store.catalog_directory()
-            path = current / "catalog_review.json"
-            report = read(path) if path.exists() else {"items": []}
-            decisions = self.decisions.snapshot()
-            active = {}
-            for value in decisions["decisions"]:
-                if value["kind"] in {"identity", "version"}:
-                    active.setdefault(value["object_key"], []).append(value)
-            for item in report["items"]:
-                item["decisions"] = active.get(item["object_key"], [])
-            present = {item["object_key"] for item in report["items"]}
-            for key in sorted(active.keys() - present):
-                parts = key.split(":")
-                sid = int(parts[0]) if parts[0].isdigit() else 0
-                kind = parts[1] if len(parts) > 1 else "unknown"
-                ordinary = key.endswith(":ordinary")
-                report["items"].append(
-                    {
-                        "object_key": key,
-                        "scope": "ordinary_format" if ordinary else "chart",
-                        "song_id": sid,
-                        "type": kind,
-                        "difficulty_index": None if ordinary else 4,
-                        "title": f"ID {sid}（当前曲库无此谱面）",
-                        "artist": "",
-                        "object_fingerprint": active[key][0].get("object_fingerprint", ""),
-                        "current": {
-                            "version": None,
-                            "date": None,
-                            "provider": None,
-                            "status": "unresolved",
-                        },
-                        "candidates": [],
-                        "reasons": ["object_missing"],
-                        "status": "pending",
-                        "decisions": active[key],
-                        "unavailable": True,
-                    }
-                )
-            report.update(
-                revision=self._state["revision"],
-                decision_revision=decisions["revision"],
-                decisions_pending=self.status()["decisions_pending"],
-                versions=[name for _, name in JP_VERSION_BOUNDARIES],
-                initialized=path.exists(),
-            )
-            return report
 
     def record_review(self, *, pending_only=True):
         from scripts.catalog_chart_compiler import load_record_review
@@ -521,29 +456,6 @@ class CatalogUpdates:
             ]
             return self._save_chart_decisions(values, document["revision"])
 
-    def migrate_legacy_decisions(self):
-        """Maintenance step, called explicitly after the user-data backup before a schema upgrade."""
-        from scripts.catalog_chart_compiler import migrate_decisions
-
-        with self._lock:
-            if self._closed or self._state["main"]["status"] == "running":
-                raise BusyError("请等待当前任务完成后再迁移")
-            document = self.decisions.snapshot()
-            if document.get("schema_version") == 2:
-                return document
-            lease = self._lease()
-            try:
-                migrated = migrate_decisions(document, self.store.catalog_directory())
-                self._epoch += 1
-                self._cancel_remy.set()
-                self.decisions.migrate_document(migrated, document["revision"])
-                self._state["remy"].update(
-                    status="pending", message="裁决格式已升级，曲库重建后继续核准"
-                )
-            finally:
-                lease.close()
-            return self.decisions.snapshot()
-
     def reapply_decisions(self):
         with self._lock:
             ident, lease, epoch = self._reserve_main("decisions")
@@ -573,9 +485,7 @@ class CatalogUpdates:
         self._state["main"] = {
             "status": "running",
             "stage": action,
-            "message": {"rollback": "正在回退曲库", "decisions": "正在应用裁决"}.get(
-                action, "正在获取曲库"
-            ),
+            "message": "正在应用裁决" if action == "decisions" else "正在获取曲库",
             "job_id": ident,
             "started_at": now(),
             "warnings": [],
@@ -595,17 +505,6 @@ class CatalogUpdates:
         with self._lock:
             ident, lease, epoch = self._reserve_main("sources")
             self._main_future = self._main_pool.submit(self._update, ident, lease, epoch)
-            return self.status()
-
-    def rollback(self):
-        with self._lock:
-            previous = self._state.get("previous_snapshot")
-            if not previous or not (self.snapshots / previous / "catalog.sqlite").is_file():
-                raise ValueError("尚无可回退的曲库")
-            ident, lease, epoch = self._reserve_main("rollback")
-            self._main_future = self._main_pool.submit(
-                self._rollback, ident, lease, epoch, previous
-            )
             return self.status()
 
     def _progress(self, epoch, phase, detail=None):
@@ -754,41 +653,6 @@ class CatalogUpdates:
             except OSError:
                 pass
 
-    def _rollback(self, ident, lease, epoch, previous_id):
-        try:
-            restored = self.snapshots / previous_id
-            metadata = read(restored / "snapshot.json")
-            for name, expected in metadata["files"].items():
-                if digest(restored / name) != expected:
-                    raise ValueError("旧快照校验失败，未回退")
-            parent = self._baseline(self.store.catalog_directory())
-            stage = self._new_stage(restored, ident)
-            built = self._build(stage)
-            self._validate(stage)
-            loaded = self.store.load_catalog(stage)
-            metadata = self._manifest(stage, ident, parent, "rollback", ident)
-            metadata["restored_from"] = previous_id
-            write(stage / "snapshot.json", metadata)
-            target = self.snapshots / ident
-            stage.rename(target)
-            with self._lock:
-                if self._closed or epoch != self._epoch:
-                    raise Cancelled()
-                self._publish(target, loaded, parent, metadata)
-                self._state["main"].update(
-                    status="succeeded",
-                    stage="finished",
-                    message="已回退到上版曲库",
-                    finished_at=now(),
-                    warnings=public_warnings({}, built),
-                )
-                self._state["remy"] = self._remy_summary()
-                self._save_committed()
-        except Exception as error:
-            self._failed(epoch, error)
-        finally:
-            lease.close()
-
     def _rebuild(self, ident, lease, epoch):
         try:
             previous = self.store.catalog_directory()
@@ -821,7 +685,7 @@ class CatalogUpdates:
         finally:
             lease.close()
 
-    def retry_remy(self, recheck=False):
+    def retry_remy(self):
         with self._lock:
             if self._closed or self._state["main"]["status"] == "running":
                 raise BusyError("请等待曲库更新完成")
@@ -829,19 +693,19 @@ class CatalogUpdates:
                 raise BusyError("版本核准正在运行")
             self._epoch += 1
             self._cancel_remy.set()
-            self._queue_remy(self._epoch, recheck=recheck)
+            self._queue_remy(self._epoch)
             return self.status()
 
-    def _queue_remy(self, epoch, recheck=False):
+    def _queue_remy(self, epoch):
         self._cancel_remy = threading.Event()
         current = self.store.catalog_directory()
         self._state["remy"].update(status="queued", message="版本核准排队中")
         self._save_committed()
         self._remy_future = self._remy_pool.submit(
-            self._check_remy, epoch, current, self._cancel_remy, recheck
+            self._check_remy, epoch, current, self._cancel_remy
         )
 
-    def _check_remy(self, epoch, previous, cancelled, recheck=False):
+    def _check_remy(self, epoch, previous, cancelled):
         lease = None
         try:
             with self._lock:
@@ -850,10 +714,7 @@ class CatalogUpdates:
                 self._state["remy"].update(status="running", message="正在核准 Re:MASTER 版本")
                 self._save()
             fetcher = self._fetcher_factory(self.root / "remy-cache", cancelled)
-            kwargs = {"recheck": True} if recheck else {}
-            report = self._remy(
-                previous, cache_dir=self.root / "remy-cache", fetcher=fetcher, **kwargs
-            )
+            report = self._remy(previous, cache_dir=self.root / "remy-cache", fetcher=fetcher)
             if cancelled.is_set():
                 raise Cancelled()
             with self._lock:
@@ -971,22 +832,13 @@ class CatalogUpdates:
                 )
                 if errors and pending:
                     message += "，稍后可重试"
-                incomplete_recheck = recheck and not report.get("recheck_complete", False)
-                if incomplete_recheck:
-                    message = "重核未完成，保留原核准值，可稍后继续"
                 self._state["remy"].update(
                     status="pending" if has_issue else "complete",
                     message=message,
                     errors=errors,
                     conflicts=remaining_conflicts,
                 )
-                self._state["remy"].update(
-                    recheck=recheck,
-                    recheck_complete=report.get("recheck_complete") if recheck else None,
-                    checked_pages=len(report.get("fetched_page_urls", [])),
-                )
-                if incomplete_recheck:
-                    self._state["remy"]["status"] = "pending"
+                self._state["remy"]["checked_pages"] = len(report.get("fetched_page_urls", []))
                 self._save_committed()
         except Cancelled:
             pass

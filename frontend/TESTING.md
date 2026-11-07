@@ -19,32 +19,6 @@ The cover UI check substitutes the proprietary cover font with a system font ins
 
 Reports and screenshots are written under `../output/ui-audit`, `../output/completion-matrix-audit`, `../output/preferences-audit`, and `../output/catalog-review-batch` by default. The export suite prints its canvas/strip results. Use the output environment variables at the top of each script to isolate concurrent runs.
 
-## Batch cover generation
-
-`npm run render:covers -- [manifest.json] [--output DIR] [--origin URL]` runs the
-current Canvas renderer for both approved compositions: v8 at 1920×1080 and the
-retained 4:3 composition at 1440×1080. Each aspect is rendered independently;
-neither requires a previous output directory. The default destination is
-`../output/bilibili-covers-current`, so the final v8 delivery archive stays intact.
-
-The default input is `../data/bilibili-regenerate/render-manifest.json`. It must
-provide `videos` and `excluded` arrays; each video includes its BVID, title, chart,
-and explicit achievement string. Optional `versionOverride` and
-`mirror_horizontal` are honored. Scores are never inferred, and excluded videos
-are not rendered. The copied input manifest and `report.json` record renderer and
-input hashes, per-image hashes, dimensions, resource failures, and checks for both
-layouts. Horizontal mirroring is checked pixel by pixel.
-
-The tool starts and stops a local Vite server by default (`--port 5175`); the local
-backend on port 8766 must already serve the private jackets and game assets. Use
-`--origin` (or `COVER_BATCH_ORIGIN`) for an existing local Vite server. Rendering
-uses the shared browser launcher with normal GPU rendering. It is a manual asset
-check, not a CI gate: missing fonts, backgrounds, logos, or score sprites fail the
-run instead of silently producing substitute covers. The public checkout does
-not include those private assets. The old v3/v4/v6 checks and v7 wrapper were
-removed because their geometry and central-crop assertions predate the accepted
-independent 16:9 and 4:3 layouts.
-
 ## Formatting and lint
 
 Run `npm run format` to apply Prettier to frontend sources, scripts, styles, configuration, and documentation. ESLint uses its recommended JavaScript and TypeScript rules, React Hooks dependency/rules checks, and the React Refresh component-export rule; CI treats warnings as failures. UI styling rules remain separately enforced by `check:styles`.

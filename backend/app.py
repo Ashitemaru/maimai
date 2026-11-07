@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -35,8 +34,6 @@ from .score_sync import ScoreSync, ScoreSyncError
 from .store import (
     ROOT,
     Store,
-    SyncBusyError,
-    SyncTokenChangedError,
     normalized,
     now,
     summarize,
@@ -527,14 +524,6 @@ def create_app(store=None, updater=None):
     def retry_remy():
         return begin_catalog_operation(updater.retry_remy)
 
-    @app.post("/api/catalog/remy/recheck", status_code=202)
-    def recheck_remy():
-        return begin_catalog_operation(lambda: updater.retry_remy(recheck=True))
-
-    @app.get("/api/catalog/review")
-    def catalog_review():
-        return updater.review()
-
     @app.get("/api/catalog/records/review")
     def catalog_record_review():
         return updater.record_review()
@@ -555,10 +544,6 @@ def create_app(store=None, updater=None):
     def catalog_record_revoke(value: CatalogRecordRevokeInput):
         return begin_catalog_operation(lambda: updater.revoke_record(value.model_dump()))
 
-    @app.post("/api/catalog/decisions")
-    def catalog_decide():
-        raise HTTPException(410, "逐字段裁决已停用，请在谱面差异表中统一提交选择。")
-
     @app.post("/api/catalog/decisions/reapply", status_code=202)
     def reapply_catalog_decisions():
         return begin_catalog_operation(updater.reapply_decisions)
@@ -568,10 +553,6 @@ def create_app(store=None, updater=None):
         object_key: str | None = None, limit: int = Query(default=100, ge=1, le=500)
     ):
         return {"items": updater.decisions.history(object_key, limit)}
-
-    @app.post("/api/catalog/rollback", status_code=202)
-    def rollback_catalog():
-        return begin_catalog_operation(updater.rollback)
 
     @app.get("/api/catalog/data")
     def catalog_data():
@@ -728,17 +709,6 @@ def create_app(store=None, updater=None):
             raise HTTPException(404, "谱面不存在")
         return public(item)
 
-    @app.put("/api/charts/{chart_key}/manual")
-    @app.delete("/api/charts/{chart_key}/manual")
-    def retired_manual(chart_key: str):
-        raise HTTPException(
-            410,
-            {
-                "code": "manual_retired",
-                "message": "请刷新页面，改用机厅登记。AP 状态由水鱼核准。",
-            },
-        )
-
     @app.get("/api/ap-records")
     def ap_records():
         records = store.ap_records()
@@ -840,74 +810,6 @@ def create_app(store=None, updater=None):
     def save_settings(value: TokenInput):
         store.save_token(value.token)
         return settings()
-
-    @app.post("/api/sync/divingfish")
-    def sync():
-        if store.meta("wahlap_account_hash"):
-            raise HTTPException(
-                409,
-                {
-                    "code": "legacy_sync_disabled",
-                    "message": "已启用华立直连，请扫描二维码更新成绩。",
-                },
-            )
-        try:
-            with store.sync_lease() as (token, generation):
-                return sync_provider(token, generation)
-        except SyncBusyError:
-            raise HTTPException(
-                409, {"code": "sync_busy", "message": "水鱼同步正在进行，请等待完成。"}
-            ) from None
-        except SyncTokenChangedError:
-            raise HTTPException(
-                409,
-                {
-                    "code": "token_changed",
-                    "message": "同步期间 Token 已更改，请重新同步。本地记录已保留。",
-                },
-            ) from None
-
-    def sync_provider(token, generation):
-        if not token:
-            raise HTTPException(
-                409,
-                {
-                    "code": "not_configured",
-                    "message": "请先在设置中填写水鱼 Import-Token，再手动同步。",
-                },
-            )
-        eligible_records = store.pending_snapshot()
-        try:
-            response = httpx.get(
-                "https://www.diving-fish.com/api/maimaidxprober/player/records",
-                headers={"Import-Token": token},
-                timeout=30,
-                follow_redirects=False,
-            )
-            if response.status_code != 200:
-                raise HTTPException(
-                    502,
-                    {
-                        "code": "provider_error",
-                        "message": f"水鱼返回 HTTP {response.status_code}，请检查 Token 或稍后重试。本地记录已保留。",
-                    },
-                )
-            result = store.publish_sync(response.json(), generation, eligible_records)
-        except httpx.RequestError as exc:
-            raise HTTPException(
-                502, {"code": "network_error", "message": "暂时无法访问水鱼，本地记录已保留。"}
-            ) from exc
-        except ValueError as exc:
-            raise HTTPException(
-                502,
-                {
-                    "code": "invalid_response",
-                    "message": str(exc)
-                    if str(exc).startswith("水鱼")
-                    else "水鱼返回格式异常，本地记录已保留。",
-                },
-            ) from exc
-        return result
 
     @app.get("/api/sync/status")
     def score_sync_status():

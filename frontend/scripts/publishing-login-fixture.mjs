@@ -92,7 +92,6 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
       constants: [],
       sync: null,
     },
-    '/api/bilibili/collections': { items: [] },
     '/api/bilibili/jobs': { items: [] },
   };
   await context.route('**/*', async (route) => {
@@ -155,6 +154,8 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
               items: listingMode === 'empty' ? [] : [{ ...video, title }],
               page: Number(url.searchParams.get('page') || '1'),
               has_more: listingMode === 'paged' && url.searchParams.get('page') === '1',
+              collections: [],
+              unavailable_collections: [],
             },
           });
     }
@@ -217,13 +218,13 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
       'A failed refresh must not retain videos from the previous collection response',
     );
     assert.equal(
-      await page.getByText('暂无已加入合集的手元视频', { exact: true }).count(),
+      await page.getByText('暂无稿件', { exact: true }).count(),
       0,
       'A failed request must not claim the collection has no videos',
     );
     listingMode = 'empty';
     await refreshListing();
-    await page.getByText('暂无已加入合集的手元视频', { exact: true }).waitFor();
+    await page.getByText('暂无稿件', { exact: true }).waitFor();
     await page.getByLabel('BV 号或视频链接').fill('https://www.bilibili.com/video/BV1NEW111111');
     await page.getByRole('button', { name: '载入稿件', exact: true }).click();
     await page
@@ -290,6 +291,8 @@ export async function verifyPublishingLoginLifecycle(browser, origin, width, err
       items: [{ ...video, title: 'Stale video after disconnect' }],
       page: 1,
       has_more: false,
+      collections: [],
+      unavailable_collections: [],
     });
     statusDelay = staleStatus;
     videosDelay = staleVideos;

@@ -6,9 +6,9 @@ import hashlib
 import json
 import math
 from collections import Counter
-from datetime import UTC, datetime
 from uuid import uuid4
 
+from .clock import now
 from .wahlap import valid_score_level
 
 
@@ -22,10 +22,6 @@ class ScoreAccountError(ValueError):
 
 class ScoreSourceError(ValueError):
     """An older score provider may not replace the authoritative game snapshot."""
-
-
-def timestamp():
-    return datetime.now(UTC).isoformat()
 
 
 def initialize_records(conn):
@@ -213,7 +209,7 @@ class APRecords:
             },
             ensure_ascii=False,
         )
-        at = timestamp()
+        at = now()
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             request = conn.execute(
@@ -285,7 +281,7 @@ class APRecords:
                 self._advance_record_revision(conn, key)
                 conn.execute(
                     "INSERT INTO events(chart_key,kind,created_at,data_json) VALUES(?,?,?,?)",
-                    (key, "ap_pending_cancelled", timestamp(), "{}"),
+                    (key, "ap_pending_cancelled", now(), "{}"),
                 )
         return self.chart(key)
 
@@ -376,7 +372,7 @@ class APRecords:
             eligible_records = self.pending_snapshot()
         catalog, waterfish_map = self._catalog_snapshot
         known = getattr(catalog, "source_charts", catalog)
-        at, sync_id = timestamp(), str(uuid4())
+        at, sync_id = now(), str(uuid4())
         incoming, details, unmatched, seen = [], [], [], set()
         try:
             for record in payload["records"]:

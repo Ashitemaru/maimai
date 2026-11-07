@@ -84,63 +84,6 @@ class DecisionsTests(unittest.TestCase):
                 db.save_many([choices[0], choices[0]], 0)
             self.assertEqual(db.history(), [])
 
-    def test_explicit_schema_migration_preserves_old_choices_in_audit_and_new_values(self):
-        with tempfile.TemporaryDirectory() as temp:
-            db = CatalogDecisions(Path(temp) / "decisions.sqlite3")
-            legacy = {
-                "object_key": "field:1:song.artist",
-                "kind": "field",
-                "action": "select",
-                "value": "Chosen Artist",
-            }
-            db.save(legacy, 0)
-            original = db.snapshot()
-            migrated = {
-                "schema_version": 2,
-                "revision": 1,
-                "migration": {"from_schema": 1},
-                "decisions": [
-                    {
-                        "object_key": "chart:10001:3:artist",
-                        "kind": "chart_field",
-                        "id": 10001,
-                        "difficulty": 3,
-                        "field_key": "artist",
-                        "action": "select",
-                        "value": "Chosen Artist",
-                    }
-                ],
-            }
-            self.assertEqual(db.migrate_document(migrated, 1), 2)
-            snapshot = db.snapshot()
-            self.assertEqual(snapshot["schema_version"], 2)
-            self.assertEqual(snapshot["revision"], 2)
-            self.assertEqual(snapshot["decisions"][0]["value"], "Chosen Artist")
-            self.assertEqual(snapshot["decisions"][0]["migration_revision"], 2)
-            history = db.history()
-            self.assertEqual(history[0]["decision"]["kind"], "migration")
-            self.assertEqual(history[0]["previous"]["decisions"], original["decisions"])
-            self.assertEqual(len(history), 2)
-            reopened = CatalogDecisions(db.path)
-            self.assertEqual(reopened.snapshot(), snapshot)
-
-    def test_migration_validation_or_stale_revision_never_replaces_old_decisions(self):
-        with tempfile.TemporaryDirectory() as temp:
-            db = CatalogDecisions(Path(temp) / "decisions.sqlite3")
-            db.save(
-                {"object_key": "1:dx:4", "kind": "version", "action": "set", "version": "DX"}, 0
-            )
-            original = db.snapshot()
-            with self.assertRaises(ValueError):
-                db.migrate_document(
-                    {"schema_version": 2, "revision": 1, "decisions": original["decisions"]}, 1
-                )
-            self.assertEqual(db.snapshot(), original)
-            with self.assertRaises(StaleDecisionError):
-                db.migrate_document({"schema_version": 2, "revision": 0, "decisions": []}, 0)
-            self.assertEqual(db.snapshot(), original)
-            self.assertEqual(len(db.history()), 1)
-
     def test_schema_two_bootstrap_restores_marker_and_durable_value(self):
         with tempfile.TemporaryDirectory() as temp:
             document = {

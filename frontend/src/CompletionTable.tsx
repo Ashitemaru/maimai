@@ -6,9 +6,9 @@ import { discardCompletionExport, exportCompletionTable } from './completionExpo
 import { ImageSaveActions } from './ImageSaveActions';
 import { downloadImage, needsSaveGesture, prepareImage } from './imageSave';
 import type { PreparedImage } from './imageSave';
+import { chartName } from './chartLabels';
 
 const batchSize = 48;
-const chartName = (chart: CompletionChart) => chart.display_title || chart.title || '（空白曲名）';
 
 function CompletionTile({
   chart,

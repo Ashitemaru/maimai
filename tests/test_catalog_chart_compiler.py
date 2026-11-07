@@ -10,7 +10,6 @@ from scripts.build_catalog import build, search
 from scripts.catalog_chart_compiler import (
     chart_mappings,
     load_record_review,
-    migrate_decisions,
     validate_chart_decisions,
 )
 from scripts.catalog_pipeline import atomic_json
@@ -193,37 +192,6 @@ class ChartCompilerTests(unittest.TestCase):
         self.assertEqual(
             next(r for r in result["mappings"] if r["id"] == 10001)["legacy_chart_key"], "1:dx:3"
         )
-
-    def test_migration_expands_song_choice_and_missing_reject_aborts(self):
-        self.with_comparable_sources()
-        old = {
-            "revision": 4,
-            "decisions": [
-                {
-                    "kind": "field",
-                    "object_key": "field:1:song.artist",
-                    "song_id": 1,
-                    "field_key": "song.artist",
-                    "action": "select",
-                    "source": "divingfish",
-                    "value": "Permanent Author",
-                }
-            ],
-        }
-        converted = migrate_decisions(old, self.stage)
-        self.assertEqual(converted["revision"], 4)
-        self.assertEqual(converted["schema_version"], 2)
-        self.assertEqual(converted["decisions"][0]["object_key"], "chart:1:3:artist")
-        self.assertEqual(converted["decisions"][0]["value"], "Permanent Author")
-        with self.assertRaisesRegex(ValueError, "空版本"):
-            migrate_decisions(
-                {
-                    "decisions": [
-                        {"kind": "version", "object_key": "2:standard:4", "action": "reject"}
-                    ]
-                },
-                self.stage,
-            )
 
     def test_sql_materialized_column_tampering_is_rejected_even_with_new_hash(self):
         self.prepare()

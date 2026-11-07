@@ -1,4 +1,4 @@
-const difficultyNames = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master', 'UTAGE'];
+import { difficultyNames } from './chartLabels';
 
 export function ChartTypeBadge({ type }: { type: string | null | undefined }) {
   const format = type?.toLowerCase() === 'std' ? 'standard' : type?.toLowerCase();

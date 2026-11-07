@@ -16,9 +16,11 @@ from datetime import date
 from pathlib import Path
 
 try:
+    from .catalog_pipeline import atomic_json as write
     from .catalog_policy import source_policy
     from .catalog_versions import fingerprint
 except ImportError:
+    from catalog_pipeline import atomic_json as write
     from catalog_policy import source_policy
     from catalog_versions import fingerprint
 
@@ -38,13 +40,6 @@ FIELDS = {
 def read(path, default=None):
     path = Path(path)
     return json.loads(path.read_text()) if path.exists() else deepcopy(default)
-
-
-def write(path, value):
-    path = Path(path)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-    temporary.replace(path)
 
 
 def digest(path):
@@ -78,16 +73,6 @@ def chart_mappings(lxns):
     return {"schema_version": 2, "mappings": sorted(rows, key=lambda r: (r["id"], r["difficulty"]))}
 
 
-def _legacy_charts(catalog):
-    if (catalog or {}).get("schema_version") == 2:
-        return {c["legacy_chart_key"]: c for c in catalog.get("charts", [])}
-    return {
-        chart["chart_key"]: {**chart, "lxns_song_id": song["id"]}
-        for song in (catalog or {}).get("songs", [])
-        for chart in song.get("charts", [])
-    }
-
-
 def _durable(mapping, field, value, source, **extra):
     return {
         "object_key": f"chart:{mapping['id']}:{mapping['difficulty']}:{field}",
@@ -99,137 +84,6 @@ def _durable(mapping, field, value, source, **extra):
         "value": deepcopy(value),
         "source": source,
         **deepcopy(extra),
-    }
-
-
-def migrate_decisions(document, directory):
-    """Pure conversion. Missing selected evidence aborts rather than losing intent."""
-    document = deepcopy(document or {"revision": 0, "decisions": []})
-    directory = Path(directory)
-    lxns = read(directory / "effective_lxns_songs.json", read(directory / "raw/lxns_songs.json"))
-    mappings = chart_mappings(lxns)["mappings"]
-    catalog = read(directory / "catalog.json", {})
-    previous = read(directory / "previous_catalog.json", {})
-    charts = {**_legacy_charts(previous), **_legacy_charts(catalog)}
-    old_review = read(directory / "catalog_review.json", {"items": []})
-    items = {r["object_key"]: r for r in old_review.get("items", [])}
-    output, converted = {}, []
-
-    def add(result, original):
-        key = result["object_key"]
-        if key in output and (output[key]["value"], output[key].get("date")) != (
-            result["value"],
-            result.get("date"),
-        ):
-            raise ValueError(f"旧裁决迁移存在不同值，请先处理：{key}")
-        if key not in output or original.get("kind") != "identity":
-            output[key] = result
-
-    for decision in document.get("decisions", []):
-        if decision.get("kind") == "chart_field":
-            add(deepcopy(decision), decision)
-            continue
-        kind, key = decision.get("kind"), decision.get("object_key")
-        if kind == "field":
-            field_key = decision.get("field_key", "")
-            field = (
-                field_key.rsplit(".", 1)[-1]
-                if field_key.startswith("song.")
-                else field_key.rsplit(":", 1)[-1]
-            )
-            targets = [
-                m
-                for m in mappings
-                if m["lxns_song_id"] == decision.get("song_id")
-                and (
-                    field_key.startswith("song.")
-                    or field_key == f"chart:{m['legacy_chart_key']}:{field}"
-                )
-            ]
-            if field not in FIELDS or "value" not in decision or not targets:
-                raise ValueError(f"无法恢复旧字段裁决：{key}")
-            for mapping in targets:
-                add(
-                    _durable(
-                        mapping,
-                        field,
-                        decision["value"],
-                        decision.get("source", "manual"),
-                        migrated_from=deepcopy(decision),
-                        evidence_fingerprint=decision.get("evidence_fingerprint"),
-                        option_id=decision.get("option_id"),
-                        note=decision.get("note", ""),
-                    ),
-                    decision,
-                )
-        elif kind in ("identity", "version"):
-            targets = [
-                m
-                for m in mappings
-                if key == m["legacy_chart_key"]
-                or key == f"{m['lxns_song_id']}:{m['type']}:ordinary"
-                and m["difficulty"] < 4
-            ]
-            if not targets:
-                raise ValueError(f"无法对应旧版本裁决：{key}")
-            candidate = next(
-                (
-                    c
-                    for c in items.get(key, {}).get("candidates", [])
-                    if c["candidate_id"] == decision.get("candidate_id")
-                ),
-                None,
-            )
-            if candidate is None:
-                for mapping in targets:
-                    proof = (
-                        charts.get(mapping["legacy_chart_key"], {}).get("jp_release_provenance")
-                        or {}
-                    ).get("candidate") or {}
-                    if proof.get("candidate_id") == decision.get("candidate_id") and proof.get(
-                        "version"
-                    ):
-                        candidate = proof
-                        break
-            for mapping in targets:
-                if decision["action"] in ("set", "keep") and decision.get("version"):
-                    value, day = decision["version"], decision.get("date")
-                elif decision["action"] == "select" and candidate and candidate.get("version"):
-                    value, day = candidate["version"], candidate.get("date")
-                elif decision["action"] == "reject" and mapping["legacy_chart_key"] in charts:
-                    chosen = charts[mapping["legacy_chart_key"]]
-                    value, day = chosen.get("jp_release_version"), chosen.get("jp_release_date")
-                    if not value:
-                        raise ValueError(f"旧拒绝没有已选择的版本值，不能迁移为空版本裁决：{key}")
-                else:
-                    raise ValueError(f"无法恢复旧版本选择的值/证据：{key}")
-                add(
-                    _durable(
-                        mapping,
-                        "jp_release_version",
-                        value,
-                        candidate.get("source", "manual") if candidate else "manual",
-                        date=day,
-                        migrated_from=deepcopy(decision),
-                        evidence=deepcopy(candidate),
-                        legacy_identity_decision=deepcopy(decision) if kind == "identity" else None,
-                    ),
-                    decision,
-                )
-        else:
-            raise ValueError(f"不支持的旧裁决种类：{kind}")
-        converted.append(key)
-    return {
-        "schema_version": 2,
-        "revision": document.get("revision", 0),
-        "decisions": sorted(
-            output.values(), key=lambda d: (d["id"], d["difficulty"], d["field_key"])
-        ),
-        "migration": {
-            "converted_objects": converted,
-            "converted_count": len(converted),
-            "warnings": [],
-        },
     }
 
 
@@ -294,17 +148,8 @@ def _decision_document(directory, explicit=None):
         else read(Path(directory) / "catalog_adjudications.json", {"revision": 0, "decisions": []})
     )
     if any(d.get("kind") != "chart_field" for d in document.get("decisions", [])):
-        return migrate_decisions(document, directory)
+        raise ValueError("裁决不是新版格式，无法编译曲库")
     return {**deepcopy(document), "schema_version": 2}
-
-
-def _legacy_adapter_decisions(document):
-    values = {}
-    for choice in document.get("decisions", []):
-        identity = choice.get("legacy_identity_decision")
-        if identity:
-            values[(identity["object_key"], identity["kind"])] = identity
-    return {"revision": document.get("revision", 0), "decisions": list(values.values())}
 
 
 def compile_charts(lxns, legacy_catalog, legacy_review, document):
@@ -533,15 +378,15 @@ def _load_evidence(directory, document):
         lxns,
         arcade,
         list(overrides.values()),
-        _legacy_adapter_decisions(document),
         read(directory / "remy_conflicts.json"),
+        document.get("revision", 0),
     )
     review = build_record_review(
         lxns,
         read(directory / "raw/divingfish_music_data.json", []),
         arcade,
         version_review=versions,
-        adjudications=_legacy_adapter_decisions(document),
+        decision_revision=document.get("revision", 0),
     )
     return lxns, versions, review
 

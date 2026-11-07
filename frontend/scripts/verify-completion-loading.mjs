@@ -134,7 +134,6 @@ const server = http.createServer(async (request, response) => {
             snapshot_at: null,
             main: { status: 'succeeded', warnings: [], diff: {} },
             remy: { status: 'complete', pending_count: 0, verified_count: 0, updated_count: 0 },
-            can_rollback: false,
           };
         else if (pathname === '/api/completion-table') {
           data = {

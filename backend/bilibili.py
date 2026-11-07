@@ -26,6 +26,7 @@ from starlette.concurrency import run_in_threadpool
 from .bilibili_client import (
     BilibiliClient,
     BilibiliError,
+    CollectionUnavailableError,
     archive_revision,
     cover_identity,
     digest,
@@ -39,8 +40,10 @@ from .bilibili_order import (
     parsed_title,
     section_snapshot,
 )
+from .clock import now
 
 MAX_BODY = 16 * 1024 * 1024
+LISTING_TTL = 300
 MIRROR_BVID = "BV1bJouBSEiH"
 DIFFICULTIES = ("Basic", "Advanced", "Expert", "Master", "Re:Master")
 HANDPLAY_COLLECTION = re.compile(r"maimai\s+\d{1,2}\+?\s+ap", re.IGNORECASE)
@@ -65,10 +68,6 @@ class ApplyInput(BaseModel):
     plan_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     cover16: str = Field(max_length=MAX_BODY)
     cover43: str = Field(max_length=MAX_BODY)
-
-
-def timestamp():
-    return datetime.now(UTC).isoformat()
 
 
 def title_for(chart, body, original):
@@ -132,6 +131,7 @@ class BilibiliService:
         self.client_factory = client_factory or BilibiliClient
         self._lock = threading.Lock()
         self._logins = {}
+        self._listing_cache = None
         with store.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS bilibili_plans (
@@ -200,7 +200,7 @@ class BilibiliService:
             return None
 
     def _save_session(self, account, client):
-        value = {"account": account, "cookies": client.cookies(), "saved_at": timestamp()}
+        value = {"account": account, "cookies": client.cookies(), "saved_at": now()}
         fd, path = tempfile.mkstemp(prefix=".bilibili-session-", dir=self.store.runtime)
         try:
             with os.fdopen(fd, "w") as stream:
@@ -291,27 +291,71 @@ class BilibiliService:
 
     def disconnect(self):
         with self.operation():
+            self._listing_cache = None
             self.close()
             self.session_path.unlink(missing_ok=True)
         return {"connected": False, "account": None}
 
+    def _listing(self, client, account, *, refresh):
+        cached = self._listing_cache
+        if (
+            not refresh
+            and cached
+            and cached["mid"] == account["mid"]
+            and time.monotonic() - cached["at"] < LISTING_TTL
+        ):
+            return cached
+        # A fresh upload is not in any collection yet; organizing it is the point of
+        # this page. Every own upload is listed, including ones still in review, and
+        # handplay collection membership only marks which ones are already done.
+        uploads = []
+        for number in range(1, 101):
+            result = client.videos(number)
+            uploads.extend(result["items"])
+            if not result["has_more"]:
+                break
+        else:
+            raise BilibiliError("稿件数量超出处理上限", status=409)
+        collections = client.collections()["items"]
+        organized, unavailable = set(), []
+        for collection in collections:
+            title = unicodedata.normalize("NFKC", collection["title"]).strip()
+            if not HANDPLAY_COLLECTION.fullmatch(title):
+                continue
+            try:
+                members = client.collection_videos(collection["id"], account["mid"])
+            except CollectionUnavailableError:
+                unavailable.append(collection["title"])
+                continue
+            organized.update(video["bvid"] for video in members)
+        items = {}
+        for video in uploads:
+            items[video["bvid"]] = {**video, "organized": video["bvid"] in organized}
+        self._listing_cache = {
+            "mid": account["mid"],
+            "at": time.monotonic(),
+            "collections": collections,
+            "unavailable": unavailable,
+            "items": sorted(
+                items.values(),
+                key=lambda v: (not v["organized"], v["created_at"] or 0, v["aid"]),
+                reverse=True,
+            ),
+        }
+        return self._listing_cache
+
     def videos(self, page):
-        # Collection membership is authoritative; mirrored and Utage titles need
-        # no special cases, and a maimai-like title cannot admit an unrelated video.
-        videos = {}
+        # Page 1 re-reads membership; later pages reuse that snapshot so paging stays
+        # consistent and does not re-read every collection.
         with self.client() as (client, account):
-            for collection in client.collections()["items"]:
-                title = unicodedata.normalize("NFKC", collection["title"]).strip()
-                if not HANDPLAY_COLLECTION.fullmatch(title):
-                    continue
-                for video in client.collection_videos(collection["id"], account["mid"]):
-                    videos[video["bvid"]] = video
-        items = sorted(videos.values(), key=lambda v: (v["created_at"], v["aid"]), reverse=True)
-        start = (page - 1) * 20
+            listing = self._listing(client, account, refresh=page == 1)
+        items, start = listing["items"], (page - 1) * 20
         return {
             "items": items[start : start + 20],
             "page": page,
             "has_more": start + 20 < len(items),
+            "collections": listing["collections"],
+            "unavailable_collections": listing["unavailable"],
         }
 
     def video(self, bvid):
@@ -322,10 +366,6 @@ class BilibiliService:
             "revision": archive_revision(data),
             "mirror_horizontal": bvid == MIRROR_BVID,
         }
-
-    def collections(self):
-        with self.client() as (client, _):
-            return client.collections()
 
     def bind_chart(
         self, account_mid, bvid, chart, observed_title, *, source="user", only_missing=False
@@ -351,7 +391,7 @@ class BilibiliService:
             for bvid, binding in bindings.items():
                 db.execute(
                     f"INSERT INTO bilibili_chart_bindings VALUES (?,?,?,?) ON CONFLICT(account_mid,bvid) {conflict}",
-                    (account_mid, bvid, json.dumps(binding), timestamp()),
+                    (account_mid, bvid, json.dumps(binding), now()),
                 )
 
     def _resolver(self, client, account):
@@ -399,7 +439,7 @@ class BilibiliService:
                     reports.append(
                         order_report(snapshot, resolver, season_title=collection["title"])
                     )
-            return {"checked_at": timestamp(), "sections": reports}
+            return {"checked_at": now(), "sections": reports}
 
     def _prepare_order(self, client, account, plan, collections):
         collection = next(
@@ -546,7 +586,7 @@ class BilibiliService:
                 )
                 db.execute(
                     "INSERT INTO bilibili_plans VALUES (?,?,?,?,?)",
-                    (plan_id, timestamp(), expires, account["mid"], json.dumps(plan)),
+                    (plan_id, now(), expires, account["mid"], json.dumps(plan)),
                 )
             return self.public_plan(plan)
 
@@ -562,7 +602,7 @@ class BilibiliService:
         return json.loads(row["payload"]), row["expires"]
 
     def _save_job(self, job):
-        job["updated_at"] = timestamp()
+        job["updated_at"] = now()
         with self.store.db() as db:
             db.execute(
                 "UPDATE bilibili_jobs SET payload=?,updated_at=? WHERE job_id=?",
@@ -691,7 +731,7 @@ class BilibiliService:
                     "steps": {},
                     "hashes": hashes,
                     "error": None,
-                    "updated_at": timestamp(),
+                    "updated_at": now(),
                     "_urls": {},
                 }
                 with self.store.db() as db:
@@ -713,6 +753,8 @@ class BilibiliService:
                             body.cover43,
                         ),
                     )
+            # Titles and collection membership may change from here on.
+            self._listing_cache = None
             try:
                 job["error"] = None
                 self._apply(client, account, plan, job, body)
@@ -977,10 +1019,6 @@ def bilibili_router(service):
     @router.get("/videos/{bvid}")
     def video(bvid: str):
         return call(service.video, bvid)
-
-    @router.get("/collections")
-    def collections():
-        return call(service.collections)
 
     @router.get("/collections/order")
     def collection_order():
