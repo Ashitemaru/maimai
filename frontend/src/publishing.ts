@@ -100,6 +100,29 @@ export function matchingCollectionSection(collections: PublishingCollection[], c
   return matches.length === 1 ? String(matches[0].id) : '';
 }
 
+function mirrorCover(canvas: HTMLCanvasElement) {
+  const mirrored = document.createElement('canvas');
+  mirrored.width = canvas.width;
+  mirrored.height = canvas.height;
+  try {
+    const context = mirrored.getContext('2d');
+    const source = canvas.getContext('2d');
+    if (!context || !source) throw new Error('浏览器不支持封面绘制');
+    context.translate(canvas.width, 0);
+    context.scale(-1, 1);
+    context.drawImage(canvas, 0, 0);
+    const y = Math.floor(canvas.height / 2);
+    const before = source.getImageData(0, y, canvas.width, 1).data;
+    const after = context.getImageData(0, y, canvas.width, 1).data;
+    for (let x = 0; x < canvas.width; x++)
+      for (let channel = 0; channel < 4; channel++)
+        if (before[x * 4 + channel] !== after[(canvas.width - 1 - x) * 4 + channel]) return null;
+    return mirrored.toDataURL('image/png');
+  } finally {
+    mirrored.width = mirrored.height = 0;
+  }
+}
+
 // Use the established v8/v6 renderer without changing its geometry or typography.
 // A partial asset load must never silently publish a fallback cover.
 export async function renderPublishingImages(plan: PublishingPlan): Promise<PublishingImages> {
@@ -127,17 +150,12 @@ export async function renderPublishingImages(plan: PublishingPlan): Promise<Publ
       )
         throw new Error(receipt.notices.join(' · ') || '封面素材不完整，请重试');
       if (plan.mirror_horizontal) {
-        const mirrored = document.createElement('canvas');
-        mirrored.width = canvas.width;
-        mirrored.height = canvas.height;
-        const context = mirrored.getContext('2d');
-        if (!context) throw new Error('浏览器不支持封面绘制');
-        context.translate(canvas.width, 0);
-        context.scale(-1, 1);
-        context.drawImage(canvas, 0, 0);
-        const image = mirrored.toDataURL('image/png');
-        mirrored.width = mirrored.height = 0;
-        return image;
+        // WebKit can hand back a blank canvas under memory pressure; never publish one.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const image = mirrorCover(canvas);
+          if (image) return image;
+        }
+        throw new Error('镜像封面生成失败，请重试');
       }
       return canvas.toDataURL('image/png');
     } finally {
