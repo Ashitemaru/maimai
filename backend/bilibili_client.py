@@ -447,7 +447,7 @@ class BilibiliClient:
             data={"id": episode_id, "csrf": self.csrf()},
         )
 
-    def add_episode(self, section_id, archive):
+    def add_episode(self, section_id, archive, title):
         video = archive["videos"][0]
         return self.request(
             "POST",
@@ -460,10 +460,26 @@ class BilibiliClient:
                     {
                         "aid": archive["archive"]["aid"],
                         "cid": video["cid"],
-                        "title": archive["archive"]["title"],
+                        "title": title,
                         "charging_pay": 0,
                     }
                 ],
+                "csrf": self.csrf(),
+            },
+        )
+
+    def rename_episode(self, header, aid, title):
+        """Collection entries keep their own title; editing the video does not update it."""
+        return self.request(
+            "POST",
+            MEMBER,
+            "/x2/creative/web/season/switch",
+            params={"csrf": self.csrf()},
+            json={
+                "aid": aid,
+                "season_id": header["seasonId"],
+                "section_id": header["id"],
+                "title": title,
                 "csrf": self.csrf(),
             },
         )

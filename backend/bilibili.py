@@ -385,6 +385,13 @@ class BilibiliService:
             return {"connected": False, "items": [], "collections": []}
         with self.client() as (client, account):
             listing = self._listing(client, account, refresh=True)
+            # Collection entries keep their own titles; read them to catch drift.
+            entry_titles = {
+                episode.get("aid"): episode.get("title")
+                for collection in listing["collections"]
+                for section in collection["sections"]
+                for episode in client.section(section["id"]).get("episodes") or []
+            }
         bindings = self._bindings(account["mid"])
         achievements = self._recorded_achievements(account["mid"])
         charts = self.store.all_charts()
@@ -413,9 +420,13 @@ class BilibiliService:
                 )
             except BilibiliError:
                 continue
+            entry = entry_titles.get(video.get("aid"))
             if proposed == title:
-                continue
-            reasons = []
+                if entry is None or entry == title:
+                    continue
+                reasons = [{"code": "collection_title", "text": "合集内标题未同步"}]
+            else:
+                reasons = []
             if new != old:
                 reasons.append(
                     {"code": "constant", "text": f"定数 {old} → {new}，需移入对应合集小节"}
@@ -426,6 +437,8 @@ class BilibiliService:
                 )
             if not reasons:
                 reasons.append({"code": "title", "text": "曲名或标题格式与曲库不一致"})
+            if proposed != title and entry is not None and entry != title:
+                reasons.append({"code": "collection_title", "text": "合集内标题未同步"})
             items.append(
                 {
                     "bvid": bvid,
@@ -865,6 +878,7 @@ class BilibiliService:
             job["steps"]["metadata"] = "verified"
             self._save_job(job)
         self._collection(client, plan, job, data)
+        self._episode_title(client, plan, job, data["archive"]["aid"])
         self._apply_order(client, plan, job)
         self._save_new_bindings(account["mid"], plan["_order"]["bindings"])
         job["state"] = "complete"
@@ -952,6 +966,37 @@ class BilibiliService:
                 return False
         return digest(current) == digest(expected)
 
+    def _episode_title(self, client, plan, job, aid):
+        def entry():
+            target = client.section(plan["section_id"])
+            episode = next((e for e in target.get("episodes") or [] if e.get("aid") == aid), None)
+            if episode is None:
+                raise BilibiliError("稿件不在目标合集中，请重新生成预览", status=409)
+            return target, episode
+
+        target, episode = entry()
+        if episode.get("title") == plan["title"]:
+            job["steps"]["episode_title"] = "verified"
+            return
+        if job["steps"].get("episode_title") in ("sending", "submitted"):
+            raise BilibiliError(
+                "合集内标题修改结果尚未确认；请稍后检查，不会重复提交", uncertain=True
+            )
+        job["steps"]["episode_title"] = "sending"
+        self._save_job(job)
+        try:
+            client.rename_episode(target["section"], aid, plan["title"])
+        except BilibiliError as error:
+            if not error.uncertain:
+                job["steps"]["episode_title"] = "rejected"
+            raise
+        job["steps"]["episode_title"] = "submitted"
+        self._save_job(job)
+        if entry()[1].get("title") != plan["title"]:
+            raise BilibiliError("已请求更新合集内标题，等待 B 站更新", uncertain=True)
+        job["steps"]["episode_title"] = "verified"
+        self._save_job(job)
+
     def _collection(self, client, plan, job, data):
         section_id = plan["section_id"]
         aid = data["archive"]["aid"]
@@ -1000,7 +1045,7 @@ class BilibiliService:
         job["steps"]["collection"] = "sending"
         self._save_job(job)
         try:
-            client.add_episode(section_id, data)
+            client.add_episode(section_id, data, plan["title"])
         except BilibiliError as error:
             if not error.uncertain:
                 job["steps"]["collection"] = "rejected"

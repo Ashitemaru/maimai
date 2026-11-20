@@ -168,6 +168,7 @@ function PublishingSteps({ steps }: { steps: PublishingJob['steps'] }) {
   const labels: Record<string, string> = {
     metadata: '标题与封面',
     collection: '归入合集',
+    episode_title: '合集内标题',
     order: '合集排序',
   };
   const states: Record<string, string> = {

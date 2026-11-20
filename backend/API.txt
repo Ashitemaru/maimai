@@ -245,8 +245,9 @@ GET /api/bilibili/videos?page=1
 GET /api/bilibili/stale -> {connected,items,collections}
   Read-only. Not signed in -> {connected:false,items:[],collections:[]}. Otherwise lists the
   account's bound videos (bilibili_chart_bindings) whose title differs from the one the
-  current catalog implies. Item: bvid,title,proposed_title,reasons:[{code,text}] (code
-  constant|chart_type|title),chart_key,combo (from the title),achievement (from the latest
+  current catalog implies, or whose collection entry still shows another title.
+  Item: bvid,title,proposed_title,reasons:[{code,text}] (code
+  constant|chart_type|title|collection_title),chart_key,combo (from the title),achievement (from the latest
   completed job, or null),constant_old,constant_new. Utage keeps its level; the mirrored
   video is skipped. The client re-previews each item with POST /prepare (section = the
   section titled constant_new) and applies with POST /apply.
@@ -288,6 +289,9 @@ POST /api/bilibili/apply {plan_id,cover16,cover43} -> persistent job receipt.
   Checks the frozen section before any upload/edit, then verifies exact membership
   before reordering. Preserves section metadata and sends all episode IDs, never
   only the newly added video. A job completes only after order has been read back.
+  Collection entries keep their own title: a new entry is added with the new title, and
+  an existing entry with another title is renamed (season/switch, step episode_title)
+  and read back before ordering.
 GET /api/bilibili/jobs -> recent account-owned jobs.
 GET /api/bilibili/jobs/{job_id} -> job, frozen plan and saved PNGs when unfinished.
 POST /api/bilibili/jobs/{job_id}/retry -> resumes with those exact saved PNGs.

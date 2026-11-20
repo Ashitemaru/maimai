@@ -195,10 +195,18 @@ class FakeClient:
             self.collection_members[key] = []
         self.data["in_season"] = False
 
-    def add_episode(self, section_id, data):
+    def add_episode(self, section_id, data, title):
         self.step("add")
-        self.collection_members[section_id].append({"aid": 456, "cid": 789, "id": 222})
+        self.collection_members[section_id].append(
+            {"aid": 456, "cid": 789, "id": 222, "title": title}
+        )
         self.data["in_season"] = True
+
+    def rename_episode(self, header, aid, title):
+        self.step("rename")
+        for episode in self.collection_members[header["id"]]:
+            if episode.get("aid") == aid:
+                episode["title"] = title
 
 
 class ServiceCase(unittest.TestCase):

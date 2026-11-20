@@ -102,6 +102,15 @@ class ApplyTests(ServiceCase):
         self.client.collection_members[10] = [{"id": 333, "aid": 456}]
         self.assertEqual(self.retry(job)["state"], "complete")
 
+    def test_collection_entry_title_follows_the_new_title(self):
+        # Already in the target section under an old title: rename, never re-add.
+        self.client.collection_members[10] = [{"id": 333, "aid": 456, "title": "【maimai】old"}]
+        job = self.apply(self.prepare())
+        self.assertEqual((job["state"], job["steps"]["episode_title"]), ("complete", "verified"))
+        self.assertEqual(self.client.calls.count("rename"), 1)
+        self.assertNotIn("add", self.client.calls)
+        self.assertEqual(self.client.collection_members[10][0]["title"], TITLE)
+
     def test_order_is_complete_only_after_full_read_back(self):
         rows = [episode(200, "Late"), episode(100, "Early")]
         self.store.extra_charts = [
@@ -145,6 +154,13 @@ class StaleTitleTests(ServiceCase):
         [item] = self.stale(TITLE)
         self.assertEqual(item["proposed_title"], "【maimai】Example[STD] Master13.9 AP")
         self.assertEqual(self.client.calls, [])
+
+    def test_collection_entry_with_an_old_title_is_stale(self):
+        self.service.bind_chart(1234, BV, self.store.chart_value, TITLE)
+        self.client.collection_members[10] = [{"id": 333, "aid": 456, "title": "【maimai】old"}]
+        [item] = self.stale(TITLE)
+        self.assertEqual(item["proposed_title"], TITLE)
+        self.assertEqual([r["code"] for r in item["reasons"]], ["collection_title"])
 
 
 if __name__ == "__main__":
