@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, messageOf } from './api';
 import { VenueMap } from './VenueMap';
 import { VenueSummary } from './VenueSummary';
@@ -150,8 +150,14 @@ export function VenuesPage({
   );
   const selected = venues.find((venue) => venue.name === selection);
   const [focus, setFocus] = useState<
-    { latitude: number; longitude: number; zoom?: number } | undefined
+    { latitude: number; longitude: number; zoom?: number; request: number } | undefined
   >();
+  const focusRequest = useRef(0);
+  function changeSearch(value: string) {
+    setSearch(value);
+    // A new search shows its results: drop the venue focus so the map fits the matches.
+    if (value.trim() !== search.trim()) setFocus(undefined);
+  }
   function select(name: string, saved?: { latitude: number; longitude: number }) {
     setSelection(name);
     const url = new URL(window.location.href);
@@ -160,7 +166,7 @@ export function VenuesPage({
     // A just-saved location is newer than the venue list until it reloads.
     const location =
       saved ?? venuePoint(venues.find((venue) => venue.name === name)?.location || null);
-    if (location) setFocus({ ...location, zoom: 15 });
+    if (location) setFocus({ ...location, zoom: 15, request: ++focusRequest.current });
   }
   return (
     <div className="venues-page">
@@ -192,7 +198,7 @@ export function VenuesPage({
                 type="search"
                 placeholder="搜索机厅或城市"
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => changeSearch(event.target.value)}
               />
             </label>
             <span>
@@ -214,7 +220,7 @@ export function VenuesPage({
             <>
               <div className="venue-atlas-layout">
                 <VenueMap
-                  key={search.trim()}
+                  fitKey={search.trim()}
                   venues={rows.map((venue) => ({
                     ...venue,
                     location: venuePoint(venue.location),

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Prepare one isolated public catalog snapshot; never fetch Remy or personal scores."""
 
 from __future__ import annotations

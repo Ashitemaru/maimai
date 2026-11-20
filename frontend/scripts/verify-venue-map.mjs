@@ -193,6 +193,55 @@ try {
     0,
   );
   checks.push('Mouse click on SVG jacket opens paginated AP album without operating status');
+  const mapSvg = page.locator('.venue-atlas-layout .venue-map-svg');
+  const offCenter = async (label) => {
+    const target = page.getByRole('button', { name: label, exact: true });
+    await target.waitFor();
+    const [x, y] = (await target.getAttribute('transform')).match(/-?[\d.]+/g).map(Number);
+    const size = await mapSvg.evaluate((element) => [element.clientWidth, element.clientHeight]);
+    return Math.hypot(x - size[0] / 2, y - size[1] / 2);
+  };
+  const waitCentered = (label) =>
+    page.waitForFunction((name) => {
+      const svg = document.querySelector('.venue-atlas-layout .venue-map-svg');
+      const target = [...svg.querySelectorAll('[role=button]')].find(
+        (item) => item.getAttribute('aria-label') === name,
+      );
+      if (!target) return false;
+      const [x, y] = target
+        .getAttribute('transform')
+        .match(/-?[\d.]+/g)
+        .map(Number);
+      return Math.hypot(x - svg.clientWidth / 2, y - svg.clientHeight / 2) < 2;
+    }, label);
+  const shanghai = '【上海】测试机厅，49 AP';
+  await waitCentered(shanghai);
+  const mapBox = await mapSvg.boundingBox();
+  const start = { x: mapBox.x + mapBox.width / 2 + 100, y: mapBox.y + mapBox.height / 2 + 100 };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x - 150, start.y - 80, { steps: 6 });
+  await page.mouse.up();
+  assert((await offCenter(shanghai)) > 100, 'Dragging moves the selected venue off center');
+  await page.locator('.venue-atlas-card').filter({ hasText: '【上海】测试机厅' }).click();
+  await waitCentered(shanghai);
+  checks.push('Selecting the already selected venue after a drag re-centers the map');
+  const atlasSearch = page.getByPlaceholder('搜索机厅或城市', { exact: true });
+  await atlasSearch.fill('北京');
+  await page.getByText('1 家机厅 · 1 AP', { exact: true }).waitFor();
+  await waitCentered('【北京】测试机厅，1 AP');
+  await atlasSearch.fill('测试');
+  await page.getByText('2 家机厅 · 50 AP', { exact: true }).waitFor();
+  for (const label of [shanghai, '【北京】测试机厅，1 AP'])
+    assert((await offCenter(label)) > 20, 'A multi-venue search fits every match in view');
+  await page.locator('.venue-atlas-card').filter({ hasText: '【北京】测试机厅' }).click();
+  await waitCentered('【北京】测试机厅，1 AP');
+  await atlasSearch.fill('');
+  await page.getByText('3 家机厅 · 50 AP', { exact: true }).waitFor();
+  await page.getByRole('button', { name: shanghai, exact: true }).waitFor();
+  await page.locator('.venue-atlas-card').filter({ hasText: '【上海】测试机厅' }).click();
+  await waitCentered(shanghai);
+  checks.push('Typing a search drops the venue focus and fits the matching venues');
   const selectedURL = new URL(page.url());
   assert.equal(selectedURL.searchParams.get('venue'), '【上海】测试机厅');
   assert.equal(selectedURL.searchParams.get('view'), 'completion');

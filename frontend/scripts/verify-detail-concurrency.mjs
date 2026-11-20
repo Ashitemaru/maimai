@@ -89,6 +89,7 @@ function deferred() {
 }
 let delayedRead = null;
 let delayedWrite = null;
+let failRecordsRefresh = false;
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, 'http://localhost');
@@ -207,6 +208,11 @@ try {
         await delay.release.promise;
       }
       await route.fulfill({ json: snapshot });
+      return;
+    }
+    if (pathname === '/api/ap-records' && failRecordsRefresh) {
+      failRecordsRefresh = false;
+      await route.fulfill({ status: 503, json: { detail: 'Fixture refresh outage' } });
       return;
     }
     const fixtures = {
@@ -374,6 +380,25 @@ try {
   assert.equal(await record.getByRole('heading').textContent(), 'Alpha');
   assert.equal(await page.locator('.venue-editor').count(), 0);
   checks.push('A completed write from a closed detail cannot close a subsequently opened detail');
+
+  await record.getByLabel('AP 机厅', { exact: true }).selectOption('Next venue');
+  failRecordsRefresh = true;
+  await record.getByRole('button', { name: '保存待核记录', exact: true }).click();
+  await record.waitFor({ state: 'detached' });
+  await page.locator('#toast.show').filter({ hasText: '列表刷新失败' }).waitFor();
+  assert.equal(failRecordsRefresh, false);
+  assert.equal(charts[0].record_revision, 2);
+  await alpha.click();
+  await record.waitFor();
+  await record.getByLabel('AP 机厅', { exact: true }).selectOption('Reviewed update');
+  await record.getByRole('button', { name: '保存待核记录', exact: true }).click();
+  await record.waitFor({ state: 'detached' });
+  assert.equal(mutations.at(-1).expected_revision, 2);
+  assert.equal(charts[0].pending_record.venue, 'Reviewed update');
+  assert.equal(mutations.filter((item) => item.chart_key === charts[0].chart_key).length, 2);
+  checks.push(
+    'A save whose follow-up refresh fails closes the drawer and never reuses its revision',
+  );
   assert.deepEqual(errors, []);
   await fs.writeFile(
     path.join(output, 'report.json'),

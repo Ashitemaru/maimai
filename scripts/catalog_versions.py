@@ -10,10 +10,7 @@ from copy import deepcopy
 from datetime import date
 from urllib.parse import urlsplit
 
-try:
-    from .jp_versions import JP_VERSION_NAMES
-except ImportError:
-    from jp_versions import JP_VERSION_NAMES
+from .jp_versions import JP_VERSION_NAMES
 
 ARCADE_URL = "https://dp4p6x0xfi5o9.cloudfront.net/maimai/data.json"
 ORDINARY = {"basic": 0, "advanced": 1, "expert": 2, "master": 3}

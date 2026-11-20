@@ -15,14 +15,11 @@ from copy import deepcopy
 from datetime import date
 from pathlib import Path
 
-try:
-    from .catalog_pipeline import atomic_json as write
-    from .catalog_policy import source_policy
-    from .catalog_versions import fingerprint
-except ImportError:
-    from catalog_pipeline import atomic_json as write
-    from catalog_policy import source_policy
-    from catalog_versions import fingerprint
+from .catalog_pipeline import atomic_json as write
+from .catalog_pipeline import check_source, merge_and_diff
+from .catalog_policy import source_policy
+from .catalog_record_review import _notes, build_record_review
+from .catalog_versions import empty_release, fingerprint, resolve_field_versions
 
 FIELDS = {
     "title",
@@ -44,6 +41,27 @@ def read(path, default=None):
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def override_index(path):
+    """Index remy_release_overrides.json ({"overrides": [...]}) by chart_key."""
+    document = read(path, {"overrides": []})
+    rows = document.get("overrides") if isinstance(document, dict) else None
+    if not isinstance(rows, list):
+        return {}, [{"kind": "invalid_release_override_file"}]
+    result, errors = {}, []
+    for record in rows:
+        if not isinstance(record, dict):
+            errors.append({"kind": "invalid_release_override", "record": record})
+            continue
+        chart_key = record.get("chart_key")
+        if not chart_key:
+            errors.append({"kind": "invalid_release_override", "record": record})
+        elif chart_key in result:
+            errors.append({"kind": "duplicate_release_override", "chart_key": chart_key})
+        else:
+            result[chart_key] = record
+    return result, errors
 
 
 def canonical_id(song_id, kind):
@@ -242,11 +260,7 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
                     value = option["value"]["version"] if is_jp else option["value"]
                     if value is None or is_jp and not value:
                         continue
-                    adapted = {
-                        k: deepcopy(v)
-                        for k, v in option.items()
-                        if k not in ("selectable", "raw_value")
-                    }
+                    adapted = deepcopy(option)
                     adapted["value"] = deepcopy(value)
                     if is_jp:
                         adapted["date"] = option["value"]["date"]
@@ -360,15 +374,9 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
 
 def _load_evidence(directory, document):
     directory = Path(directory)
-    try:
-        from .build_catalog import override_index
-        from .catalog_record_review import build_record_review
-        from .catalog_versions import resolve_field_versions
-    except ImportError:
-        from build_catalog import override_index
-        from catalog_record_review import build_record_review
-        from catalog_versions import resolve_field_versions
     lxns = read(directory / "effective_lxns_songs.json", read(directory / "raw/lxns_songs.json"))
+    if not isinstance(lxns, dict):
+        raise ValueError("Catalog build failed: LXNS song list is missing")
     arcade = read(directory / "raw/arcade_songs.json", {"songs": []})
     overrides, errors = override_index(directory / "remy_release_overrides.json")
     if errors:
@@ -381,11 +389,7 @@ def _load_evidence(directory, document):
         document.get("revision", 0),
     )
     review = build_record_review(
-        lxns,
-        read(directory / "raw/divingfish_music_data.json", []),
-        arcade,
-        version_review=versions,
-        decision_revision=document.get("revision", 0),
+        lxns, read(directory / "raw/divingfish_music_data.json", []), version_review=versions
     )
     return lxns, versions, review
 
@@ -403,10 +407,6 @@ def _base_legacy_catalog(directory, lxns, versions):
     fish = defaultdict(list)
     for row in read(directory / "raw/divingfish_music_data.json", []):
         fish[(str(row["id"]), row["type"])].append(row)
-    try:
-        from .catalog_versions import empty_release
-    except ImportError:
-        from catalog_versions import empty_release
     result = []
     for raw in lxns["songs"]:
         song = {k: deepcopy(v) for k, v in raw.items() if k != "difficulties"}
@@ -512,85 +512,88 @@ def write_sqlite(path, catalog):
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
     temporary.unlink(missing_ok=True)
-    with sqlite3.connect(temporary) as conn:
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript("""
-            CREATE TABLE metadata (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
-            CREATE TABLE charts (
-                id INTEGER NOT NULL, difficulty INTEGER NOT NULL, chart_key TEXT NOT NULL UNIQUE,
-                legacy_chart_key TEXT NOT NULL UNIQUE, lxns_song_id INTEGER NOT NULL,
-                type TEXT NOT NULL, difficulty_name TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL,
-                bpm REAL, genre TEXT, level TEXT, constant REAL, note_designer TEXT, notes_json TEXT NOT NULL,
-                cn_version INTEGER, api_version INTEGER, jp_release_version TEXT, jp_release_date TEXT,
-                jp_release_provider TEXT, release_status TEXT, version_pending INTEGER NOT NULL,
-                jacket_path TEXT NOT NULL, jacket_available INTEGER NOT NULL, jacket_source_json TEXT,
-                aliases_json TEXT NOT NULL, source_ids_json TEXT NOT NULL, field_decisions_json TEXT NOT NULL,
-                data_json TEXT NOT NULL, PRIMARY KEY(id,difficulty)
-            );
-            CREATE TABLE aliases (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,alias TEXT NOT NULL,
-                PRIMARY KEY(id,difficulty,alias),FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
-            CREATE TABLE external_ids (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,namespace TEXT NOT NULL,
-                external_id TEXT NOT NULL,type TEXT,source_title TEXT,
-                FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
-            CREATE TABLE search_terms (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,kind TEXT NOT NULL,term TEXT NOT NULL,
-                FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
-            CREATE INDEX charts_constant ON charts(constant,id,difficulty);
-        """)
+    try:
+        with closing(sqlite3.connect(temporary)) as conn, conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.executescript("""
+                CREATE TABLE metadata (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+                CREATE TABLE charts (
+                    id INTEGER NOT NULL, difficulty INTEGER NOT NULL, chart_key TEXT NOT NULL UNIQUE,
+                    legacy_chart_key TEXT NOT NULL UNIQUE, lxns_song_id INTEGER NOT NULL,
+                    type TEXT NOT NULL, difficulty_name TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL,
+                    bpm REAL, genre TEXT, level TEXT, constant REAL, note_designer TEXT, notes_json TEXT NOT NULL,
+                    cn_version INTEGER, api_version INTEGER, jp_release_version TEXT, jp_release_date TEXT,
+                    jp_release_provider TEXT, release_status TEXT, version_pending INTEGER NOT NULL,
+                    jacket_path TEXT NOT NULL, jacket_available INTEGER NOT NULL, jacket_source_json TEXT,
+                    aliases_json TEXT NOT NULL, source_ids_json TEXT NOT NULL, field_decisions_json TEXT NOT NULL,
+                    data_json TEXT NOT NULL, PRIMARY KEY(id,difficulty)
+                );
+                CREATE TABLE aliases (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,alias TEXT NOT NULL,
+                    PRIMARY KEY(id,difficulty,alias),FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
+                CREATE TABLE external_ids (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,namespace TEXT NOT NULL,
+                    external_id TEXT NOT NULL,type TEXT,source_title TEXT,
+                    FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
+                CREATE TABLE search_terms (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,kind TEXT NOT NULL,term TEXT NOT NULL,
+                    FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
+                CREATE INDEX charts_constant ON charts(constant,id,difficulty);
+            """)
 
-        def encode(value):
-            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            def encode(value):
+                return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
-        for key, value in catalog.items():
-            if key != "charts":
-                conn.execute("INSERT INTO metadata VALUES (?,?)", (key, encode(value)))
-        columns = [r[1] for r in conn.execute("PRAGMA table_info(charts)")]
-        for chart in catalog["charts"]:
-            values = []
-            for column in columns:
-                value = (
-                    chart
-                    if column == "data_json"
-                    else chart[column[:-5]]
-                    if column.endswith("_json")
-                    else chart[column]
-                )
-                values.append(
-                    encode(value)
-                    if column.endswith("_json")
-                    else int(value)
-                    if isinstance(value, bool)
-                    else value
-                )
-            conn.execute(
-                "INSERT INTO charts VALUES (" + ",".join("?" for _ in values) + ")", values
-            )
-            pair = (chart["id"], chart["difficulty"])
-            for alias in chart["aliases"]:
-                conn.execute("INSERT INTO aliases VALUES (?,?,?)", (*pair, alias))
-            for external in chart["external_ids"]:
+            for key, value in catalog.items():
+                if key != "charts":
+                    conn.execute("INSERT INTO metadata VALUES (?,?)", (key, encode(value)))
+            columns = [r[1] for r in conn.execute("PRAGMA table_info(charts)")]
+            for chart in catalog["charts"]:
+                values = []
+                for column in columns:
+                    value = (
+                        chart
+                        if column == "data_json"
+                        else chart[column[:-5]]
+                        if column.endswith("_json")
+                        else chart[column]
+                    )
+                    values.append(
+                        encode(value)
+                        if column.endswith("_json")
+                        else int(value)
+                        if isinstance(value, bool)
+                        else value
+                    )
                 conn.execute(
-                    "INSERT INTO external_ids VALUES (?,?,?,?,?,?)",
-                    (
-                        *pair,
-                        external["namespace"],
-                        external["id"],
-                        external.get("type"),
-                        external.get("source_title"),
-                    ),
+                    "INSERT INTO charts VALUES (" + ",".join("?" for _ in values) + ")", values
                 )
-            for kind, term in [
-                ("title", chart["title"]),
-                *[("alias", a) for a in chart["aliases"]],
-            ]:
-                conn.execute("INSERT INTO search_terms VALUES (?,?,?,?)", (*pair, kind, term))
-        conn.commit()
-        if (
-            conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok"
-            or conn.execute("PRAGMA foreign_key_check").fetchall()
-        ):
-            raise ValueError("Schema 2 SQLite validation failed")
-    conn.close()
-    temporary.replace(path)
+                pair = (chart["id"], chart["difficulty"])
+                for alias in chart["aliases"]:
+                    conn.execute("INSERT INTO aliases VALUES (?,?,?)", (*pair, alias))
+                for external in chart["external_ids"]:
+                    conn.execute(
+                        "INSERT INTO external_ids VALUES (?,?,?,?,?,?)",
+                        (
+                            *pair,
+                            external["namespace"],
+                            external["id"],
+                            external.get("type"),
+                            external.get("source_title"),
+                        ),
+                    )
+                for kind, term in [
+                    ("title", chart["title"]),
+                    *[("alias", a) for a in chart["aliases"]],
+                ]:
+                    conn.execute("INSERT INTO search_terms VALUES (?,?,?,?)", (*pair, kind, term))
+            conn.commit()
+            if (
+                conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok"
+                or conn.execute("PRAGMA foreign_key_check").fetchall()
+            ):
+                raise ValueError("Schema 2 SQLite validation failed")
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def build(directory):
@@ -698,16 +701,28 @@ def build(directory):
     return report
 
 
+def _require(condition, message):
+    if not condition:
+        raise ValueError("Catalog validation failed: " + message)
+
+
 def validate(directory):
     """Recompute the admission boundary and every permanent exception from receipts."""
-    directory = Path(directory)
+    try:
+        return _validate(Path(directory))
+    except (KeyError, IndexError, TypeError, AttributeError) as error:
+        # Malformed generated files fail validation like any other mismatch.
+        raise ValueError(
+            f"Catalog validation failed: malformed catalog data ({error!r})"
+        ) from error
+
+
+def _validate(directory):
+    require = _require
     catalog = read(directory / "catalog.json")
     report = read(directory / "build_report.json")
-
-    def require(condition, message):
-        if not condition:
-            raise ValueError("Catalog validation failed: " + message)
-
+    require(isinstance(catalog, dict), "catalog.json is missing")
+    require(isinstance(report, dict), "build_report.json is missing")
     require(
         catalog.get("schema_version") == 2 and "songs" not in catalog, "schema 2 flat chart catalog"
     )
@@ -727,10 +742,6 @@ def validate(directory):
             and path.stat().st_size == receipt["bytes"],
             "raw source hash: " + receipt["file"],
         )
-        try:
-            from .catalog_pipeline import check_source
-        except ImportError:
-            from catalog_pipeline import check_source
         check_source(
             receipt["file"],
             read(path),
@@ -753,10 +764,6 @@ def validate(directory):
             "output hash: " + receipt["path"],
         )
     if (directory / "effective_lxns_songs.json").exists():
-        try:
-            from .catalog_pipeline import merge_and_diff
-        except ImportError:
-            from catalog_pipeline import merge_and_diff
         effective, _ = merge_and_diff(
             read(directory / "raw/lxns_songs.json"),
             read(directory / "retained_lxns_records.json"),
@@ -804,10 +811,6 @@ def validate(directory):
     )
     by_key = {c["chart_key"]: c for c in catalog["charts"]}
     require(len(by_key) == len(catalog["charts"]), "unique chart keys")
-    try:
-        from .catalog_record_review import _notes
-    except ImportError:
-        from catalog_record_review import _notes
     for chart in catalog["charts"]:
         key = chart["chart_key"]
         require(key == f"{chart['id']}:{chart['difficulty']}", "canonical key " + key)
@@ -835,6 +838,10 @@ def validate(directory):
     from PIL import Image
 
     jacket_report = read(directory / "jacket_manifest.json")
+    require(
+        isinstance(jacket_report, dict) and isinstance(jacket_report.get("jackets"), list),
+        "jacket_manifest.json is missing",
+    )
     jackets = {r["song_id"]: r for r in jacket_report["jackets"]}
     require(
         len(jackets) == len(jacket_report["jackets"]) == len(calculated["lxns"]["songs"]),
@@ -855,12 +862,13 @@ def validate(directory):
                 and path.stat().st_size == row["bytes"],
                 "jacket hash",
             )
-            with Image.open(path) as image:
-                require(
-                    image.format == "PNG" and image.size == (row["width"], row["height"]),
-                    "jacket image format",
-                )
-                image.load()
+            try:
+                with Image.open(path) as image:
+                    valid = image.format == "PNG" and image.size == (row["width"], row["height"])
+                    image.load()
+            except OSError:
+                valid = False
+            require(valid, "jacket image format")
             decoded += 1
     for name in ("remy_release_overrides.json", "remy_conflicts.json"):
         evidence = read(directory / name, {})

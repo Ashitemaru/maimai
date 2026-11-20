@@ -11,7 +11,6 @@ from scripts.remy_release import (
     NoRedirect,
     RemyFetcher,
     cached_pages,
-    read_json,
     resolve,
     run,
     version_pages,
@@ -170,28 +169,18 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual([r["chart_key"] for r in result["additions"]], ["1:standard:4"])
         self.assertEqual([r["chart_key"] for r in result["pending"]], ["2:standard:4"])
 
-    def test_recheck_fetches_known_chart_and_keeps_original_on_version_or_date_conflict(self):
+    def test_known_chart_keeps_original_on_version_or_date_conflict(self):
         known = resolve(catalog(), [], [page()])["additions"]
         for field, changed in [("jp_release_version", "Splash"), ("jp_release_date", "2022-10-01")]:
-            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                write_json(root / "raw/lxns_songs.json", catalog())
-                write_json(root / "remy_release_overrides.json", {"overrides": known})
+            with self.subTest(field=field):
                 fetched = page()
                 fetched["rows"][0]["version" if field.endswith("version") else "date"] = changed
-                fetcher = Mock(requests=1)
-                fetcher.fetch.return_value = fetched
-                result = run(root, fetcher=fetcher, page_urls=[SOURCE], recheck=True)
-                fetcher.fetch.assert_called_once_with(SOURCE)
-                self.assertEqual(result["proposed_overrides"]["overrides"], known)
+                result = resolve(catalog(), known, [fetched])
+                self.assertEqual(result["additions"], [])
                 self.assertEqual(result["conflicts"][0]["current"], known[0])
                 self.assertEqual(result["checked_chart_keys"], ["1:standard:4"])
-                self.assertTrue(result["recheck_complete"])
-                self.assertEqual(
-                    read_json(root / "remy_release_overrides.json")["overrides"], known
-                )
 
-    def test_manual_final_provider_skips_missing_fetch_but_recheck_reports_disagreement(self):
+    def test_manual_final_provider_skips_missing_fetch_and_reports_disagreement(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "raw/lxns_songs.json", catalog())
@@ -212,13 +201,9 @@ class MatchingTests(unittest.TestCase):
             fetcher.fetch.assert_not_called()
             self.assertEqual(result["manual_protected"], 1)
             self.assertEqual(result["pending"], [])
-            fetcher.fetch.return_value = page()
-            result = run(root, fetcher=fetcher, page_urls=[SOURCE], recheck=True)
-            self.assertEqual(result["additions"], [])
-            self.assertEqual(result["proposed_overrides"]["overrides"], [])
-            self.assertEqual(
-                result["conflicts"][0]["current"], manual | {"legacy_chart_key": "1:standard:4"}
-            )
+        result = resolve(catalog(), [], [page()], protected_records=[manual])
+        self.assertEqual(result["additions"], [])
+        self.assertEqual(result["conflicts"][0]["current"], manual)
 
     def test_manual_same_version_without_date_is_not_overwritten_or_reported_as_conflict(self):
         manual = {
@@ -333,7 +318,7 @@ class FetchTests(unittest.TestCase):
             write_json(root / "remy_release_overrides.json", {"overrides": []})
             opener = Mock(side_effect=HTTPError(SOURCE, 403, "blocked", {}, None))
             fetcher = RemyFetcher(root / "cache", opener=opener)
-            result = run(root, fetcher=fetcher, page_urls=[SOURCE, SOURCE])
+            result = run(root, fetcher=fetcher)
             self.assertEqual(result["status"], "partial")
             self.assertEqual(result["fetch_count"], 1)
             self.assertEqual(result["proposed_overrides"]["overrides"], [])

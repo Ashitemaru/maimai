@@ -33,7 +33,10 @@ type Props = {
   onSelect?: (name: string) => void;
   point?: MapPoint | null;
   onPick?: (point: MapPoint) => void;
-  focusPoint?: (MapPoint & { zoom?: number }) | null;
+  /** `request` increments on every explicit selection so repeated picks re-center. */
+  focusPoint?: (MapPoint & { zoom?: number; request?: number }) | null;
+  /** The map fits the located venues again whenever this key changes (e.g. a search). */
+  fitKey?: string;
 };
 type LocatedVenue = VenueMapVenue & { location: MapPoint };
 
@@ -44,14 +47,23 @@ const centerOf = (points: MapPixel[]) => ({
 const distance = (points: MapPixel[]) =>
   Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
 
-export function VenueMap({ venues, selectedName, onSelect, point, onPick, focusPoint }: Props) {
+export function VenueMap({
+  venues,
+  selectedName,
+  onSelect,
+  point,
+  onPick,
+  focusPoint,
+  fitKey = '',
+}: Props) {
   const container = useRef<HTMLDivElement>(null);
   const canvas = useRef<SVGSVGElement>(null);
   const [size, setSize] = useState<MapSize>({ width: 0, height: 0 });
   const [view, setView] = useState<MapView>({ longitude: 116.4, latitude: 35, zoom: 4 });
   const viewRef = useRef(view);
   const sizeRef = useRef(size);
-  const fitted = useRef(false);
+  // The fitKey whose venues were last fitted (or superseded by an explicit focus).
+  const fitted = useRef<string | null>(null);
   const pointers = useRef(new Map<number, MapPixel>());
   const pressedCluster = useRef<MapCluster<LocatedVenue> | null>(null);
   const gesture = useRef({ moved: false, start: { x: 0, y: 0 } });
@@ -81,22 +93,29 @@ export function VenueMap({ venues, selectedName, onSelect, point, onPick, focusP
     return () => observer.disconnect();
   }, []);
 
+  const fitKeyRef = useRef(fitKey);
   useEffect(() => {
-    if (fitted.current || !size.width || !size.height || (!located.length && !onPick)) return;
-    fitted.current = true;
+    fitKeyRef.current = fitKey;
+  }, [fitKey]);
+  useEffect(() => {
+    if (fitted.current === fitKey || !size.width || !size.height || (!located.length && !onPick))
+      return;
+    fitted.current = fitKey;
+    setOverlapping([]);
     changeView(fitMapPoints(point ? [point] : located.map((venue) => venue.location), size));
-  }, [located, onPick, point, size, changeView]);
+  }, [fitKey, located, onPick, point, size, changeView]);
 
   const focusLatitude = focusPoint?.latitude;
   const focusLongitude = focusPoint?.longitude;
   const focusZoom = focusPoint?.zoom;
+  const focusRequest = focusPoint?.request;
   useEffect(() => {
     if (focusLatitude === undefined || focusLongitude === undefined) return;
     const next = { latitude: focusLatitude, longitude: focusLongitude };
     if (!isMapPoint(next)) return;
     changeView({ ...next, zoom: Math.min(MAX_MAP_ZOOM, Math.max(MIN_MAP_ZOOM, focusZoom ?? 16)) });
-    fitted.current = true;
-  }, [focusLatitude, focusLongitude, focusZoom, changeView]);
+    fitted.current = fitKeyRef.current;
+  }, [focusLatitude, focusLongitude, focusZoom, focusRequest, changeView]);
 
   useEffect(() => {
     const element = canvas.current;

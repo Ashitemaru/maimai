@@ -1,9 +1,7 @@
-#!/usr/bin/env python3
 """Resolve Re:MASTER debuts using Remy evidence, without an LLM or catalog writes."""
 
 from __future__ import annotations
 
-import argparse
 import gzip
 import hashlib
 import json
@@ -18,15 +16,9 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 
-try:
-    from .build_catalog import JP_VERSION_BOUNDARIES
-    from .remy_html import parse_version_page
-except ImportError:
-    from build_catalog import JP_VERSION_BOUNDARIES
-    from remy_html import parse_version_page
+from .jp_versions import JP_VERSIONS
+from .remy_html import parse_version_page
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CATALOG = ROOT / "data/catalog"
 MAX_PAGE_BYTES = 8 * 1024 * 1024
 
 
@@ -65,7 +57,7 @@ def canonical_url(url: str) -> str:
 
 def version_pages() -> list[str]:
     result = []
-    for code, version in reversed(JP_VERSION_BOUNDARIES):
+    for code, version in reversed(JP_VERSIONS):
         if code < 15000:  # Re:MASTER first appeared in ORANGE PLUS.
             continue
         page = {"DX": "maimai_DX:1st", "DX PLUS": "maimai_DX:PLUS"}.get(version)
@@ -479,18 +471,14 @@ class RemyFetcher:
 def run(
     catalog_dir: Path,
     *,
-    overrides_path: Path | None = None,
     fetcher=None,
-    page_urls: list[str] | None = None,
     cache_dir: Path | None = None,
-    recheck: bool = False,
     protected_records=None,
 ) -> dict:
     effective = catalog_dir / "effective_lxns_songs.json"
     lxns = read_json(effective if effective.exists() else catalog_dir / "raw/lxns_songs.json")
-    overrides = read_json(overrides_path or catalog_dir / "remy_release_overrides.json")[
-        "overrides"
-    ]
+    overrides_path = catalog_dir / "remy_release_overrides.json"
+    overrides = read_json(overrides_path)["overrides"] if overrides_path.exists() else []
     if protected_records is None:
         compiled = catalog_dir / "catalog.json"
         document = read_json(compiled) if compiled.exists() else {}
@@ -529,16 +517,13 @@ def run(
                         )
     report = resolve(lxns, overrides, [], protected_records=protected_records)
     pages, errors = [], []
-    requested_urls, fetched_urls = [], []
-    if report["pending"] or recheck:
+    fetched_urls = []
+    if report["pending"]:
         pages, errors = cached_pages(catalog_dir, cache_dir or catalog_dir / "remy-cache")
         report = resolve(lxns, overrides, pages, protected_records=protected_records)
         if fetcher:
-            requested_urls = list(
-                dict.fromkeys(page_urls if page_urls is not None else fetcher.ordered_pages())
-            )
-            for url in requested_urls:
-                if not report["pending"] and not recheck:
+            for url in fetcher.ordered_pages():
+                if not report["pending"]:
                     break
                 try:
                     pages.append(fetcher.fetch(url))
@@ -560,13 +545,7 @@ def run(
         parser="remy_rules_v2",
         llm_used=False,
         page_count=len(pages),
-        recheck=recheck,
-        recheck_scope="cache_and_live" if fetcher else "cache_only",
-        requested_page_urls=requested_urls,
         fetched_page_urls=fetched_urls,
-        recheck_complete=bool(
-            recheck and fetcher and requested_urls == fetched_urls and not errors
-        ),
         fetch_count=fetcher.requests if fetcher else 0,
         fetch_errors=errors,
     )
@@ -577,62 +556,3 @@ def run(
         "overrides": [r for r in overrides if r["chart_key"] not in new_keys] + report["additions"],
     }
     return report
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--catalog-dir", type=Path, default=DEFAULT_CATALOG)
-    parser.add_argument("--overrides", type=Path, help="Input overrides (e.g. a replay subset)")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "output/remy-parser")
-    parser.add_argument("--cache-dir", type=Path)
-    parser.add_argument(
-        "--fetch", action="store_true", help="Fetch unresolved pages at most once per 60 seconds"
-    )
-    parser.add_argument(
-        "--recheck",
-        action="store_true",
-        help="Recheck existing evidence as well as missing versions; conflicts retain adopted values",
-    )
-    parser.add_argument(
-        "--page", action="append", help="Remy version URL; repeat to control page order"
-    )
-    parser.add_argument("--max-requests", type=int, default=8)
-    args = parser.parse_args()
-    if args.max_requests < 1:
-        parser.error("--max-requests must be positive")
-    cache_dir = args.cache_dir or args.catalog_dir / "remy-cache"
-    fetcher = RemyFetcher(cache_dir, max_requests=args.max_requests) if args.fetch else None
-    report = run(
-        args.catalog_dir,
-        overrides_path=args.overrides,
-        fetcher=fetcher,
-        page_urls=args.page,
-        cache_dir=cache_dir,
-        recheck=args.recheck,
-    )
-    proposed = report.pop("proposed_overrides")
-    write_json(args.output_dir / "remy_release_overrides.proposed.json", proposed)
-    write_json(args.output_dir / "report.json", report)
-    print(
-        json.dumps(
-            {
-                k: report[k]
-                for k in (
-                    "status",
-                    "target_count",
-                    "already_verified",
-                    "resolved_count",
-                    "page_count",
-                    "fetch_count",
-                )
-            },
-            ensure_ascii=False,
-        )
-    )
-    print(
-        f"pending={len(report['pending'])} conflicts={len(report['conflicts'])} report={args.output_dir / 'report.json'}"
-    )
-
-
-if __name__ == "__main__":
-    main()

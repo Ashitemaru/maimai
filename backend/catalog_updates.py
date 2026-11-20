@@ -65,13 +65,13 @@ def prepare(stage, previous, progress):
 
 
 def build(stage):
-    from scripts.build_catalog import build as build_catalog
+    from scripts.catalog_chart_compiler import build as build_catalog
 
     return build_catalog(stage)
 
 
 def validate(stage):
-    from scripts.validate_catalog import validate as validate_catalog
+    from scripts.catalog_chart_compiler import validate as validate_catalog
 
     return validate_catalog(stage)
 

@@ -19,7 +19,7 @@ After activation `wheels/` keeps exactly the wheels of the new release. There is
 polling timer and no deploy configuration file.
 
 The archive has no enclosing directory. It contains `backend/*.py` excluding tests,
-the core `scripts/*.py` allowlist in `deploy_release.py`, `requirements.lock`,
+the core `scripts/*.py` allowlist (`CORE_SCRIPTS` in `scripts/package_release.py`), `requirements.lock`,
 `frontend/dist/**`, `RELEASE_SHA`, a required `dependencies/` wheel bundle, and
 optionally `deploy/**` for manual bootstrap updates. It must contain no personal
 runtime data, catalogs, pictures, credentials, symlinks or private records.

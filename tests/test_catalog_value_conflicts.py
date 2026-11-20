@@ -5,11 +5,14 @@ import hashlib
 import json
 import unittest
 
-from scripts.build_catalog import build
-from scripts.catalog_chart_compiler import load_record_review, validate_chart_decisions
+from scripts.catalog_chart_compiler import (
+    build,
+    load_record_review,
+    validate,
+    validate_chart_decisions,
+)
 from scripts.catalog_pipeline import atomic_json
 from scripts.catalog_versions import resolve_field_versions
-from scripts.validate_catalog import validate
 from tests import test_catalog_pipeline as fixtures
 from tests.test_catalog_versions import arcade
 

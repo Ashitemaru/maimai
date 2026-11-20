@@ -6,11 +6,11 @@ import copy
 import re
 import unicodedata
 
-from scripts.build_catalog import JP_VERSION_BOUNDARIES
+from scripts.jp_versions import JP_VERSIONS
 
 from .bilibili_client import BVID, BilibiliError, digest
 
-VERSION_RANK = {version: i for i, (_, version) in enumerate(JP_VERSION_BOUNDARIES)}
+VERSION_RANK = {version: i for i, (_, version) in enumerate(JP_VERSIONS)}
 TITLE = re.compile(
     r"^【maimai】(?P<song>.+?) (?P<difficulty>Basic|Advanced|Expert|Master|Re:Master|Utage)(?P<constant>\d{1,2}(?:\.\d|\+?\?)) AP\+?$"
 )

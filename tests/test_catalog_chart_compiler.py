@@ -6,14 +6,14 @@ import unittest
 from contextlib import closing
 from unittest.mock import patch
 
-from scripts.build_catalog import build, search
 from scripts.catalog_chart_compiler import (
+    build,
     chart_mappings,
     load_record_review,
+    validate,
     validate_chart_decisions,
 )
 from scripts.catalog_pipeline import atomic_json
-from scripts.validate_catalog import validate
 from tests import test_catalog_pipeline as legacy_fixtures
 
 song, document = legacy_fixtures.song, legacy_fixtures.document
@@ -72,7 +72,6 @@ class ChartCompilerTests(unittest.TestCase):
         self.assertTrue(
             all("level_value" not in c and "version" not in c for c in catalog["charts"])
         )
-        self.assertEqual(search(self.stage, "2", id_only=True)[0]["chart_key"], "2:4")
         with closing(sqlite3.connect(self.stage / "catalog.sqlite")) as conn:
             self.assertEqual(
                 [(r[1], r[5]) for r in conn.execute("PRAGMA table_info(charts)") if r[5]],

@@ -13,8 +13,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from scripts.build_catalog import build
-from scripts.catalog_chart_compiler import load_record_review, write_sqlite
+from scripts.catalog_chart_compiler import build, load_record_review, validate, write_sqlite
 from scripts.catalog_pipeline import (
     SOURCES,
     atomic_json,
@@ -23,11 +22,8 @@ from scripts.catalog_pipeline import (
     prepare_update,
 )
 from scripts.catalog_policy import source_policy
-from scripts.catalog_record_review import (
-    build_record_review,
-)
-from scripts.catalog_versions import resolve_versions
-from scripts.validate_catalog import validate
+from scripts.catalog_record_review import build_record_review
+from scripts.catalog_versions import fingerprint
 
 
 def song(sid=1, constant=13.0, remaster=False):
@@ -53,6 +49,10 @@ def song(sid=1, constant=13.0, remaster=False):
 
 def document(songs):
     return {"songs": songs, "versions": [{"version": 10000, "title": "maimai"}], "genres": []}
+
+
+def differs(field):
+    return len({fingerprint(option["value"]) for option in field["options"]}) > 1
 
 
 def png():
@@ -196,6 +196,32 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.catalog()["counts"]["jackets_missing"], 2)
         self.assertTrue(all(not chart["jacket_available"] for chart in self.catalog()["charts"]))
         validate(self.stage)
+
+    def test_missing_jacket_manifest_is_a_validation_error(self):
+        self.prepare()
+        (self.stage / "jacket_manifest.json").unlink()
+        build(self.stage)
+        with self.assertRaisesRegex(ValueError, "jacket_manifest.json is missing"):
+            validate(self.stage)
+
+    def test_malformed_catalog_is_a_validation_error(self):
+        self.prepare()
+        build(self.stage)
+        atomic_json(self.stage / "build_report.json", [])
+        with self.assertRaisesRegex(ValueError, "Catalog validation failed"):
+            validate(self.stage)
+
+    def test_failed_sqlite_write_leaves_no_temporary_file(self):
+        self.prepare()
+        build(self.stage)
+        catalog = self.catalog()
+        del catalog["charts"][0]["title"]
+        target = self.stage / "catalog.sqlite"
+        before = target.read_bytes()
+        with self.assertRaises(KeyError):
+            write_sqlite(target, catalog)
+        self.assertFalse((self.stage / "catalog.sqlite.tmp").exists())
+        self.assertEqual(target.read_bytes(), before)
 
     def test_supplement_is_cross_validation_only_and_remy_can_be_retired(self):
         record = {
@@ -585,8 +611,6 @@ class PipelineTests(unittest.TestCase):
         build(self.stage)
 
     def test_record_comparison_numeric_genre_missing_designer_and_region_boundaries(self):
-        from tests.test_catalog_versions import arcade
-
         original = song()
         original["difficulties"]["standard"][0]["note_designer"] = ""
         fish = [
@@ -600,16 +624,7 @@ class PipelineTests(unittest.TestCase):
                 "charts": [{"charter": "-", "notes": [1, 0, 0, 0]} for _ in range(4)],
             }
         ]
-        source = arcade(title=original["title"])
-        source["songs"][0].update(bpm=120.0, category="maimai")
-        for sheet in source["songs"][0]["sheets"]:
-            sheet.update(
-                level="15",
-                internalLevelValue=15.0,
-                noteDesigner="-",
-                noteCounts={"tap": 1, "hold": 0, "slide": 0, "touch": None, "break": 0, "total": 1},
-            )
-        review = build_record_review(document([original]), fish, source)
+        review = build_record_review(document([original]), fish)
         fields = {f["field_key"]: f for f in review["records"][0]["fields"]}
         for key in (
             "song.bpm",
@@ -618,100 +633,12 @@ class PipelineTests(unittest.TestCase):
             "chart:1:standard:3:notes",
             "chart:1:standard:3:note_designer",
         ):
-            self.assertFalse(fields[key]["has_difference"], key)
+            self.assertFalse(differs(fields[key]), key)
         self.assertEqual(
             {o["source"] for o in fields["chart:1:standard:3:constant"]["options"]},
             {"lxns", "divingfish"},
         )
         self.assertNotIn("version", fields)
-        source["songs"][0]["sheets"][3]["noteDesigner"] = "Known Designer"
-        changed = build_record_review(document([original]), fish, source)
-        designer = next(
-            f for f in changed["records"][0]["fields"] if f["field_key"].endswith(":note_designer")
-        )
-        self.assertFalse(designer["has_difference"])
-        self.assertNotIn("arcade_songs", {option["source"] for option in designer["options"]})
-
-    def link_records(self, *, unmatched=False):
-        from tests.test_catalog_versions import arcade
-
-        first, second = song(131), song(383)
-        first.update(title="Link", artist="Clean Tears feat. Youna", bpm=132, genre="maimai")
-        second.update(
-            title="Link", artist="Circle of friends", bpm=198, genre="niconicoボーカロイド"
-        )
-        raw = {"songs": []}
-        for original, external_id, genre in (
-            (first, "Link", "maimai"),
-            (second, "Link (2)", "niconico＆ボーカロイド"),
-        ):
-            row = arcade(title="Link", artist=original["artist"], external_id=external_id)["songs"][
-                0
-            ]
-            row.update(bpm=original["bpm"], category=genre)
-            for sheet in row["sheets"]:
-                sheet.update(
-                    noteDesigner="Designer",
-                    noteCounts=copy.deepcopy(original["difficulties"]["standard"][0]["notes"]),
-                )
-            raw["songs"].append(row)
-        if unmatched:
-            first["artist"] = "Unmatched Author"
-        return document([first, second]), raw
-
-    def test_link_131_and_383_only_compare_their_own_arcade_identity(self):
-        original, raw = self.link_records()
-        versions = resolve_versions(original, raw, [])
-        report = build_record_review(original, [], raw, version_review=versions)
-        for record, wanted, excluded in (
-            (report["records"][0], "Link", "Link (2)"),
-            (report["records"][1], "Link (2)", "Link"),
-        ):
-            with self.subTest(song_id=record["song_id"]):
-                self.assertFalse(any(f["has_difference"] for f in record["fields"]))
-                for field in record["fields"]:
-                    if field["semantic_domain"] != "jp_release":
-                        ids = {
-                            o["external_id"]
-                            for o in field["options"]
-                            if o["source"] == "arcade_songs"
-                        }
-                        self.assertEqual(ids, set())
-                audit = {
-                    r["external_id"]: r
-                    for r in record["source_records"]
-                    if r["source"] == "arcade_songs"
-                }
-                self.assertTrue(audit[wanted]["comparison_eligible"])
-                self.assertFalse(audit[excluded]["comparison_eligible"])
-                self.assertEqual(audit[excluded]["record"]["title"], "Link")
-
-    def test_ambiguous_exact_arcade_records_do_not_reintroduce_other_authors(self):
-        original, raw = self.link_records()
-        original["songs"] = original["songs"][:1]
-        duplicate = copy.deepcopy(raw["songs"][0])
-        duplicate["songId"] = "Link exact duplicate"
-        raw["songs"].append(duplicate)
-        report = build_record_review(
-            original, [], raw, version_review=resolve_versions(original, raw, [])
-        )
-        record = report["records"][0]
-        self.assertEqual(
-            {
-                source["external_id"]
-                for source in record["source_records"]
-                if source["source"] == "arcade_songs" and source["comparison_eligible"]
-            },
-            {"Link", "Link exact duplicate"},
-        )
-        self.assertFalse(
-            any(
-                option["source"] == "arcade_songs"
-                for field in record["fields"]
-                if field["semantic_domain"] != "jp_release"
-                for option in field["options"]
-            )
-        )
 
     def test_invalid_notes_and_nonfinite_constant_rejected(self):
         invalid = document([song()])

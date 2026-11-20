@@ -6,6 +6,7 @@ import {
   resolveVersion,
 } from './coverAssets';
 import type { ImageAsset, NumberSet } from './coverAssets';
+import { releaseCanvas } from './canvasRelease';
 const PALETTE: Record<number, string> = {
   0: '#65b04b',
   1: '#e3a137',
@@ -270,9 +271,14 @@ function alphaBounds(
   const canvas = document.createElement('canvas');
   canvas.width = rect.width;
   canvas.height = rect.height;
-  const ctx = canvas.getContext('2d')!;
-  ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
-  const pixels = ctx.getImageData(0, 0, rect.width, rect.height).data;
+  let pixels: Uint8ClampedArray;
+  try {
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    pixels = ctx.getImageData(0, 0, rect.width, rect.height).data;
+  } finally {
+    releaseCanvas(canvas);
+  }
   let x0 = rect.width,
     y0 = rect.height,
     x1 = -1,
@@ -475,253 +481,260 @@ export async function renderCover(
     }),
   );
   const surface = document.createElement('canvas');
-  surface.width = 1920;
-  surface.height = 1080;
-  const ctx = surface.getContext('2d');
-  if (!ctx) throw new Error('浏览器不支持封面绘制');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.fillStyle = '#e9e4ee';
-  ctx.fillRect(0, 0, 1920, 1080);
-  const background = resources.get('background');
-  if (background) fillImage(ctx, background);
-  const bounds: Bounds[] = [];
-  const record = (role: string, box: Omit<Bounds, 'role'>) => bounds.push({ role, ...box });
-  const color = PALETTE[isUtage ? 5 : (chart.difficulty ?? chart.difficulty_index)] || PALETTE[4];
-  const gameAssets: string[] = [];
-  const card = layout.card;
-  ctx.save();
-  ctx.shadowColor = '#27153635';
-  ctx.shadowBlur = 48;
-  ctx.shadowOffsetY = 18;
-  rounded(ctx, card.x, card.y, card.width, card.height, 40, 'rgba(255,255,255,.88)');
-  ctx.restore();
-  ctx.strokeStyle = 'rgba(255,255,255,.94)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.roundRect(card.x, card.y, card.width, card.height, 40);
-  ctx.stroke();
-  const jacketBox = layout.jacket;
-  ctx.save();
-  ctx.shadowBlur = 26;
-  ctx.shadowOffsetY = 10;
-  ctx.shadowColor = '#28163328';
-  rounded(ctx, jacketBox.x, jacketBox.y, jacketBox.width, jacketBox.height, 21, '#fff');
-  ctx.restore();
-  ctx.save();
-  ctx.beginPath();
-  ctx.roundRect(jacketBox.x, jacketBox.y, jacketBox.width, jacketBox.height, 21);
-  ctx.clip();
-  ctx.drawImage(jacket, jacketBox.x, jacketBox.y, jacketBox.width, jacketBox.height);
-  ctx.restore();
-  record('jacket', jacketBox);
-  function badge(key: string, label: string, box: Omit<Bounds, 'role'>, size: number) {
-    const image = resources.get(key),
-      asset = ui?.assets[key];
-    if (image && asset) {
-      record(key, contain(ctx!, image, box, asset.crop));
-      gameAssets.push(key);
-    } else
-      record(
-        key,
-        measuredText(ctx!, label, box, size, key === 'ap' || key === 'app' ? '#a36d14' : color),
-      );
-  }
-  if (typeKey) badge(typeKey, chart.type === 'dx' ? 'DX' : 'STD', layout.type, 35);
-  const logo = resources.get('logo');
-  if (logo && !widescreen) record('version_logo', contain(ctx, logo, layout.logo));
-  const name = chart.display_title || chart.title || '　';
-  const titleBox = layout.title;
-  const title = fitTitle(ctx, name, titleBox.width, titleBox.height, widescreen ? 108 : 76);
-  const titleTop = titleBox.y + (titleBox.height - title.lines.length * title.lineHeight) / 2;
-  ctx.font = `800 ${title.fontSize}px ${SANS}`;
-  ctx.fillStyle = '#302637';
-  ctx.textBaseline = 'top';
-  title.lines.forEach((line, index) => {
-    const y = titleTop + index * title.lineHeight;
-    ctx.fillText(line, titleBox.x, y);
-    record('title:' + index, {
-      x: titleBox.x,
-      y,
-      width: title.widths[index],
-      height: title.lineHeight,
-    });
-  });
-  ctx.textBaseline = 'alphabetic';
-  const constantBox = layout.constant;
-  const difficultyText = isUtage
-    ? 'Utage'
-    : ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master'][
-        chart.difficulty ?? chart.difficulty_index
-      ] || chart.difficulty_name;
-  const utageLevel = isUtage ? chart.level.match(/^(\d+)(\+?\?)$/) : null;
-  const bodySize = widescreen ? 60 : 52;
-  const decimalSize = widescreen ? (60 * 31) / 52 : 31;
-  const superscriptSize = widescreen ? (60 * 28) / 52 : 28;
-  const [integer, decimal] = utageLevel
-    ? [utageLevel[1], '']
-    : chart.constant?.toFixed(1).split('.') || ['', ''];
-  ctx.font = `800 ${bodySize}px ${SANS}`;
-  const prefixAscent = ctx.measureText(difficultyText).actualBoundingBoxAscent;
-  const integerAscent = ctx.measureText(integer).actualBoundingBoxAscent;
-  const baseline = constantBox.y + Math.max(prefixAscent, integerAscent);
-  const prefix = visibleText(
-    ctx,
-    difficultyText,
-    constantBox.x,
-    baseline - prefixAscent,
-    bodySize,
-    color,
-    800,
-  );
-  record('constant_prefix', prefix);
-  if (utageLevel) {
-    const main = visibleText(
-      ctx,
-      integer,
-      prefix.x + prefix.width + 18,
-      baseline - integerAscent,
-      bodySize,
-      color,
-    );
-    record('utage_integer', main);
-    record(
-      'utage_superscript',
-      visibleText(
-        ctx,
-        utageLevel[2],
-        main.x + main.width + 5,
-        constantBox.y - 4,
-        superscriptSize,
-        color,
-      ),
-    );
-  } else if (chart.constant !== null) {
-    const main = visibleText(
-      ctx,
-      integer,
-      prefix.x + prefix.width + 18,
-      baseline - integerAscent,
-      bodySize,
-      color,
-    );
-    record('constant_integer', main);
-    const fraction = visibleText(
-      ctx,
-      '.' + decimal,
-      main.x + main.width + 3,
-      baseline - 14,
-      decimalSize,
-      color,
-    );
-    record('constant_decimal', fraction);
-    if (chart.level.includes('+'))
-      record(
-        'constant_plus',
-        visibleText(
-          ctx,
-          '+',
-          fraction.x + fraction.width + 5,
-          constantBox.y - 4,
-          superscriptSize,
-          color,
-        ),
-      );
-  }
-  if (logo && widescreen) {
-    const constantBounds = bounds.filter(
-      (box) => box.role.startsWith('constant_') || box.role.startsWith('utage_'),
-    );
-    const constantRight = Math.max(...constantBounds.map((box) => box.x + box.width));
-    const textCenter =
-      (Math.min(...constantBounds.map((box) => box.y)) +
-        Math.max(...constantBounds.map((box) => box.y + box.height))) /
-      2;
-    const right = layout.logo.x + layout.logo.width;
-    const availableWidth = Math.max(1, right - Math.max(layout.logo.x, constantRight + 18));
-    const crop = alphaBounds(logo);
-    const scale = Math.min(availableWidth / crop.width, layout.logo.height / crop.height);
-    const box = {
-      x: right - crop.width * scale,
-      y: textCenter - (crop.height * scale) / 2,
-      width: crop.width * scale,
-      height: crop.height * scale,
-    };
-    record('version_logo', contain(ctx, logo, box, crop));
-  }
-  const score = Number(raw).toFixed(4) + '%';
-  const numberImage = numberSet?.file ? glyphImages.get(numberSet.file) || null : null;
-  let achievementStyle: CoverReceipt['achievementStyle'] = 'system_font';
-  let scoreBounds: Omit<Bounds, 'role'> | null = null;
-  const row = layout.achievement;
-  const gap = widescreen ? 34 : 30;
-  const bottom = jacketBox.y + jacketBox.height;
-  const maxNumberWidth = row.width - row.height - gap;
-  if (numberSet) {
-    const visual = spriteVisualBounds(numberSet, score, numberImage, glyphImages);
-    const native = spriteNumberLayout(numberSet, score, 1);
-    if (visual && native) {
-      const scale = Math.min(row.height / visual.height, maxNumberWidth / visual.width);
-      const baseHeight = 1 / native.scale;
-      const fullWidth = (native.width / native.scale) * scale;
-      const x = row.x - (visual.left - native.minX) * scale,
-        y = bottom - (visual.bottom - native.minY) * scale;
-      const drawn = drawSpriteNumber(
-        ctx,
-        numberImage,
-        numberSet,
-        score,
-        { x, y, width: fullWidth + 0.01, height: baseHeight * scale },
-        glyphImages,
-      );
-      if (drawn) {
-        scoreBounds = {
-          x: row.x,
-          y: bottom - visual.height * scale,
-          width: visual.width * scale,
-          height: visual.height * scale,
-        };
-        achievementStyle = 'sprite';
-      }
+  try {
+    surface.width = 1920;
+    surface.height = 1080;
+    const ctx = surface.getContext('2d');
+    if (!ctx) throw new Error('浏览器不支持封面绘制');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#e9e4ee';
+    ctx.fillRect(0, 0, 1920, 1080);
+    const background = resources.get('background');
+    if (background) fillImage(ctx, background);
+    const bounds: Bounds[] = [];
+    const record = (role: string, box: Omit<Bounds, 'role'>) => bounds.push({ role, ...box });
+    const color = PALETTE[isUtage ? 5 : (chart.difficulty ?? chart.difficulty_index)] || PALETTE[4];
+    const gameAssets: string[] = [];
+    const card = layout.card;
+    ctx.save();
+    ctx.shadowColor = '#27153635';
+    ctx.shadowBlur = 48;
+    ctx.shadowOffsetY = 18;
+    rounded(ctx, card.x, card.y, card.width, card.height, 40, 'rgba(255,255,255,.88)');
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,.94)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(card.x, card.y, card.width, card.height, 40);
+    ctx.stroke();
+    const jacketBox = layout.jacket;
+    ctx.save();
+    ctx.shadowBlur = 26;
+    ctx.shadowOffsetY = 10;
+    ctx.shadowColor = '#28163328';
+    rounded(ctx, jacketBox.x, jacketBox.y, jacketBox.width, jacketBox.height, 21, '#fff');
+    ctx.restore();
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(jacketBox.x, jacketBox.y, jacketBox.width, jacketBox.height, 21);
+    ctx.clip();
+    ctx.drawImage(jacket, jacketBox.x, jacketBox.y, jacketBox.width, jacketBox.height);
+    ctx.restore();
+    record('jacket', jacketBox);
+    function badge(key: string, label: string, box: Omit<Bounds, 'role'>, size: number) {
+      const image = resources.get(key),
+        asset = ui?.assets[key];
+      if (image && asset) {
+        record(key, contain(ctx!, image, box, asset.crop));
+        gameAssets.push(key);
+      } else
+        record(
+          key,
+          measuredText(ctx!, label, box, size, key === 'ap' || key === 'app' ? '#a36d14' : color),
+        );
     }
-  }
-  if (!scoreBounds) {
-    const fallback = measuredText(
+    if (typeKey) badge(typeKey, chart.type === 'dx' ? 'DX' : 'STD', layout.type, 35);
+    const logo = resources.get('logo');
+    if (logo && !widescreen) record('version_logo', contain(ctx, logo, layout.logo));
+    const name = chart.display_title || chart.title || '　';
+    const titleBox = layout.title;
+    const title = fitTitle(ctx, name, titleBox.width, titleBox.height, widescreen ? 108 : 76);
+    const titleTop = titleBox.y + (titleBox.height - title.lines.length * title.lineHeight) / 2;
+    ctx.font = `800 ${title.fontSize}px ${SANS}`;
+    ctx.fillStyle = '#302637';
+    ctx.textBaseline = 'top';
+    title.lines.forEach((line, index) => {
+      const y = titleTop + index * title.lineHeight;
+      ctx.fillText(line, titleBox.x, y);
+      record('title:' + index, {
+        x: titleBox.x,
+        y,
+        width: title.widths[index],
+        height: title.lineHeight,
+      });
+    });
+    ctx.textBaseline = 'alphabetic';
+    const constantBox = layout.constant;
+    const difficultyText = isUtage
+      ? 'Utage'
+      : ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master'][
+          chart.difficulty ?? chart.difficulty_index
+        ] || chart.difficulty_name;
+    const utageLevel = isUtage ? chart.level.trim().match(/^(\d+)(\+?\??)$/) : null;
+    const bodySize = widescreen ? 60 : 52;
+    const decimalSize = widescreen ? (60 * 31) / 52 : 31;
+    const superscriptSize = widescreen ? (60 * 28) / 52 : 28;
+    const [integer, decimal] = utageLevel
+      ? [utageLevel[1], '']
+      : chart.constant?.toFixed(1).split('.') || ['', ''];
+    ctx.font = `800 ${bodySize}px ${SANS}`;
+    const prefixAscent = ctx.measureText(difficultyText).actualBoundingBoxAscent;
+    const integerAscent = ctx.measureText(integer).actualBoundingBoxAscent;
+    const baseline = constantBox.y + Math.max(prefixAscent, integerAscent);
+    const prefix = visibleText(
       ctx,
-      score,
-      { x: row.x, y: bottom - row.height, width: maxNumberWidth, height: row.height },
-      92,
-      '#d5a117',
+      difficultyText,
+      constantBox.x,
+      baseline - prefixAscent,
+      bodySize,
+      color,
       800,
     );
-    scoreBounds = fallback;
+    record('constant_prefix', prefix);
+    if (utageLevel) {
+      const main = visibleText(
+        ctx,
+        integer,
+        prefix.x + prefix.width + 18,
+        baseline - integerAscent,
+        bodySize,
+        color,
+      );
+      record('utage_integer', main);
+      // The publishing form accepts utage levels with or without "+"/"?"; draw what was given.
+      if (utageLevel[2])
+        record(
+          'utage_superscript',
+          visibleText(
+            ctx,
+            utageLevel[2],
+            main.x + main.width + 5,
+            constantBox.y - 4,
+            superscriptSize,
+            color,
+          ),
+        );
+    } else if (chart.constant !== null) {
+      const main = visibleText(
+        ctx,
+        integer,
+        prefix.x + prefix.width + 18,
+        baseline - integerAscent,
+        bodySize,
+        color,
+      );
+      record('constant_integer', main);
+      const fraction = visibleText(
+        ctx,
+        '.' + decimal,
+        main.x + main.width + 3,
+        baseline - 14,
+        decimalSize,
+        color,
+      );
+      record('constant_decimal', fraction);
+      if (chart.level.includes('+'))
+        record(
+          'constant_plus',
+          visibleText(
+            ctx,
+            '+',
+            fraction.x + fraction.width + 5,
+            constantBox.y - 4,
+            superscriptSize,
+            color,
+          ),
+        );
+    }
+    if (logo && widescreen) {
+      const constantBounds = bounds.filter(
+        (box) => box.role.startsWith('constant_') || box.role.startsWith('utage_'),
+      );
+      const constantRight = Math.max(...constantBounds.map((box) => box.x + box.width));
+      const textCenter =
+        (Math.min(...constantBounds.map((box) => box.y)) +
+          Math.max(...constantBounds.map((box) => box.y + box.height))) /
+        2;
+      const right = layout.logo.x + layout.logo.width;
+      const availableWidth = Math.max(1, right - Math.max(layout.logo.x, constantRight + 18));
+      const crop = alphaBounds(logo);
+      const scale = Math.min(availableWidth / crop.width, layout.logo.height / crop.height);
+      const box = {
+        x: right - crop.width * scale,
+        y: textCenter - (crop.height * scale) / 2,
+        width: crop.width * scale,
+        height: crop.height * scale,
+      };
+      record('version_logo', contain(ctx, logo, box, crop));
+    }
+    const score = Number(raw).toFixed(4) + '%';
+    const numberImage = numberSet?.file ? glyphImages.get(numberSet.file) || null : null;
+    let achievementStyle: CoverReceipt['achievementStyle'] = 'system_font';
+    let scoreBounds: Omit<Bounds, 'role'> | null = null;
+    const row = layout.achievement;
+    const gap = widescreen ? 34 : 30;
+    const bottom = jacketBox.y + jacketBox.height;
+    const maxNumberWidth = row.width - row.height - gap;
+    if (numberSet) {
+      const visual = spriteVisualBounds(numberSet, score, numberImage, glyphImages);
+      const native = spriteNumberLayout(numberSet, score, 1);
+      if (visual && native) {
+        const scale = Math.min(row.height / visual.height, maxNumberWidth / visual.width);
+        const baseHeight = 1 / native.scale;
+        const fullWidth = (native.width / native.scale) * scale;
+        const x = row.x - (visual.left - native.minX) * scale,
+          y = bottom - (visual.bottom - native.minY) * scale;
+        const drawn = drawSpriteNumber(
+          ctx,
+          numberImage,
+          numberSet,
+          score,
+          { x, y, width: fullWidth + 0.01, height: baseHeight * scale },
+          glyphImages,
+        );
+        if (drawn) {
+          scoreBounds = {
+            x: row.x,
+            y: bottom - visual.height * scale,
+            width: visual.width * scale,
+            height: visual.height * scale,
+          };
+          achievementStyle = 'sprite';
+        }
+      }
+    }
+    if (!scoreBounds) {
+      const fallback = measuredText(
+        ctx,
+        score,
+        { x: row.x, y: bottom - row.height, width: maxNumberWidth, height: row.height },
+        92,
+        '#d5a117',
+        800,
+      );
+      scoreBounds = fallback;
+    }
+    record('achievement', scoreBounds);
+    const apImage = resources.get(apKey),
+      apAsset = ui?.assets[apKey];
+    const apSize = scoreBounds.height;
+    const apBox = {
+      x: scoreBounds.x + scoreBounds.width + gap,
+      y: bottom - apSize,
+      width: apSize,
+      height: apSize,
+    };
+    if (apImage && apAsset) {
+      const alpha = alphaBounds(apImage);
+      record(apKey, contain(ctx, apImage, apBox, alpha));
+      gameAssets.push(apKey);
+    } else if (apKey) badge(apKey, apKey === 'app' ? 'AP+' : 'AP', apBox, 46);
+    if (achievementStyle === 'system_font') notices.push('达成率暂用系统字体');
+    const cropped = options.aspect === '4:3';
+    canvas.width = cropped ? 1440 : 1920;
+    canvas.height = 1080;
+    const output = canvas.getContext('2d');
+    if (!output) throw new Error('浏览器不支持封面绘制');
+    output.drawImage(surface, cropped ? 240 : 0, 0, canvas.width, 1080, 0, 0, canvas.width, 1080);
+    return {
+      bounds,
+      notices: [...new Set(notices)],
+      gameAssets,
+      achievementStyle,
+    };
+  } finally {
+    // The full 1920px surface is scratch space; free it before the caller encodes the output.
+    releaseCanvas(surface);
   }
-  record('achievement', scoreBounds);
-  const apImage = resources.get(apKey),
-    apAsset = ui?.assets[apKey];
-  const apSize = scoreBounds.height;
-  const apBox = {
-    x: scoreBounds.x + scoreBounds.width + gap,
-    y: bottom - apSize,
-    width: apSize,
-    height: apSize,
-  };
-  if (apImage && apAsset) {
-    const alpha = alphaBounds(apImage);
-    record(apKey, contain(ctx, apImage, apBox, alpha));
-    gameAssets.push(apKey);
-  } else if (apKey) badge(apKey, apKey === 'app' ? 'AP+' : 'AP', apBox, 46);
-  if (achievementStyle === 'system_font') notices.push('达成率暂用系统字体');
-  const cropped = options.aspect === '4:3';
-  canvas.width = cropped ? 1440 : 1920;
-  canvas.height = 1080;
-  const output = canvas.getContext('2d');
-  if (!output) throw new Error('浏览器不支持封面绘制');
-  output.drawImage(surface, cropped ? 240 : 0, 0, canvas.width, 1080, 0, 0, canvas.width, 1080);
-  return {
-    bounds,
-    notices: [...new Set(notices)],
-    gameAssets,
-    achievementStyle,
-  };
 }

@@ -14,10 +14,7 @@ from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlsplit
 
-try:
-    from .jp_versions import JP_VERSION_NAMES
-except ImportError:
-    from jp_versions import JP_VERSION_NAMES
+from .jp_versions import JP_VERSION_NAMES
 
 _VERSIONS = JP_VERSION_NAMES
 _CANONICAL = {v.casefold(): v for v in _VERSIONS}
@@ -161,11 +158,6 @@ def _version(value: str | None) -> str | None:
 
 def _source_page(url: str) -> str | None:
     parsed = urlsplit(url)
-    if parsed.hostname == "web.archive.org":
-        match = re.match(r"/web/\d+(?:[a-z_]+)?/(https?://.+)", parsed.path)
-        if not match:
-            return None
-        parsed = urlsplit(match.group(1) + ("?" + parsed.query if parsed.query else ""))
     if parsed.scheme not in {"https", "http"} or not (
         parsed.hostname == "remywiki.com" or (parsed.hostname or "").endswith(".remywiki.com")
     ):

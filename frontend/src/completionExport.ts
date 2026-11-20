@@ -2,6 +2,7 @@ import type { CompletionChart } from './types';
 import { formatTimestamp } from './dateTime';
 import { COMPLETION_BADGES, completionBadgeKey } from './completionBadges';
 import { api } from './api';
+import { releaseCanvas } from './canvasRelease';
 
 interface ExportOptions {
   grouped: boolean;
@@ -524,8 +525,7 @@ async function renderStrip(
       ),
     );
   } finally {
-    canvas.width = 0;
-    canvas.height = 0;
+    releaseCanvas(canvas);
   }
 }
 

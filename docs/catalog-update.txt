@@ -2,6 +2,7 @@
 
 入口：http://127.0.0.1:8766/#settings
 启动：./start-app.sh；一个 uvicorn worker，默认仅监听本机。
+scripts/ 下的曲库模块没有命令行入口，只由后端更新任务调用（backend/catalog_updates.py）。
 
 更新顺序
 1. 获取更新锁并建立隔离暂存目录。前端继续读完整的已发布快照。

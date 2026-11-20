@@ -1,5 +1,6 @@
 import { renderCover } from './cover';
 import type { CoverChart } from './cover';
+import { releaseCanvas } from './canvasRelease';
 
 export interface BilibiliSession {
   connected: boolean;
@@ -115,7 +116,7 @@ function mirrorCover(canvas: HTMLCanvasElement) {
         if (before[x * 4 + channel] !== after[(canvas.width - 1 - x) * 4 + channel]) return null;
     return mirrored.toDataURL('image/png');
   } finally {
-    mirrored.width = mirrored.height = 0;
+    releaseCanvas(mirrored);
   }
 }
 
@@ -155,7 +156,7 @@ export async function renderPublishingImages(plan: PublishingPlan): Promise<Publ
       }
       return canvas.toDataURL('image/png');
     } finally {
-      canvas.width = canvas.height = 0;
+      releaseCanvas(canvas);
     }
   }
   // Render in sequence to bound memory on iPhone.

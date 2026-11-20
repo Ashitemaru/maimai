@@ -207,7 +207,7 @@ class RemyHtmlTests(unittest.TestCase):
                 self.assertTrue(result["issues"])
         self.assertEqual(parse_version_page(html, URL, version="FESTiVAL")["issues"], [])
 
-    def test_archive_source_and_dx_aliases(self):
+    def test_dx_aliases(self):
         base = "<table>" + HEADER + DATE + row() + "</table>"
         for name, label, expected in [
             ("1st", "maimai でらっくす", "DX"),
@@ -216,10 +216,7 @@ class RemyHtmlTests(unittest.TestCase):
             html = page(base, identity="maimai_DX:" + name).replace(
                 "maimai でらっくす FESTiVAL", label
             )
-            source = (
-                "https://web.archive.org/web/20260929001815id_/https://silentblue.remywiki.com/maimai_DX:"
-                + name
-            )
+            source = "https://silentblue.remywiki.com/maimai_DX:" + name
             result = parse_version_page(html, source)
             self.assertEqual(result["issues"], [])
             self.assertEqual(result["version"], expected)

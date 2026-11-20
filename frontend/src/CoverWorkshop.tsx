@@ -11,6 +11,7 @@ import { downloadImage, needsSaveGesture, prepareImage } from './imageSave';
 import type { PreparedImage } from './imageSave';
 import { useToastMessage } from './Toast';
 import { chartName } from './chartLabels';
+import { releaseCanvas } from './canvasRelease';
 export interface CoverState {
   chart: Chart | null;
   score: string;
@@ -100,6 +101,7 @@ export function CoverPage({
         if (!cancelled) setError(messageOf(error));
       })
       .finally(() => {
+        releaseCanvas(temporary);
         if (!cancelled) setRendering(false);
       });
     return () => {
@@ -142,7 +144,7 @@ export function CoverPage({
     } catch (error) {
       if (generation === exportGeneration.current) notify(messageOf(error));
     } finally {
-      output.width = output.height = 0;
+      releaseCanvas(output);
       if (generation === exportGeneration.current) setExporting(false);
     }
   }

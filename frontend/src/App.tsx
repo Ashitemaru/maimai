@@ -365,14 +365,19 @@ function Detail({
           venue: submittedVenue,
         }),
       });
-      await onSaved();
-      if (active.current) onClose();
-      notify('已加入待核记录');
     } catch (error) {
       showError(error);
-    } finally {
       if (active.current) setBusy(false);
+      return;
     }
+    committed('已加入待核记录');
+  }
+  // The write already advanced the server revision, so this drawer's revision is stale:
+  // close it before refreshing, and report a failed refresh without reopening a stale form.
+  function committed(message: string) {
+    if (active.current) onClose();
+    notify(message);
+    onSaved().catch((error) => notify('记录已保存，但列表刷新失败：' + messageOf(error)));
   }
   async function reset() {
     if (busy || conflicted) return;
@@ -385,14 +390,12 @@ function Detail({
           new URLSearchParams({ expected_revision: String(c.record_revision ?? 0) }),
         { method: 'DELETE' },
       );
-      await onSaved();
-      if (active.current) onClose();
-      notify('已取消待核记录');
     } catch (error) {
       showError(error);
-    } finally {
       if (active.current) setBusy(false);
+      return;
     }
+    committed('已取消待核记录');
   }
   async function reload() {
     setBusy(true);

@@ -8,13 +8,8 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from copy import deepcopy
 
-try:
-    from .catalog_versions import exact_identity, fingerprint, normalize
-except ImportError:
-    from catalog_versions import exact_identity, fingerprint, normalize
-
+from .catalog_versions import fingerprint, normalize
 
 GENRES = {
     "maimai": ("maimai", "舞萌"),
@@ -93,43 +88,30 @@ def _value(field, value, kind=None):
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _object_fingerprint(song, field_key):
-    return fingerprint(
+def _option(source, external_id, path, raw_value, value, identity):
+    # The option ID hashes the full source context so a choice names one exact source value.
+    proof = fingerprint(
         {
-            "song_id": song["id"],
-            "title": song["title"],
-            "artist": song["artist"],
-            "field_key": field_key,
+            "source": source,
+            "external_id": str(external_id),
+            "source_path": path,
+            "value": value,
+            "raw_value": raw_value,
+            "identity": identity,
         }
     )
-
-
-def _option(source, external_id, path, raw_value, value, identity, *, match="matched"):
-    evidence = {
-        "source": source,
-        "external_id": str(external_id),
-        "source_path": path,
-        "value": value,
-        "raw_value": raw_value,
-        "identity": identity,
-    }
-    proof = fingerprint(evidence)
     return {
         "option_id": source + ":" + proof[:32],
         "source": source,
         "external_id": str(external_id),
-        "value": deepcopy(value),
-        "raw_value": deepcopy(raw_value),
+        "value": value,
         "source_path": path,
         "evidence_fingerprint": proof,
-        "identity_match": match,
-        "selectable": True,
     }
 
 
-def _field(song, field_key, field, raw_default, scope, *, chart=None):
+def _field(song, field_key, field, raw_default, *, chart=None):
     kind = chart["type"] if chart else None
-    normalized = _value(field, raw_default, kind)
     original_field = {"constant": "level_value"}.get(field, field)
     path = (
         f"difficulties.{kind}[{chart['difficulty']}].{original_field}" if chart else original_field
@@ -142,103 +124,50 @@ def _field(song, field_key, field, raw_default, scope, *, chart=None):
         "difficulty_index": chart["difficulty"] if chart else None,
     }
     # LXNS remains selectable even if its canonical absence is represented by an empty string.
-    option = _option("lxns", song["id"], path, raw_default, normalized, identity)
+    option = _option(
+        "lxns", song["id"], path, raw_default, _value(field, raw_default, kind), identity
+    )
     return {
         "field_key": field_key,
         "label": LABELS[field],
-        "scope": scope,
+        "scope": "chart" if chart else "song",
         "chart_key": f"{song['id']}:{kind}:{chart['difficulty']}" if chart else None,
         "type": kind,
-        "difficulty_index": chart["difficulty"] if chart else None,
         "semantic_domain": "cn_chart" if chart else "shared_metadata",
-        "object_key": f"field:{song['id']}:{field_key}",
-        "object_fingerprint": _object_fingerprint(song, field_key),
-        "current": {"value": deepcopy(raw_default), "source": "lxns", "status": "resolved"},
-        "automatic": {"value": deepcopy(raw_default), "source": "lxns"},
         "options": [option],
-        "source_context_fingerprints": [option["evidence_fingerprint"]],
-        "current_option_id": option["option_id"],
-        "recommended_option_id": option["option_id"],
-        "selectable": True,
-        "status": "resolved",
-        "has_difference": False,
-        "decision": None,
         "reasons": [],
     }
 
 
-def _arcade_record_membership(song, rows, version_items):
-    """Choose identities per chart format, retaining excluded raw rows for audit."""
-    included = defaultdict(dict)
-    version_items = {
-        item["type"]: item for item in version_items if item["scope"] == "ordinary_format"
-    }
-    for kind in ("standard", "dx", "utage"):
-        if not song["difficulties"].get(kind):
-            continue
-        source_type = "std" if kind == "standard" else kind
-        typed_rows = [
-            r for r in rows if any(s.get("type") == source_type for s in r.get("sheets", []))
-        ]
-        item = version_items.get(kind)
-        if item:
-            exact = exact_identity(item["candidates"], song["title"], song["artist"])
-            exact_ids = {c["external_id"] for c in exact if c["source"] == "arcade_songs"}
-            if exact_ids:
-                chosen = exact_ids
-                match = "matched" if len(exact_ids) == 1 else "identity_ambiguous"
-            else:
-                chosen = {
-                    c["external_id"] for c in item["candidates"] if c["source"] == "arcade_songs"
-                }
-                match = "identity_ambiguous" if len(exact_ids) > 1 else "artist_mismatch"
-        else:
-            exact = [r for r in typed_rows if normalize(r["artist"]) == normalize(song["artist"])]
-            chosen = {r["songId"] for r in exact} or {r["songId"] for r in typed_rows}
-            match = (
-                "matched"
-                if len(exact) == 1
-                else "identity_ambiguous"
-                if len(exact) > 1
-                else "artist_mismatch"
-            )
-        for row in typed_rows:
-            if row["songId"] in chosen:
-                included[row["songId"]][kind] = match
-    return included
+def _add_divingfish(fields, field_key, external_id, path, raw_value, identity):
+    field = fields[field_key]
+    name = field_key.rsplit(":", 1)[-1] if field["scope"] == "chart" else field_key.split(".")[-1]
+    value = _value(name, raw_value, field["type"])
+    if value is None:
+        return
+    option = _option("divingfish", external_id, path, raw_value, value, identity)
+    if not any(existing["option_id"] == option["option_id"] for existing in field["options"]):
+        field["options"].append(option)
 
 
-def build_record_review(
-    lxns,
-    fish,
-    arcade,
-    version_review=None,
-    decision_revision=0,
-):
-    """Compare complete local song records; retain distinct region/scope meanings."""
-    fish_by_id, arcade_by_title = defaultdict(list), defaultdict(list)
+def build_record_review(lxns, fish, version_review=None):
+    """Per-song field candidates from LXNS/Diving-Fish values and JP version evidence.
+
+    Only the inputs of the chart compiler are produced: each field's key, label,
+    scope/type, semantic domain, distinct source options and version reasons.
+    """
+    fish_by_id = defaultdict(list)
     for row in fish or []:
         fish_by_id[str(row.get("id"))].append(row)
-    for row in (arcade or {}).get("songs", []):
-        arcade_by_title[normalize(row.get("title", ""))].append(row)
     version_by_song = defaultdict(list)
     for item in (version_review or {}).get("items", []):
-        version_by_song[item["song_id"]].append(deepcopy(item))
+        version_by_song[item["song_id"]].append(item)
     records = []
     for song in lxns.get("songs", []):
         sid = song["id"]
         fields = {
-            f"song.{name}": _field(song, f"song.{name}", name, song[name], "song")
-            for name in SONG_FIELDS
+            f"song.{name}": _field(song, f"song.{name}", name, song[name]) for name in SONG_FIELDS
         }
-        source_records = [
-            {
-                "source": "lxns",
-                "external_id": str(sid),
-                "record": deepcopy(song),
-                "identity_match": "authority",
-            }
-        ]
         fish_matches = []
         for kind, charts in song["difficulties"].items():
             if not charts:
@@ -250,178 +179,63 @@ def build_record_review(
                     if name == "constant" and kind == "utage" and original == 0:
                         original = None
                     field_key = f"chart:{key}:{name}"
-                    fields[field_key] = _field(
-                        song, field_key, name, original, "chart", chart=chart
-                    )
+                    fields[field_key] = _field(song, field_key, name, original, chart=chart)
             expected = str(sid + 10000 if kind == "dx" else sid)
             expected_type = "SD" if kind == "standard" else "DX"
-            for row in fish_by_id[expected]:
-                if row.get("type") == expected_type:
-                    fish_matches.append((kind, row))
-                    source_records.append(
-                        {
-                            "source": "divingfish",
-                            "external_id": str(row["id"]),
-                            "type": kind,
-                            "identity_match": "id_and_type",
-                            "record": deepcopy(row),
-                        }
-                    )
-        same_title = arcade_by_title[normalize(song["title"])]
-        membership = _arcade_record_membership(song, same_title, version_by_song[sid])
-        for row in same_title:
-            kinds = {
-                "standard" if s.get("type") == "std" else s.get("type")
-                for s in row.get("sheets", [])
-            }
-            if not any(song["difficulties"].get(kind) for kind in kinds):
-                continue
-            selected_types = membership[row["songId"]]
-            match = next(iter(selected_types.values()), "excluded_same_title")
-            source_records.append(
-                {
-                    "source": "arcade_songs",
-                    "external_id": row["songId"],
-                    "identity_match": match,
-                    "comparison_eligible": bool(selected_types),
-                    "comparison_types": sorted(selected_types),
-                    "record": deepcopy(row),
-                }
+            fish_matches.extend(
+                (kind, row) for row in fish_by_id[expected] if row.get("type") == expected_type
             )
-
-        def add(
-            field_key,
-            source,
-            external_id,
-            path,
-            raw_value,
-            identity,
-            match="matched",
-            *,
-            target_fields=fields,
-        ):
-            field = target_fields[field_key]
-            name = (
-                field_key.rsplit(":", 1)[-1]
-                if field["scope"] == "chart"
-                else field_key.split(".")[-1]
-            )
-            value = _value(name, raw_value, field["type"])
-            if value is None:
-                return
-            option = _option(source, external_id, path, raw_value, value, identity, match=match)
-            field["source_context_fingerprints"].append(option["evidence_fingerprint"])
-            if not any(
-                existing["option_id"] == option["option_id"] for existing in field["options"]
-            ):
-                field["options"].append(option)
-
         for kind, row in fish_matches:
             info = row.get("basic_info", {})
             identity = {"title": row.get("title"), "artist": info.get("artist"), "type": kind}
             for name in SONG_FIELDS:
                 value = row.get("title") if name == "title" else info.get(name)
-                add(
-                    f"song.{name}",
-                    "divingfish",
-                    row["id"],
-                    "title" if name == "title" else f"basic_info.{name}",
-                    value,
-                    identity,
-                    "id_and_type",
-                )
+                path = "title" if name == "title" else f"basic_info.{name}"
+                _add_divingfish(fields, f"song.{name}", row["id"], path, value, identity)
+            if kind == "utage":
+                continue  # UTAGE level/constant/notes are LXNS-only.
             for chart in song["difficulties"][kind]:
                 index = chart["difficulty"]
                 key = f"{sid}:{kind}:{index}"
                 for name, array in (("level", "level"), ("constant", "ds")):
-                    if kind != "utage" and index < len(row.get(array, [])):
-                        add(
+                    if index < len(row.get(array, [])):
+                        _add_divingfish(
+                            fields,
                             f"chart:{key}:{name}",
-                            "divingfish",
                             row["id"],
                             f"{array}[{index}]",
                             row[array][index],
                             identity,
-                            "id_and_type",
                         )
-                if kind != "utage" and index < len(row.get("charts", [])):
+                if index < len(row.get("charts", [])):
                     for name, source_name in (("note_designer", "charter"), ("notes", "notes")):
-                        add(
+                        _add_divingfish(
+                            fields,
                             f"chart:{key}:{name}",
-                            "divingfish",
                             row["id"],
                             f"charts[{index}].{source_name}",
                             row["charts"][index].get(source_name),
                             identity,
-                            "id_and_type",
                         )
-        for field in fields.values():
-            field["source_context_fingerprint"] = fingerprint(
-                sorted(set(field.pop("source_context_fingerprints")))
-            )
-            values = {fingerprint(option["value"]) for option in field["options"]}
-            field["has_difference"] = len(values) > 1
-            field["status"] = "pending" if field["has_difference"] else "resolved"
-            field["current"]["status"] = field["status"]
-        identities = version_by_song[sid]
-        for item in identities:
-            object_key = item["object_key"]
-            fields["version:" + object_key] = {
-                "field_key": "version:" + object_key,
+        for item in version_by_song[sid]:
+            field_key = "version:" + item["object_key"]
+            fields[field_key] = {
+                "field_key": field_key,
                 "label": "日服追加版本 / 日期",
                 "scope": item["scope"],
-                "chart_key": object_key if item["scope"] == "chart" else None,
                 "type": item["type"],
-                "difficulty_index": item["difficulty_index"],
                 "semantic_domain": "jp_release",
-                "version_object_key": object_key,
-                "object_fingerprint": item["object_fingerprint"],
-                "current": {
-                    "value": {
-                        "version": item["current"]["version"],
-                        "date": item["current"]["date"],
-                    },
-                    "source": item["current"]["provider"],
-                    "status": item["current"]["status"],
-                },
                 "options": [
                     {
                         "option_id": c["candidate_id"],
-                        "candidate_id": c["candidate_id"],
                         "source": c["source"],
                         "external_id": c["external_id"],
                         "value": {"version": c["version"], "date": c["date"]},
                         "evidence_fingerprint": c["evidence_fingerprint"],
-                        "selectable": bool(c["version"]),
                     }
                     for c in item["candidates"]
                 ],
-                "selectable": True,
-                "status": item["status"],
-                "has_difference": item["status"] in ("pending", "conflict"),
-                "decision": None,
                 "reasons": item["reasons"],
             }
-            field = fields["version:" + object_key]
-            matching = [o for o in field["options"] if o["value"] == field["current"]["value"]]
-            field["current_option_id"] = matching[0]["option_id"] if len(matching) == 1 else None
-            field["recommended_option_id"] = (
-                field["current_option_id"] if item["status"] == "resolved" else None
-            )
-        records.append(
-            {
-                "song_id": sid,
-                "title": song["title"],
-                "artist": song["artist"],
-                "status": "resolved",
-                "source_identity": {k: song[k] for k in ("id", "title", "artist")},
-                "fields": list(fields.values()),
-                "identities": identities,
-                "source_records": source_records,
-            }
-        )
-    return {
-        "schema_version": 1,
-        "decision_revision": decision_revision,
-        "records": records,
-    }
+        records.append({"song_id": sid, "fields": list(fields.values())})
+    return {"records": records}

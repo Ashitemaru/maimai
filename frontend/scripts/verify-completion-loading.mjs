@@ -294,6 +294,9 @@ try {
   await drawer.getByRole('button', { name: '保存待核记录', exact: true }).click();
   await drawer.waitFor({ state: 'detached' });
   await first.getByLabel('待核实', { exact: true }).waitFor();
+  // The drawer closes as soon as the write succeeds; the list refresh follows it.
+  for (let i = 0; i < 50 && !count(requests.slice(writeStart), '/api/completion-table'); i++)
+    await pause(100);
   await settle();
   assert.equal(count(requests.slice(writeStart), '/api/completion-table'), 1);
   assert.equal(count(requests.slice(writeStart), '/api/chart-filters'), 0);

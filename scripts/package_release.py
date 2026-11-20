@@ -20,7 +20,6 @@ if __package__ in (None, ""):
 from deploy.deploy_release import dependency_bundle  # noqa: E402
 
 CORE_SCRIPTS = {
-    "build_catalog.py",
     "catalog_chart_compiler.py",
     "catalog_pipeline.py",
     "catalog_policy.py",
@@ -29,7 +28,6 @@ CORE_SCRIPTS = {
     "jp_versions.py",
     "remy_html.py",
     "remy_release.py",
-    "validate_catalog.py",
 }
 REQUIRED_FILES = (
     "frontend/dist/index.html",
