@@ -240,6 +240,25 @@ try {
           ],
         });
       }
+      if (pathname === '/api/bilibili/stale')
+        return send({
+          connected,
+          collections: [{ id: 3, title: 'AP collection', sections: [{ id: 8, title: '13.0' }] }],
+          items: [
+            [plusBvid, 'app', '100.5000'],
+            [ordinaryBvid, 'ap', null],
+          ].map(([id, combo, achievement]) => ({
+            bvid: id,
+            title: `【maimai】Our Wrenally Expert12.9 ${combo === 'app' ? 'AP+' : 'AP'}`,
+            proposed_title: `【maimai】Our Wrenally Expert13.0 ${combo === 'app' ? 'AP+' : 'AP'}`,
+            reasons: [{ code: 'constant', text: '定数 12.9 → 13.0，需移入对应合集小节' }],
+            chart_key: chart.chart_key,
+            combo,
+            achievement,
+            constant_old: '12.9',
+            constant_new: '13.0',
+          })),
+        });
       if (pathname === '/api/bilibili/jobs')
         return send({ items: persistedJob ? [persistedJob] : [] });
       if (pathname === '/api/bilibili/jobs/job-1')
@@ -318,6 +337,17 @@ try {
           revision: 'fixture',
           main: { status: 'succeeded', warnings: [], diff: {} },
           remy: { status: 'complete', pending_count: 0, verified_count: 0, updated_count: 0 },
+        },
+        '/api/catalog/records/review': {
+          revision: 'fixture',
+          decision_revision: 0,
+          records: [],
+          counts: { admitted: 1, pending: 0 },
+        },
+        '/api/catalog/records/decisions': {
+          revision: 'fixture',
+          decision_revision: 0,
+          records: [],
         },
         '/api/chart-filters': { constants: [13], versions: [], cn_versions: [] },
         '/api/venues': { items: [] },
@@ -647,6 +677,27 @@ try {
       'Do not reverse arbitrary video titles',
     );
     assert.equal(applied.length, 1, 'AP+ previews must not trigger an extra publish');
+    const preparedBefore = prepared.length;
+    await page.goto(origin + '/#settings');
+    const stale = page.getByRole('region', { name: 'B 站稿件待更新' });
+    await stale.getByText('【maimai】Our Wrenally Expert13.0 AP+', { exact: true }).waitFor();
+    assert.equal(prepared.length, preparedBefore, 'Listing stale videos must not prepare');
+    await stale.getByRole('checkbox').nth(0).check();
+    await stale.getByRole('checkbox').nth(1).check();
+    await stale.getByLabel(`${ordinaryBvid} 录像达成率`).fill(expectedAchievement);
+    await stale.getByRole('button', { name: '预览', exact: true }).click();
+    await stale.getByAltText(`${ordinaryBvid} 16:9 封面预览`).waitFor();
+    assert.deepEqual(
+      prepared.slice(preparedBefore).map((item) => [item.bvid, item.constant, item.combo]),
+      [
+        [plusBvid, '13.0', 'app'],
+        [ordinaryBvid, '13.0', 'ap'],
+      ],
+    );
+    assert.equal(applied.length, 1, 'Stale preview must not apply');
+    await stale.getByRole('button', { name: '确认更新', exact: true }).click();
+    await stale.getByText('待确认结果 · 模拟网络中断', { exact: true }).waitFor();
+    assert.equal(applied.length, 2, 'Sequential apply stops at the first failure');
     checks.push({
       width,
       loginLifecycle,
@@ -661,6 +712,7 @@ try {
       legacyPlanWithoutOrderBlocked: true,
       apPlusVideoTitleAndBothCovers: true,
       explicitComboPreserved: true,
+      staleVideosReviewed: true,
     });
     await context.close();
   }

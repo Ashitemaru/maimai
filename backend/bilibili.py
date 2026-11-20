@@ -15,6 +15,7 @@ import unicodedata
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -35,6 +36,7 @@ from .bilibili_client import (
 from .bilibili_order import (
     DIFFICULTIES,
     MIRROR_BVID,
+    TITLE,
     ChartResolver,
     chart_identity,
     order_report,
@@ -68,7 +70,20 @@ class ApplyInput(BaseModel):
     cover43: str = Field(max_length=MAX_BODY)
 
 
-def title_for(chart, body, original):
+def chart_ids(charts):
+    return {int(c["chart_key"].split(":")[0]) for c in charts}
+
+
+def has_both_types(ids, chart):
+    """The song has both a STD (id) and a DX (id + 10000) chart."""
+    if chart.get("type") not in ("standard", "dx"):
+        return False
+    ident = int(chart["chart_key"].split(":")[0])
+    standard = ident - 10000 if chart["type"] == "dx" else ident
+    return {standard, standard + 10000} <= ids
+
+
+def title_for(chart, body, original, both_types=False):
     if body.bvid == MIRROR_BVID:
         token = re.match(r"^(?:\+PA|PA)(?=\s)", original)
         if token is None:
@@ -87,7 +102,7 @@ def title_for(chart, body, original):
             difficulty = DIFFICULTIES[index]
         marker = re.search(r"\[(?:STD|DX)\]\s+(?:Basic|Advanced|Expert|Master|Re:Master)", original)
         suffix = ""
-        if marker and not is_utage:
+        if (marker or both_types) and not is_utage:
             suffix = "[DX]" if chart.get("type") == "dx" else "[STD]"
         title = f"【maimai】{chart.get('display_title') or chart['title']}{suffix} {difficulty}{body.constant} {'AP+' if body.combo == 'app' else 'AP'}"
     if not title or len(title) > 80 or any(ord(c) < 32 for c in title):
@@ -349,6 +364,83 @@ class BilibiliService:
             "combo": title_combo(archive.get("title", ""), bvid),
         }
 
+    def _recorded_achievements(self, account_mid):
+        """Achievement on the cover of each video's latest completed job."""
+        with self.store.db() as db:
+            rows = db.execute(
+                "SELECT j.payload,p.payload FROM bilibili_jobs j JOIN bilibili_plans p "
+                "USING(plan_id) WHERE j.account_mid=? ORDER BY j.updated_at",
+                (account_mid,),
+            ).fetchall()
+        result = {}
+        for job, plan in rows:
+            job, plan = json.loads(job), json.loads(plan)
+            if job["state"] == "complete":
+                result[job["bvid"]] = plan["achievement"]
+        return result
+
+    def stale(self):
+        """Bound videos whose title no longer matches the current catalog. Read-only."""
+        if self._session() is None:
+            return {"connected": False, "items": [], "collections": []}
+        with self.client() as (client, account):
+            listing = self._listing(client, account, refresh=True)
+        bindings = self._bindings(account["mid"])
+        achievements = self._recorded_achievements(account["mid"])
+        charts = self.store.all_charts()
+        ids = chart_ids(charts)
+        by_key = {c["chart_key"]: c for c in charts}
+        items = []
+        for video in listing["items"]:
+            bvid, title = video["bvid"], video["title"]
+            chart = by_key.get((bindings.get(bvid) or {}).get("chart_key"))
+            match = TITLE.fullmatch(title)
+            # The mirrored title only carries the PA prefix, which follows the recording.
+            if bvid == MIRROR_BVID or chart is None or match is None:
+                continue
+            old = match["constant"]
+            if chart["type"] == "utage":
+                new = old
+            elif chart.get("constant") is None:
+                continue
+            else:
+                new = f"{chart['constant']:.1f}"
+            combo = title_combo(title, bvid)
+            both = has_both_types(ids, chart)
+            try:
+                proposed = title_for(
+                    chart, SimpleNamespace(bvid=bvid, combo=combo, constant=new), title, both
+                )
+            except BilibiliError:
+                continue
+            if proposed == title:
+                continue
+            reasons = []
+            if new != old:
+                reasons.append(
+                    {"code": "constant", "text": f"定数 {old} → {new}，需移入对应合集小节"}
+                )
+            if both and not re.search(r"\[(?:STD|DX)\] ", title):
+                reasons.append(
+                    {"code": "chart_type", "text": "同曲已有 STD 和 DX 谱面，需标注制式"}
+                )
+            if not reasons:
+                reasons.append({"code": "title", "text": "曲名或标题格式与曲库不一致"})
+            items.append(
+                {
+                    "bvid": bvid,
+                    "title": title,
+                    "proposed_title": proposed,
+                    "reasons": reasons,
+                    "chart_key": chart["chart_key"],
+                    "combo": combo,
+                    "achievement": achievements.get(bvid),
+                    "constant_old": old,
+                    "constant_new": new,
+                }
+            )
+        return {"connected": True, "items": items, "collections": listing["collections"]}
+
     def bind_chart(self, account_mid, bvid, chart, observed_title):
         """Save the user's chart selection; never imports an old candidate version."""
         binding = {
@@ -508,7 +600,9 @@ class BilibiliService:
                 "plan_id": plan_id,
                 "bvid": body.bvid,
                 "old_title": original,
-                "title": title_for(chart, body, original),
+                "title": title_for(
+                    chart, body, original, has_both_types(chart_ids(self.store.all_charts()), chart)
+                ),
                 "chart": chart,
                 "achievement": f"{achievement:.4f}",
                 "combo": body.combo,
@@ -959,6 +1053,10 @@ def bilibili_router(service):
     @router.get("/videos")
     def videos(page: int = Query(default=1, ge=1, le=100)):
         return call(service.videos, page)
+
+    @router.get("/stale")
+    def stale():
+        return call(service.stale)
 
     @router.get("/videos/{bvid}")
     def video(bvid: str):

@@ -145,7 +145,75 @@ class ChartCompilerTests(unittest.TestCase):
             {"schema_version": 2, "revision": 2, "decisions": []},
         )
         self.compile()
-        self.assertNotIn(1, {c["id"] for c in self.read("catalog.json")["charts"]})
+        # Revoking a published chart keeps its published values while it awaits review.
+        chart = next(c for c in self.read("catalog.json")["charts"] if c["id"] == 1)
+        self.assertEqual(
+            (chart["artist"], chart["constant"], chart["level"]), ("Other Artist", 14.4, "14")
+        )
+        row = next(r for r in self.read("catalog_record_review.json")["records"] if r["id"] == 1)
+        self.assertEqual((row["status"], row.get("published")), ("pending", True))
+
+    def fish(self, sid, constant, level="13"):
+        return {
+            "id": str(sid),
+            "title": f"Song {sid}",
+            "type": "SD",
+            "ds": [1, 2, 3, constant],
+            "level": ["1", "2", "3", level],
+            "basic_info": {"title": f"Song {sid}", "artist": "Artist", "bpm": 120.0},
+            "charts": [{"notes": [1, 0, 0, 0], "charter": "Designer"} for _ in range(4)],
+        }
+
+    def update_sources(self, lxns, fish):
+        self.responses["lxns_songs.json"] = document(lxns)
+        self.responses["divingfish_music_data.json"] = fish
+        self.prepare()
+        self.compile()
+        review = {
+            (r["id"], r["difficulty"]): r
+            for r in self.read("catalog_record_review.json")["records"]
+        }
+        return {c["chart_key"]: c for c in self.read("catalog.json")["charts"]}, review
+
+    def test_published_chart_keeps_previous_values_while_sources_disagree(self):
+        charts, _ = self.update_sources([song(1)], [self.fish(1, 13.0)])
+        self.assertEqual(charts["1:3"]["constant"], 13.0)
+        # LXNS updates first; Diving-Fish lags. A brand-new conflicting chart also appears.
+        charts, review = self.update_sources(
+            [song(1, 13.4), song(3)], [self.fish(1, 13.0), self.fish(3, 12.5)]
+        )
+        self.assertEqual(charts["1:3"]["constant"], 13.0)
+        self.assertEqual(charts["1:3"]["admission_status"], "admitted")
+        self.assertEqual(review[(1, 3)]["status"], "pending")
+        self.assertTrue(review[(1, 3)]["published"])
+        self.assertEqual([f["field_key"] for f in review[(1, 3)]["fields"]], ["constant"])
+        self.assertNotIn("3:3", charts)
+        self.assertEqual(review[(3, 3)]["status"], "pending")
+        self.assertNotIn("published", review[(3, 3)])
+        self.assertEqual(self.read("catalog.json")["counts"]["pending"], 2)
+        # Once the sources agree again the new value is published.
+        charts, review = self.update_sources([song(1, 13.4)], [self.fish(1, 13.4)])
+        self.assertEqual(charts["1:3"]["constant"], 13.4)
+        self.assertEqual(review[(1, 3)]["status"], "resolved")
+
+    def test_numeric_choice_yields_when_sources_agree_on_another_value(self):
+        self.update_sources([song(1)], [self.fish(1, 14.4)])
+        decisions = self.choices()
+        self.assertEqual([d["field_key"] for d in decisions], ["constant"])
+        atomic_json(
+            self.stage / "catalog_adjudications.json",
+            {"schema_version": 2, "revision": 1, "decisions": decisions},
+        )
+        charts, _ = self.update_sources([song(1, 13.0)], [self.fish(1, 14.4)])
+        self.assertEqual(charts["1:3"]["constant"], 14.4)
+        # Diving-Fish missing is not agreement; the choice still applies.
+        charts, _ = self.update_sources([song(1, 13.0)], [])
+        self.assertEqual(charts["1:3"]["constant"], 14.4)
+        charts, review = self.update_sources([song(1, 13.8)], [self.fish(1, 13.8)])
+        self.assertEqual(charts["1:3"]["constant"], 13.8)
+        self.assertNotIn("constant", charts["1:3"]["field_decisions"])
+        self.assertEqual(review[(1, 3)]["decisions"], [])
+        self.assertEqual(review[(1, 3)]["status"], "resolved")
 
     def test_new_different_field_conflict_gates_without_reopening_decided_fields(self):
         self.with_comparable_sources()

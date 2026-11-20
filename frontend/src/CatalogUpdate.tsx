@@ -1,3 +1,4 @@
+import { BilibiliStale } from './BilibiliStale';
 import { CatalogChanges } from './CatalogChanges';
 import { CatalogReview } from './CatalogReview';
 import { formatTimestamp } from './dateTime';
@@ -93,6 +94,7 @@ export function CatalogUpdatePanel({ control }: { control: CatalogUpdateControl 
           </div>
         )}
         {state && hasChanges && <CatalogChanges revision={state.revision} />}
+        {state?.main.status === 'succeeded' && <BilibiliStale revision={state.revision} />}
         <div className="catalog-verification">
           <div>
             <strong>Re:MASTER 版本</strong>

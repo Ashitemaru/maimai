@@ -130,6 +130,7 @@ try {
       '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
       '/api/settings/divingfish': { configured, source: configured ? 'local' : null, sync: null },
       '/api/catalog/update': catalog,
+      '/api/bilibili/stale': { connected: true, items: [], collections: [] },
       '/api/catalog/records/review': {
         revision: catalog.revision,
         decision_revision: 0,

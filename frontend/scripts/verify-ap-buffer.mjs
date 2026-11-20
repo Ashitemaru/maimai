@@ -288,6 +288,7 @@ try {
       '/api/settings/divingfish': { configured: true, source: 'local', sync: null },
       '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
       '/api/catalog/update': catalog,
+      '/api/bilibili/stale': { connected: true, items: [], collections: [] },
       '/api/catalog/records/review': {
         revision: catalog.revision,
         decision_revision: 0,

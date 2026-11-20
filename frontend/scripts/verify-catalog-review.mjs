@@ -222,6 +222,7 @@ await page.route('**/api/**', async (route) => {
     // A new version token per request keeps every focus refresh of the original fixture.
     '/api/version': { token: crypto.randomUUID() },
     '/api/settings/divingfish': { configured: false, sync: null },
+    '/api/bilibili/stale': { connected: false, items: [], collections: [] },
     '/api/venues': { items: [] },
     '/api/ap-records': { items: [], count: 0 },
     '/api/chart-filters': { constants: [1, 13.9, 15], versions: [] },
@@ -473,6 +474,10 @@ try {
   assert.equal(await entries().locator('input:checked').count(), 0);
   assert.equal(await review().locator('[role=alert]').count(), 0);
   assert.equal(posts.length, 1);
+  await page
+    .getByRole('region', { name: 'B 站稿件待更新' })
+    .getByText('未连接 B 站', { exact: true })
+    .waitFor();
   checks.push(
     'One modal confirmation sends one atomic batch; spinner/disabled controls prevent duplicates; only selected charts disappear',
   );

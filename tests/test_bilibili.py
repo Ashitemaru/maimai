@@ -22,6 +22,8 @@ from backend.bilibili import (
     BilibiliService,
     PrepareInput,
     bilibili_router,
+    chart_ids,
+    has_both_types,
     title_for,
     validate_png,
 )
@@ -412,6 +414,50 @@ class BilibiliServiceTests(unittest.TestCase):
         with self.service.operation(), self.assertRaises(BilibiliError):
             self.service.start_login()
 
+    def stale_titles(self, title):
+        self.client.data["archive"]["title"] = title
+        self.client.videos = lambda page: {
+            "items": [{"bvid": BV, "aid": 456, "title": title, "created_at": 1}],
+            "has_more": False,
+        }
+        return self.service.stale()
+
+    def test_stale_lists_constant_change_with_recorded_facts(self):
+        self.service.bind_chart(1234, BV, self.store.chart_value, "【maimai】Example Master13.9 AP")
+        self.assertEqual(self.stale_titles("【maimai】Example Master13.9 AP")["items"], [])
+        self.client.data["archive"]["title"] = "【maimai】Example Master13.9 AP+"
+        plan = self.service.prepare(preparation().model_copy(update={"combo": "app"}))
+        self.assertEqual(self.apply(plan)["state"], "complete")
+        calls = list(self.client.calls)
+        self.store.chart_value["constant"] = 14.0
+        result = self.stale_titles("【maimai】Example Master13.9 AP+")
+        self.assertTrue(result["connected"])
+        self.assertEqual(self.client.calls, calls)
+        [item] = result["items"]
+        self.assertEqual(item["proposed_title"], "【maimai】Example Master14.0 AP+")
+        self.assertEqual(
+            (item["combo"], item["achievement"], item["constant_old"], item["constant_new"]),
+            ("app", "100.4567", "13.9", "14.0"),
+        )
+        self.assertEqual([r["code"] for r in item["reasons"]], ["constant"])
+        self.assertEqual(result["collections"][0]["sections"][1]["title"], "14.0")
+
+    def test_stale_lists_new_dx_sibling_and_skips_unbound_or_mirror(self):
+        self.assertEqual(self.stale_titles("【maimai】Example Master13.9 AP")["items"], [])
+        self.service.bind_chart(1234, BV, self.store.chart_value, "【maimai】Example Master13.9 AP")
+        self.store.extra_charts = [
+            self.store.chart_value | {"chart_key": "10123:3", "type": "dx", "constant": 14.2}
+        ]
+        [item] = self.stale_titles("【maimai】Example Master13.9 AP")["items"]
+        self.assertEqual(item["proposed_title"], "【maimai】Example[STD] Master13.9 AP")
+        self.assertEqual([r["code"] for r in item["reasons"]], ["chart_type"])
+        self.assertIsNone(item["achievement"])
+        self.assertEqual(self.stale_titles("【maimai】Example[STD] Master13.9 AP")["items"], [])
+
+    def test_stale_without_bilibili_login_is_a_state(self):
+        self.service.disconnect()
+        self.assertEqual(self.service.stale(), {"connected": False, "items": [], "collections": []})
+
     def test_ap_plus_perfect_score_allowed(self):
         body = preparation().model_copy(update={"achievement": "101.0000", "combo": "app"})
         self.assertTrue(self.service.prepare(body)["title"].endswith(" AP+"))
@@ -598,6 +644,23 @@ class BilibiliProtocolTests(unittest.TestCase):
             data["archive"][key] = 1
             with self.assertRaises(BilibiliError):
                 edit_payload(data)
+
+    def test_title_suffix_added_whenever_both_chart_types_exist(self):
+        standard = {"chart_key": "5:3", "title": "Song", "difficulty_index": 3, "type": "standard"}
+        dx = standard | {"chart_key": "10005:3", "type": "dx"}
+        ids = chart_ids([standard, dx])
+        self.assertTrue(has_both_types(ids, standard) and has_both_types(ids, dx))
+        self.assertFalse(has_both_types(chart_ids([standard]), standard))
+        self.assertEqual(
+            title_for(standard, preparation(), "Original", True),
+            "【maimai】Song[STD] Master13.9 AP",
+        )
+        self.assertEqual(
+            title_for(dx, preparation(), "Original", True), "【maimai】Song[DX] Master13.9 AP"
+        )
+        self.assertEqual(
+            title_for(standard, preparation(), "Original"), "【maimai】Song Master13.9 AP"
+        )
 
     def test_title_standard_markers_utage_mirror(self):
         chart = {"title": "Song", "difficulty_index": 3, "type": "standard"}

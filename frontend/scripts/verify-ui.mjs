@@ -415,6 +415,8 @@ async function mock(context, { completionItems } = {}) {
     else if (pathname === '/api/settings/divingfish')
       value = { configured: false, source: null, sync: null };
     else if (pathname === '/api/catalog/update') value = status;
+    else if (pathname === '/api/bilibili/stale')
+      value = { connected: true, items: [], collections: [] };
     else if (pathname === '/api/catalog/records/review')
       value = {
         schema_version: 2,

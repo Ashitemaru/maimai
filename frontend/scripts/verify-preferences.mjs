@@ -240,6 +240,8 @@ async function mock(context, name) {
     else if (pathname === '/api/ap-records') value = { items: [], count: 0 };
     else if (pathname === '/api/venues') value = { items: [] };
     else if (pathname === '/api/catalog/update') value = catalog;
+    else if (pathname === '/api/bilibili/stale')
+      value = { connected: true, items: [], collections: [] };
     else if (pathname === '/api/catalog/records/review')
       value = {
         schema_version: 2,

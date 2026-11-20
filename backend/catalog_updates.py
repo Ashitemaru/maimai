@@ -118,7 +118,7 @@ def public_warnings(prepared, built):
     messages = [w["message"] for w in prepared.get("warnings", [])]
     pending = built.get("counts", {}).get("pending", 0)
     if pending:
-        messages.append(f"{pending} 张谱面待裁决，尚未入库")
+        messages.append(f"{pending} 张谱面待裁决")
     missing = prepared.get("diff", {}).get("counts", {}).get("missing_charts", 0)
     if missing:
         messages.append(f"落雪本次缺少 {missing} 张旧谱，原始记录和个人成绩已保留")

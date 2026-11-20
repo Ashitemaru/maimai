@@ -30,6 +30,11 @@ FIELDS = {
     "notes",
     "jp_release_version",
 }
+# Manual choices for these CN fields yield once both sources agree on another value.
+SOURCE_SETTLED_FIELDS = {"level", "constant", "bpm", "notes"}
+RELEASE_KEYS = (*empty_release(), "version_pending")
+# Previously published values keep an admitted chart visible while it awaits review.
+BASELINE = "published_baseline.json"
 
 
 def read(path, default=None):
@@ -168,8 +173,21 @@ def _decision_document(directory, explicit=None):
     return {**deepcopy(document), "schema_version": 2}
 
 
-def compile_charts(lxns, legacy_catalog, legacy_review, document):
+def published_baseline(catalog):
+    """Field values of the charts published before this build, keyed by chart_key."""
+    keys = (*sorted(FIELDS - {"jp_release_version"}), *RELEASE_KEYS)
+    return {
+        "schema_version": 2,
+        "charts": {
+            c["chart_key"]: {k: deepcopy(c.get(k)) for k in keys}
+            for c in (catalog or {}).get("charts", [])
+        },
+    }
+
+
+def compile_charts(lxns, legacy_catalog, legacy_review, document, published=None):
     """Pure admission result from normalized adapters and permanent selected values."""
+    published = published or {}
     mappings = chart_mappings(lxns)
     by_legacy = {m["legacy_chart_key"]: m for m in mappings["mappings"]}
     record_by_song = {r["song_id"]: r for r in legacy_review["records"]}
@@ -228,7 +246,7 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
             # value for each business field even after a permanent user choice.
             flat.pop("level_value", None)
             flat.pop("version", None)
-            conflicts = []
+            conflicts, superseded = [], set()
             for source_field in record["fields"]:
                 field_key = source_field["field_key"]
                 is_jp = source_field["semantic_domain"] == "jp_release"
@@ -244,7 +262,7 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
                         source_field.get("chart_key") == old["chart_key"],
                         field_key.rsplit(":", 1)[-1],
                     )
-                if not matches or field in decisions[key]:
+                if not matches or field in decisions[key] and field not in SOURCE_SETTLED_FIELDS:
                     continue
                 options = []
                 allowed_sources = (
@@ -266,6 +284,16 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
                 values = {
                     fingerprint({"value": o["value"], "date": o.get("date")}) for o in options
                 }
+                if field in decisions[key]:
+                    agreed = len(values) == 1 and {"lxns", "divingfish"} <= {
+                        o["source"] for o in options
+                    }
+                    if agreed and options[0]["value"] != decisions[key][field]["value"]:
+                        # Both sources now agree on another value: the old choice yields.
+                        flat["field_decisions"].pop(field)
+                        flat[field] = deepcopy(options[0]["value"])
+                        superseded.add(field)
+                    continue
                 unknown_version = is_jp and "unknown_jp_version" in source_field.get("reasons", [])
                 if len(values) <= 1 and not (unknown_version and options):
                     if options and not is_jp and not any(o["source"] == "lxns" for o in options):
@@ -292,7 +320,8 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
                         "reasons": deepcopy(source_field.get("reasons", [])),
                     }
                 )
-            for field, decision in decisions[key].items():
+            applied = {f: d for f, d in decisions[key].items() if f not in superseded}
+            for field, decision in applied.items():
                 flat[field] = deepcopy(decision["value"])
                 if field == "constant":
                     flat["constant_source"] = "manual_" + decision["source"]
@@ -311,7 +340,17 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
             flat["version_pending"] = (
                 flat["jp_release_version"] is None and "jp_release_version" not in decisions[key]
             )
-            flat["admission_status"] = "pending" if conflicts else "admitted"
+            previous = published.get(key)
+            if conflicts and previous:
+                # Already published: keep the previous values until sources agree or a choice.
+                for conflict in conflicts:
+                    if conflict["field_key"] != "jp_release_version":
+                        flat[conflict["field_key"]] = deepcopy(previous[conflict["field_key"]])
+                if flat["release_status"] == "conflict" or any(
+                    c["field_key"] == "jp_release_version" for c in conflicts
+                ):
+                    flat.update({k: deepcopy(previous[k]) for k in RELEASE_KEYS})
+            flat["admission_status"] = "pending" if conflicts and not previous else "admitted"
             if old["type"] in ("standard", "dx") and index == 4:
                 remy_counts["total"] += 1
                 verified = bool(flat["jp_release_version"]) and flat["release_status"] in (
@@ -327,10 +366,11 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
                     "difficulty_name": old["difficulty_name"],
                     "status": "pending" if conflicts else "resolved",
                     "fields": conflicts,
-                    "decisions": list(deepcopy(decisions[key]).values()),
+                    "decisions": list(deepcopy(applied).values()),
+                    **({"published": True} if conflicts and previous else {}),
                 }
             )
-            if not conflicts:
+            if flat["admission_status"] == "admitted":
                 formal.append(flat)
     known = {r["chart_key"] for r in review_records}
     for key, fields in decisions.items():
@@ -355,7 +395,7 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
     counts = {
         "total": len(mappings["mappings"]),
         "admitted": len(formal),
-        "pending": len(mappings["mappings"]) - len(formal),
+        "pending": sum(r["status"] == "pending" for r in review_records),
     }
     return {
         "charts": formal,
@@ -470,7 +510,13 @@ def _base_legacy_catalog(directory, lxns, versions):
 def calculate(directory, document=None):
     document = _decision_document(directory, document)
     lxns, versions, review = _load_evidence(directory, document)
-    result = compile_charts(lxns, _base_legacy_catalog(directory, lxns, versions), review, document)
+    result = compile_charts(
+        lxns,
+        _base_legacy_catalog(directory, lxns, versions),
+        review,
+        document,
+        read(Path(directory) / BASELINE, {"charts": {}})["charts"],
+    )
     return {**result, "lxns": lxns, "versions": versions, "document": document}
 
 
@@ -541,6 +587,8 @@ def write_sqlite(path, catalog):
 
 def build(directory):
     directory = Path(directory)
+    # The stage is a copy of the published snapshot, so catalog.json is still the old one.
+    write(directory / BASELINE, published_baseline(read(directory / "catalog.json")))
     result = calculate(directory)
     write(directory / "catalog_record_review.json", result["review"])
     write(
@@ -567,6 +615,7 @@ def build(directory):
                 "catalog_diff.json",
                 "pipeline_report.json",
                 "catalog_adjudications.json",
+                BASELINE,
                 "remy_release_overrides.json",
                 "remy_conflicts.json",
                 "jacket_manifest.json",

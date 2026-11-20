@@ -70,8 +70,10 @@ GET /api/charts?q=&group=all|low|high|catalog&difficulty=0..4&type=standard|dx
   difficulty_index and chart_key. Default is constant descending.
   Version values use only the final jp_release_version, shared with the cover UI.
   No SEGA/CN fallback. Missing JP versions match __unknown__ (版本待核实).
-  Catalog conflicts withhold the entire chart. Only admitted charts are returned.
-  Persisted field choices survive future source changes until explicitly revoked.
+  Catalog conflicts withhold a new chart entirely; an already published chart keeps its
+  previously published values until the sources agree or a choice is made.
+  Persisted field choices survive future source changes until explicitly revoked, except
+  level/constant/bpm/notes choices, which yield once both sources agree on another value.
   PLUS versions remain distinct. Set constant_min=constant_max for an exact constant.
 GET /api/charts/{chart_key} -> Chart
 GET /api/ap-records -> {items:[{chart_key,title,type,difficulty_name,constant,
@@ -209,14 +211,16 @@ POST /api/catalog/records/decisions/batch -> CatalogUpdateState (202)
   Invalid or incomplete -> 422, stale or busy -> 409, with no partial decision writes.
   A failure in the last chart never saves the earlier charts or starts a rebuild.
   Version/date stay paired. Server resolves values/evidence from submitted option IDs.
-  Selected values persist through source changes/rebuilds until explicit revoke.
+  Selected values persist through source changes/rebuilds until explicit revoke; a
+  level/constant/bpm/notes choice is ignored while LXNS and Diving-Fish agree on another value.
   Failed publication keeps prior snapshot and saved decisions; decisions_pending=true.
 GET /api/catalog/records/decisions -> {revision,decision_revision,decisions_pending,records}
   Independent saved manual choices, grouped by chart; includes missing-source records.
 POST /api/catalog/records/decisions/revoke -> CatalogUpdateState (202)
   {base_catalog_revision,base_decision_revision,id,difficulty,field_keys?}
   Omit field_keys to revoke all fields for this chart; otherwise revoke the selected fields.
-  Revocation restores comparison and may withdraw the entire chart to pending admission.
+  Revocation restores comparison; a conflicting chart that was never published waits for
+  admission, a published one keeps its previous values and is listed as pending (published=true).
 POST /api/catalog/decisions/reapply -> CatalogUpdateState (202), no network.
 Every save/revoke appends an audit event (original value, revision, timestamp, batch_id)
 in adjudications.sqlite3; revoke retains history.
@@ -238,6 +242,14 @@ GET /api/bilibili/videos?page=1
   public listing refuses (draft/under review) is skipped and named in
   unavailable_collections. Page 1 re-reads B 站; later pages reuse that snapshot for
   up to 5 minutes. Applying a publishing job clears the snapshot.
+GET /api/bilibili/stale -> {connected,items,collections}
+  Read-only. Not signed in -> {connected:false,items:[],collections:[]}. Otherwise lists the
+  account's bound videos (bilibili_chart_bindings) whose title differs from the one the
+  current catalog implies. Item: bvid,title,proposed_title,reasons:[{code,text}] (code
+  constant|chart_type|title),chart_key,combo (from the title),achievement (from the latest
+  completed job, or null),constant_old,constant_new. Utage keeps its level; the mirrored
+  video is skipped. The client re-previews each item with POST /prepare (section = the
+  section titled constant_new) and applies with POST /apply.
 GET /api/bilibili/videos/{bvid} -> existing title, both covers, revision, mirror_horizontal
   and combo (same parsing as the listing).
   Explicitly loading an owned BV remains available for new, uncollected handplays.
@@ -255,8 +267,9 @@ POST /api/bilibili/prepare
   {bvid,chart_key,achievement,combo,constant,section_id,mirror_horizontal?,
    version_override?} -> frozen plan with plan_id.
   The score is supplied explicitly for this video; a current personal best is never
-  substituted. Plans expire after one hour. Existing STD/DX suffixes, Utage notation
-  and the historical mirrored-title exception are preserved by default.
+  substituted. Plans expire after one hour. A [STD]/[DX] suffix is added whenever the
+  song has both STD (id) and DX (id+10000) charts, and an existing suffix is kept; Utage
+  notation and the historical mirrored-title exception are preserved.
   Explicit chart selection saves an account-scoped BVID/chart identity binding in
   the personal database, including when another item blocks the proposed order.
   This permits several previously unrecognized videos to be associated in turn.

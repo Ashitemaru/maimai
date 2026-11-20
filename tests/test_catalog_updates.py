@@ -827,7 +827,7 @@ class UpdateTests(unittest.TestCase):
         }
         self.assertEqual(public_warnings({}, built), [])
         built["counts"]["pending"] = 1
-        self.assertEqual(public_warnings({}, built), ["1 张谱面待裁决，尚未入库"])
+        self.assertEqual(public_warnings({}, built), ["1 张谱面待裁决"])
 
     def test_remy_summary_includes_unknown_versions_and_quarantined_white_charts(self):
         service = self.service()
