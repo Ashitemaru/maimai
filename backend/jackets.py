@@ -8,7 +8,6 @@ import os
 import re
 import tempfile
 import threading
-from collections import OrderedDict
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
@@ -18,7 +17,6 @@ ENCODER_VERSION = "160-webp-q82-v1"
 IMMUTABLE_CACHE = "private, max-age=31536000, immutable"
 REVALIDATE_CACHE = "private, max-age=0, must-revalidate"
 _FILENAME = re.compile(r"[0-9]{1,20}\.png")
-_CACHED_FILE = re.compile(r"[0-9]{1,20}-[a-f0-9]{24}\.webp")
 
 
 def etag_matches(header: str | None, etag: str) -> bool:
@@ -28,31 +26,13 @@ def etag_matches(header: str | None, etag: str) -> bool:
 
 
 class JacketPreviews:
-    """Persist derived images, cap disk use, and coalesce concurrent cache misses."""
+    """160px WebP previews cached on disk, one file per jacket and source revision."""
 
-    def __init__(
-        self, directory, source_directories, *, max_bytes=64 * 1024 * 1024, max_files=4096
-    ):
+    def __init__(self, directory, source_directories):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.source_directories = source_directories
-        self.max_bytes = max_bytes
-        self.max_files = max_files
         self._lock = threading.Lock()
-        self._render_slots = threading.BoundedSemaphore(2)
-        self._key_locks = [threading.Lock() for _ in range(64)]
-        self._files = OrderedDict()
-        self._bytes = 0
-        existing = []
-        for path in self.directory.iterdir():
-            if _CACHED_FILE.fullmatch(path.name) and not path.is_symlink() and path.is_file():
-                stat = path.stat()
-                existing.append((stat.st_mtime_ns, path.name, stat.st_size))
-        for _, name, size in sorted(existing):
-            self._files[name] = size
-            self._bytes += size
-        with self._lock:
-            self._prune()
 
     def source(self, filename):
         if not _FILENAME.fullmatch(filename):
@@ -81,24 +61,6 @@ class JacketPreviews:
             return None
         return f"/jackets/thumbnails/{match[1]}/{revision}.webp"
 
-    def _prune(self):
-        while self._files and (len(self._files) > self.max_files or self._bytes > self.max_bytes):
-            name, size = self._files.popitem(last=False)
-            self._bytes -= size
-            (self.directory / name).unlink(missing_ok=True)
-
-    def _read(self, name):
-        with self._lock:
-            if name not in self._files:
-                return None
-            try:
-                content = (self.directory / name).read_bytes()
-            except FileNotFoundError:
-                self._bytes -= self._files.pop(name)
-                return None
-            self._files.move_to_end(name)
-            return content
-
     @staticmethod
     def _render(path):
         try:
@@ -119,32 +81,23 @@ class JacketPreviews:
         source, current = self.source(song_id + ".png")
         if current != revision:
             raise FileNotFoundError("Jacket revision changed")
-        name = f"{song_id}-{revision}.webp"
-        content = self._read(name)
-        if content is not None:
-            return content
-        with self._key_locks[int(revision[:4], 16) % len(self._key_locks)]:
-            content = self._read(name)
-            if content is not None:
-                return content
-            with self._render_slots:
-                content = self._render(source)
-            if self.source(song_id + ".png")[1] != revision:
-                raise FileNotFoundError("Jacket changed during rendering")
-            if len(content) > self.max_bytes or self.max_files < 1:
-                return content
+        path = self.directory / f"{song_id}-{revision}.webp"
+        with self._lock:
+            try:
+                return path.read_bytes()
+            except FileNotFoundError:
+                pass
+            content = self._render(source)
+            # Older revisions of this jacket are never requested again.
+            for stale in self.directory.glob(f"{song_id}-*.webp"):
+                stale.unlink(missing_ok=True)
             descriptor, temporary = tempfile.mkstemp(
                 prefix=".thumb-", suffix=".tmp", dir=self.directory
             )
             try:
                 with os.fdopen(descriptor, "wb") as handle:
                     handle.write(content)
-                with self._lock:
-                    os.replace(temporary, self.directory / name)
-                    self._bytes -= self._files.pop(name, 0)
-                    self._files[name] = len(content)
-                    self._bytes += len(content)
-                    self._prune()
+                os.replace(temporary, path)
             finally:
                 Path(temporary).unlink(missing_ok=True)
             return content

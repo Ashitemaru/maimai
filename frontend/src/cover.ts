@@ -7,6 +7,7 @@ import {
 } from './coverAssets';
 import type { ImageAsset, NumberSet } from './coverAssets';
 import { releaseCanvas } from './canvasRelease';
+import { difficultyNames } from './chartLabels';
 const PALETTE: Record<number, string> = {
   0: '#65b04b',
   1: '#e3a137',
@@ -54,7 +55,6 @@ export interface CoverChart {
   constant: number | null;
   level: string;
   jp_release_version?: string | null;
-  release_status?: string;
 }
 export type CoverCombo = 'none' | 'ap' | 'app';
 interface CoverOptions {
@@ -558,9 +558,7 @@ export async function renderCover(
     const constantBox = layout.constant;
     const difficultyText = isUtage
       ? 'Utage'
-      : ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master'][
-          chart.difficulty ?? chart.difficulty_index
-        ] || chart.difficulty_name;
+      : difficultyNames[chart.difficulty ?? chart.difficulty_index] || chart.difficulty_name;
     const utageLevel = isUtage ? chart.level.trim().match(/^(\d+)(\+?\??)$/) : null;
     const bodySize = widescreen ? 60 : 52;
     const decimalSize = widescreen ? (60 * 31) / 52 : 31;

@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -20,6 +21,8 @@ SEARCH_CACHE_LIMIT = 512
 SEARCH_RESULT_LIMIT = 6
 DEFAULT_GEOCODER_URL = "https://photon.komoot.io/api/"
 SEARCH_USER_AGENT = "mai-journal/1.0 (+https://github.com/Ashitemaru/maimai)"
+_search_lock = threading.Lock()
+_last_search = 0.0
 MAP_CHART_FIELDS = (
     "chart_key",
     "title",
@@ -72,10 +75,7 @@ def initialize_locations(store):
             "CREATE TABLE IF NOT EXISTS venue_geocoder_cache("
             "cache_key TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at REAL NOT NULL)"
         )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS venue_geocoder_rate_limit("
-            "id INTEGER PRIMARY KEY CHECK(id=1), last_attempt REAL NOT NULL)"
-        )
+        conn.execute("DROP TABLE IF EXISTS venue_geocoder_rate_limit")
 
 
 def location_from_row(row):
@@ -126,9 +126,9 @@ def confirmed_venue_charts(charts, name):
 
 
 def venue_map(store):
+    charts = store.all_charts()
     with store.db() as conn:
         conn.execute("BEGIN")
-        charts = store.all_charts(connection=conn)
         names = [row["name"] for row in conn.execute("SELECT name FROM venues")]
         pending = [dict(row) for row in conn.execute("SELECT venue FROM ap_pending")]
         locations = {
@@ -141,11 +141,7 @@ def venue_map(store):
         jackets = []
         for chart in confirmed_venue_charts(charts, row["name"])[:3]:
             jacket = {key: chart.get(key) for key in MAP_CHART_FIELDS}
-            jacket["achievement"] = (
-                chart["achievement"]
-                if chart.get("achievement") is not None
-                else chart.get("provider_achievement")
-            )
+            jacket["achievement"] = chart.get("provider_achievement")
             jackets.append(jacket)
         items.append(
             {
@@ -220,9 +216,9 @@ def search_places(store, query, city=""):
 
     MAIMAI_GEOCODER_URL selects a Photon-compatible search endpoint; setting it
     to an empty string disables remote lookup while retaining manual map editing.
-    Shared SQLite reservations enforce the one-request-per-second ceiling even if
-    multiple application workers are used; cache hits do not contact the provider.
+    Uncached lookups are limited to one per second; cache hits do not contact the provider.
     """
+    global _last_search
     endpoint = os.environ.get("MAIMAI_GEOCODER_URL", DEFAULT_GEOCODER_URL).strip()
     if not endpoint:
         raise PlaceSearchError(503, "search_disabled", "地点搜索暂不可用，请稍后重试。")
@@ -241,23 +237,16 @@ def search_places(store, query, city=""):
     cache_key = hashlib.sha256(f"{endpoint}\n{search_query}".encode()).hexdigest()
     stamp = time.time()
     with store.db() as conn:
-        conn.execute("BEGIN IMMEDIATE")
         cached = conn.execute(
             "SELECT result_json FROM venue_geocoder_cache WHERE cache_key=? AND created_at>?",
             (cache_key, stamp - SEARCH_CACHE_SECONDS),
         ).fetchone()
-        if cached:
-            return json.loads(cached["result_json"])
-        previous = conn.execute(
-            "SELECT last_attempt FROM venue_geocoder_rate_limit WHERE id=1"
-        ).fetchone()
-        if previous and stamp - previous["last_attempt"] < 1.0:
+    if cached:
+        return json.loads(cached["result_json"])
+    with _search_lock:
+        if 0 <= stamp - _last_search < 1.0:
             raise PlaceSearchError(429, "search_busy", "搜索过于频繁，请稍后再试。")
-        conn.execute(
-            "INSERT INTO venue_geocoder_rate_limit(id,last_attempt) VALUES(1,?) "
-            "ON CONFLICT(id) DO UPDATE SET last_attempt=excluded.last_attempt",
-            (stamp,),
-        )
+        _last_search = stamp
     try:
         response = httpx.get(
             endpoint,

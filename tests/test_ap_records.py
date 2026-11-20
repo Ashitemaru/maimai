@@ -7,9 +7,9 @@ from fastapi.testclient import TestClient
 
 from backend.ap_records import RecordConflictError
 from backend.store import Store
-from backend.test_app import FakeUpdater
 from tests import test_chart_store
 from tests.support import create_app
+from tests.test_app import FakeUpdater
 
 
 class APRecordTests(unittest.TestCase):
@@ -166,6 +166,7 @@ class APRecordTests(unittest.TestCase):
     def test_orphan_pending_keeps_chart_snapshot_and_can_be_cancelled(self):
         revision = self.save()["record_revision"]
         self.store.catalog.pop(self.key)
+        self.store.install_catalog(self.store._catalog_snapshot)
         item = self.store.ap_records()["items"][0]
         self.assertEqual(item["title"], "Example")
         self.assertEqual(item["difficulty_name"], "MASTER")

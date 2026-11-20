@@ -15,6 +15,8 @@ const checks = [];
 const errors = [];
 let catalogRevision = 'fixture';
 let catalogVersions = [];
+// Mirrors GET /api/version: changes with every personal or catalog write.
+let versionToken = 0;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const charts = Array.from({ length: 360 }, (_, index) => ({
   id: 9000 + index,
@@ -38,12 +40,7 @@ const charts = Array.from({ length: 360 }, (_, index) => ({
   in_original_table: false,
   legacy_complete: false,
   legacy_venue: '',
-  manual_ap: null,
   manual_revision: 0,
-  manual_venue: '',
-  manual_date: null,
-  achievement: null,
-  note: '',
   venue: '',
   provider_achievement: null,
   provider_fc: null,
@@ -52,7 +49,6 @@ const charts = Array.from({ length: 360 }, (_, index) => ({
   is_complete: false,
   status: 'incomplete',
   conflict: false,
-  warnings: [],
   record_revision: 0,
   pending_record: null,
 }));
@@ -92,6 +88,7 @@ const server = http.createServer(async (request, response) => {
         const chart = charts.find((item) => item.chart_key === record[1]);
         assert.equal(input.expected_revision, chart.record_revision);
         chart.record_revision += 1;
+        versionToken += 1;
         chart.pending_record = {
           id: input.request_id,
           venue: input.venue,
@@ -106,6 +103,7 @@ const server = http.createServer(async (request, response) => {
         if (detail) data = charts.find((chart) => chart.chart_key === detail[1]);
         else if (pathname === '/api/auth/session')
           data = { authenticated: true, auth_required: false };
+        else if (pathname === '/api/version') data = { token: String(versionToken) };
         else if (pathname === '/api/settings/preferences') {
           data = { default_constant_min: 13, default_constant_max: 13.9 };
           delay = 25;
@@ -264,6 +262,7 @@ try {
     updated_at: '2026-10-12T22:00:00+08:00',
   };
   charts[0].record_revision = 1;
+  versionToken += 1;
   await page.evaluate(() => {
     window.dispatchEvent(new Event('focus'));
     document.dispatchEvent(new Event('visibilitychange'));
@@ -318,6 +317,7 @@ try {
     created_at: '2026-10-12T23:00:00+08:00',
     updated_at: '2026-10-12T23:00:00+08:00',
   };
+  versionToken += 1;
   await page.evaluate(() => {
     document.dispatchEvent(new Event('visibilitychange'));
     window.dispatchEvent(new Event('focus'));
@@ -329,6 +329,18 @@ try {
   checks.push(
     'A later focus waits for an old inflight snapshot, then refreshes to retain cross-device queue updates',
   );
+  const unchangedStart = requests.length;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await pause(400);
+  await settle();
+  const unchanged = requests.slice(unchangedStart);
+  assert.equal(count(unchanged, '/api/version'), 1);
+  assert.equal(
+    count(unchanged, '/api/ap-records'),
+    0,
+    'An unchanged version token must skip the personal refetch',
+  );
+  checks.push('Focus with an unchanged version token skips the personal refresh');
   const beforeScroll = requests.filter((item) => item.path.startsWith('/thumbnails/')).length;
   await page.locator('.completion-more').scrollIntoViewIfNeeded();
   await settle();
@@ -342,6 +354,7 @@ try {
   catalogRevision = 'from-another-device';
   catalogVersions = [{ value: 'PRiSM', label: 'PRiSM' }];
   charts[0].title = 'Remote catalog update';
+  versionToken += 1;
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));

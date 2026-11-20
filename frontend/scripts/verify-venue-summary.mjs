@@ -58,6 +58,8 @@ const server = http.createServer(async (request, response) => {
       else if (pathname === '/api/settings/preferences')
         data = { default_constant_min: 13, default_constant_max: 13.9 };
       else if (pathname === '/api/sync/status') data = idleScoreSync;
+      // A new version token per request keeps every focus refresh of the original fixture.
+      else if (pathname === '/api/version') data = { token: crypto.randomUUID() };
       else if (pathname === '/api/settings/divingfish')
         data = { configured: true, source: 'local', sync: null };
       else if (pathname === '/api/venues') data = { items: [] };

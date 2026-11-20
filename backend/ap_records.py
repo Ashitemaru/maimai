@@ -126,29 +126,23 @@ class APRecords:
     @staticmethod
     def _recorded_venue(conn, key):
         # Match is_complete + venue in the chart projection.
-        for table, completed in (
-            ("ap_confirmations", "1"),
-            ("manual", "ap"),
-            ("legacy", "complete"),
-        ):
-            row = conn.execute(
-                f"SELECT venue,{completed} AS completed FROM {table} WHERE chart_key=?",
-                (key,),
-            ).fetchone()
-            if row is None:
-                continue
-            if row["completed"]:
-                return row["venue"]
-            if table == "legacy":
-                ap = conn.execute(
-                    "SELECT 1 FROM ap_evidence WHERE chart_key=? "
-                    "UNION ALL SELECT 1 FROM provider WHERE chart_key=? "
-                    "AND fc IN ('ap','app') LIMIT 1",
-                    (key, key),
-                ).fetchone()
-                return row["venue"] if ap else ""
+        row = conn.execute(
+            "SELECT venue FROM ap_confirmations WHERE chart_key=?", (key,)
+        ).fetchone()
+        if row:
+            return row["venue"]
+        row = conn.execute("SELECT venue,complete FROM legacy WHERE chart_key=?", (key,)).fetchone()
+        if row is None:
             return ""
-        return ""
+        if row["complete"]:
+            return row["venue"]
+        ap = conn.execute(
+            "SELECT 1 FROM ap_evidence WHERE chart_key=? "
+            "UNION ALL SELECT 1 FROM provider WHERE chart_key=? "
+            "AND fc IN ('ap','app') LIMIT 1",
+            (key, key),
+        ).fetchone()
+        return row["venue"] if ap else ""
 
     @staticmethod
     def _known_venue(conn, venue):
@@ -156,9 +150,8 @@ class APRecords:
             conn.execute(
                 "SELECT 1 FROM venues WHERE name=? "
                 "UNION ALL SELECT 1 FROM legacy WHERE venue=? "
-                "UNION ALL SELECT 1 FROM manual WHERE venue=? "
                 "UNION ALL SELECT 1 FROM ap_confirmations WHERE venue=? LIMIT 1",
-                (venue, venue, venue, venue),
+                (venue, venue, venue),
             ).fetchone()
             is not None
         )

@@ -35,7 +35,6 @@ const charts = ['Alpha', 'Beta'].map((title, index) => ({
   in_original_table: false,
   legacy_complete: false,
   legacy_venue: '',
-  manual_ap: true,
   manual_revision: 0,
   record_revision: 1,
   pending_record: {
@@ -46,11 +45,7 @@ const charts = ['Alpha', 'Beta'].map((title, index) => ({
     created_at: '2026-10-12T01:00:00+08:00',
     updated_at: '2026-10-12T01:00:00+08:00',
   },
-  manual_venue: '',
   venue: '',
-  note: 'Original record',
-  manual_date: null,
-  achievement: 100.5,
   provider_achievement: null,
   provider_fc: null,
   provider_synced_at: null,
@@ -58,7 +53,6 @@ const charts = ['Alpha', 'Beta'].map((title, index) => ({
   is_complete: true,
   status: 'ap',
   conflict: false,
-  warnings: [],
 }));
 const summary = {
   total: 2,
@@ -135,7 +129,6 @@ charts.forEach((chart, index) =>
   Object.assign(chart, {
     record_revision: 0,
     pending_record: null,
-    manual_ap: null,
     provider_fc: index ? 'app' : null,
     provider_achievement: index ? 101 : null,
     is_ap: Boolean(index),
@@ -290,6 +283,8 @@ try {
       '/api/auth/session': { authenticated: true, auth_required: false },
       '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
       '/api/sync/status': scoreSyncStatus,
+      // A new version token per request keeps every focus refresh of the original fixture.
+      '/api/version': { token: crypto.randomUUID() },
       '/api/settings/divingfish': { configured: true, source: 'local', sync: null },
       '/api/chart-filters': { constants: [13, 13.9], versions: [], cn_versions: [] },
       '/api/catalog/update': catalog,

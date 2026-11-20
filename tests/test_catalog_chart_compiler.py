@@ -10,10 +10,10 @@ from scripts.catalog_chart_compiler import (
     build,
     chart_mappings,
     load_record_review,
-    validate,
     validate_chart_decisions,
 )
 from scripts.catalog_pipeline import atomic_json
+from scripts.catalog_validate import validate
 from tests import test_catalog_pipeline as legacy_fixtures
 
 song, document = legacy_fixtures.song, legacy_fixtures.document
@@ -196,7 +196,9 @@ class ChartCompilerTests(unittest.TestCase):
         self.prepare()
         self.compile()
         with closing(sqlite3.connect(self.stage / "catalog.sqlite")) as conn:
-            conn.execute("UPDATE charts SET constant=99 WHERE id=1")
+            conn.execute(
+                "UPDATE charts SET data_json=json_set(data_json,'$.constant',99) WHERE id=1"
+            )
             conn.commit()
         report = self.read("build_report.json")
         for row in report["outputs"]:
@@ -206,7 +208,7 @@ class ChartCompilerTests(unittest.TestCase):
                     bytes=(self.stage / "catalog.sqlite").stat().st_size,
                 )
         atomic_json(self.stage / "build_report.json", report)
-        with self.assertRaisesRegex(ValueError, "SQL column mismatch"):
+        with self.assertRaisesRegex(ValueError, "SQL charts"):
             validate(self.stage)
 
     def test_remy_protects_durable_white_value_even_when_chart_not_admitted(self):

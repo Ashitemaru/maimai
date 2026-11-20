@@ -5,7 +5,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -15,8 +15,6 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-
-from scripts.jp_versions import JP_VERSION_NAMES
 
 from .ap_records import RecordConflictError
 from .auth import (
@@ -30,16 +28,22 @@ from .auth import (
 from .bilibili import BilibiliService, bilibili_router
 from .catalog_decisions import StaleDecisionError
 from .catalog_updates import BusyError, CatalogUpdates
+from .chart_query import (
+    COMPLETION_FIELDS,
+    ChartSort,
+    chart_filters,
+    completion_matrix,
+    filter_options,
+    filtered,
+    selection_summary,
+    sort_charts,
+)
+from .clock import now
 from .completion_exports import completion_export_router
+from .exports import export_router
 from .jackets import IMMUTABLE_CACHE, REVALIDATE_CACHE, JacketPreviews, etag_matches
 from .score_sync import ScoreSync, ScoreSyncError
-from .store import (
-    ROOT,
-    Store,
-    normalized,
-    now,
-    summarize,
-)
+from .store import ROOT, Store
 from .venue_locations import (
     PlaceSearchError,
     VenueLocationInput,
@@ -51,113 +55,13 @@ from .venue_locations import (
 )
 from .venue_summary import summarize_venues
 
-VERSION_ORDER = JP_VERSION_NAMES
-
-ChartSort = Literal[
-    "constant_desc",
-    "constant_asc",
-    "achievement_desc",
-    "achievement_asc",
-    "ap_desc",
-    "ap_asc",
-    "title",
-]
-CNVersion = Annotated[int, Field(ge=10000)] | Literal["__unknown__"]
-COMPLETION_FIELDS = (
-    "id",
-    "difficulty",
-    "chart_key",
-    "title",
-    "display_title",
-    "type",
-    "difficulty_name",
-    "level",
-    "constant",
-    "jacket_url",
-    "is_complete",
-    "is_ap",
-    "status",
-    "conflict",
-    "achievement",
-    "provider_achievement",
-    "pending_record",
-    "record_revision",
-    "venue_pending",
-)
-
-
-def sort_charts(items, sort: ChartSort):
-    def stable_key(c):
-        return (-c["constant"], int(c["song_id"]), c["type"], c["difficulty_index"], c["chart_key"])
-
-    def achievement_key(c):
-        value = c.get("achievement")
-        if value is None:
-            value = c.get("provider_achievement")
-        return (
-            value is None,
-            (value if sort == "achievement_asc" else -value) if value is not None else 0,
-            *stable_key(c),
-        )
-
-    if sort == "title":
-
-        def key(c):
-            return (c["title"], c["difficulty_index"], c["type"])
-    elif sort in ("achievement_desc", "achievement_asc"):
-        key = achievement_key
-    elif sort in ("ap_desc", "ap_asc"):
-
-        def key(c):
-            return ((-1 if sort == "ap_desc" else 1) * int(c["is_ap"]), *stable_key(c))
-    else:
-
-        def key(c):
-            return (
-                (-1 if sort == "constant_desc" else 1) * c["constant"],
-                int(c["song_id"]),
-                c["type"],
-                c["difficulty_index"],
-                c["chart_key"],
-            )
-
-    return sorted(items, key=key)
-
-
-def chart_version(chart):
-    return chart.get("jp_release_version") or "__unknown__"
-
-
-def level_order(level):
-    return float(level.rstrip("+")) + (0.5 if "+" in level else 0)
-
-
-def chart_filters(
-    q: str = "",
-    group: Literal["all", "low", "high", "catalog"] = "all",
-    difficulty: int | None = Query(default=None, ge=0, le=4),
-    type: Literal["standard", "dx"] | None = None,
-    status: Literal["all", "complete", "incomplete", "ap", "legacy", "conflict"] = "all",
-    constant_min: float | None = None,
-    constant_max: float | None = None,
-    level: str | None = None,
-    venue: str | None = None,
-    version: str | None = None,
-    cn_version: CNVersion | None = Query(default=None),
-):
-    return {
-        "q": q,
-        "group": group,
-        "difficulty": difficulty,
-        "type": type,
-        "status": status,
-        "constant_min": constant_min,
-        "constant_max": constant_max,
-        "level": level,
-        "venue": venue,
-        "version": version,
-        "cn_version": cn_version,
-    }
+# Pydantic's default 422 echoes rejected input; never echo secrets or NaN values.
+VALIDATION_MESSAGES = {
+    "/api/auth/login": "Master key 格式无效。",
+    "/api/settings/divingfish": "Token 格式无效，请检查输入。",
+    "/api/settings/preferences": "默认定数须为 0–20 的有限数值，精确到 0.1，且下限不能高于上限。",
+    "/api/venues/location": "地点信息无效，请检查名称、地址及经纬度。经纬度须同时填写或留空。",
+}
 
 
 class TokenInput(BaseModel):
@@ -272,6 +176,7 @@ def create_app(store=None, updater=None):
     app.state.bilibili = bilibili
     app.include_router(bilibili_router(bilibili))
     app.include_router(completion_export_router(store.runtime / "completion-exports"))
+    app.include_router(export_router(store, assets))
     allowed_hosts = ["127.0.0.1", "localhost", "::1", "testserver"]
     allowed_hosts += [
         h.strip() for h in os.environ.get("MAIMAI_ALLOWED_HOSTS", "").split(",") if h.strip()
@@ -281,24 +186,14 @@ def create_app(store=None, updater=None):
 
     @app.exception_handler(RequestValidationError)
     async def safe_validation(request: Request, exc):
-        if request.url.path.startswith("/api/bilibili/"):
-            return JSONResponse({"detail": "投稿参数无效，请检查后重试。"}, status_code=422)
-        if request.url.path == "/api/auth/login":
-            return JSONResponse({"detail": "Master key 格式无效。"}, status_code=422)
-        if request.url.path == "/api/settings/divingfish":
-            # Pydantic's default error includes the rejected input; never echo a secret.
-            return JSONResponse({"detail": "Token 格式无效，请检查输入。"}, status_code=422)
-        if request.url.path == "/api/settings/preferences":
-            # Rejected NaN/Infinity values cannot be echoed through a JSON response.
-            return JSONResponse(
-                {"detail": "默认定数须为 0–20 的有限数值，精确到 0.1，且下限不能高于上限。"},
-                status_code=422,
-            )
-        if request.url.path == "/api/venues/location":
-            return JSONResponse(
-                {"detail": "地点信息无效，请检查名称、地址及经纬度。经纬度须同时填写或留空。"},
-                status_code=422,
-            )
+        path = request.url.path
+        message = (
+            "投稿参数无效，请检查后重试。"
+            if path.startswith("/api/bilibili/")
+            else VALIDATION_MESSAGES.get(path)
+        )
+        if message:
+            return JSONResponse({"detail": message}, status_code=422)
         return await request_validation_exception_handler(request, exc)
 
     @app.middleware("http")
@@ -375,63 +270,6 @@ def create_app(store=None, updater=None):
     def public(c):
         return public_many([c])[0]
 
-    def filtered(
-        items,
-        *,
-        q="",
-        group="all",
-        difficulty=None,
-        type=None,
-        status="all",
-        constant_min=None,
-        constant_max=None,
-        level=None,
-        venue=None,
-        version=None,
-        cn_version=None,
-    ):
-        needle = normalized(q)
-        ext = store.waterfish_map.get(needle)
-
-        def matches(c):
-            if group not in ("all", "catalog") and c["group"] != group:
-                return False
-            if needle:
-                numeric_match = needle == str(c["song_id"]) or needle == str(c["divingfish_id"])
-                if ext and int(needle) >= 10000:
-                    numeric_match = c["song_id"] == ext["song_id"] and c["type"] == ext["type"]
-                if needle not in c["_search"] and not numeric_match:
-                    return False
-            if difficulty is not None and c["difficulty_index"] != difficulty:
-                return False
-            if type and c["type"] != type:
-                return False
-            if constant_min is not None and c["constant"] < constant_min:
-                return False
-            if constant_max is not None and c["constant"] > constant_max:
-                return False
-            if level and c["level"] != level:
-                return False
-            if venue and venue not in c["venue"]:
-                return False
-            if version and chart_version(c) != version:
-                return False
-            if (
-                cn_version is not None
-                and (c.get("_cn_version_group") or "__unknown__") != cn_version
-            ):
-                return False
-            return {
-                "all": True,
-                "complete": c["is_complete"],
-                "incomplete": not c["is_complete"],
-                "ap": c["is_ap"],
-                "legacy": c["status"] == "legacy",
-                "conflict": c["conflict"],
-            }[status]
-
-        return [c for c in items if matches(c)]
-
     @app.get("/api/ready")
     def ready():
         checks = store.readiness()
@@ -501,46 +339,20 @@ def create_app(store=None, updater=None):
     def reapply_catalog_decisions():
         return begin_catalog_operation(updater.reapply_decisions)
 
-    def selection_summary(items):
-        result = summarize(items)
-        result["levels"] = [
-            {"level": level, **summarize([c for c in items if c["level"] == level])}
-            for level in sorted({c["level"] for c in items}, key=level_order)
-        ]
-        result["constants"] = [
-            {"constant": value, **summarize([c for c in items if c["constant"] == value])}
-            for value in sorted({c["constant"] for c in items})
-        ]
-        result["sync"] = store.meta("last_sync")
-        return result
+    def charts_matching(filters):
+        return filtered(store.all_charts(), store.waterfish_map, **filters)
+
+    @app.get("/api/version")
+    def version():
+        return {"token": store.version_token()}
 
     @app.get("/api/summary")
     def summary(filters: dict = Depends(chart_filters)):
-        return selection_summary(filtered(store.all_charts(), **filters))
+        return selection_summary(charts_matching(filters), store.meta("last_sync"))
 
     @app.get("/api/chart-filters")
-    def filter_options(group: Literal["all", "low", "high", "catalog"] = "all"):
-        all_items = store.all_charts()
-        items = filtered(all_items, group=group)
-        version_positions = {name: index for index, name in enumerate(VERSION_ORDER)}
-        versions = sorted(
-            {chart_version(c) for c in items},
-            key=lambda name: (
-                name == "__unknown__",
-                version_positions.get(name, len(VERSION_ORDER)),
-                name,
-            ),
-        )
-        labels = {"DX": "でらっくす", "DX PLUS": "でらっくす PLUS", "__unknown__": "版本待核实"}
-        return {
-            "levels": sorted({c["level"] for c in items}, key=level_order),
-            "constants": sorted({c["constant"] for c in items}),
-            "versions": [
-                {"value": version, "label": labels.get(version, version)} for version in versions
-            ],
-            "cn_versions": getattr(all_items, "cn_versions", []),
-            "cn_matrix_versions": getattr(all_items, "cn_matrix_versions", []),
-        }
+    def chart_filter_options(group: Literal["all", "low", "high", "catalog"] = "all"):
+        return filter_options(store.all_charts(), store.waterfish_map, group)
 
     @app.get("/api/charts")
     def charts(
@@ -549,7 +361,7 @@ def create_app(store=None, updater=None):
         limit: int = Query(default=100, ge=1, le=6000),
         sort: ChartSort = "constant_desc",
     ):
-        items = sort_charts(filtered(store.all_charts(), **filters), sort)
+        items = sort_charts(charts_matching(filters), sort)
         return {
             "items": public_many(items[offset : offset + limit]),
             "total": len(items),
@@ -559,16 +371,16 @@ def create_app(store=None, updater=None):
 
     @app.get("/api/completion-table")
     def completion_table(filters: dict = Depends(chart_filters), sort: ChartSort = "constant_desc"):
-        items = sort_charts(filtered(store.all_charts(), **filters), sort)
+        items = sort_charts(charts_matching(filters), sort)
         return {
             "items": public_many(items, COMPLETION_FIELDS),
             "total": len(items),
-            "summary": selection_summary(items),
+            "summary": selection_summary(items, store.meta("last_sync")),
             "generated_at": now(),
         }
 
     @app.get("/api/completion-matrix")
-    def completion_matrix(
+    def completion_matrix_data(
         difficulty: int | None = Query(default=None, ge=0, le=4),
         constant_min: float | None = Query(default=None, allow_inf_nan=False),
         constant_max: float | None = Query(default=None, allow_inf_nan=False),
@@ -583,53 +395,14 @@ def create_app(store=None, updater=None):
             and cn_version_min > cn_version_max
         ):
             raise HTTPException(422, "起始国服版本不能晚于结束版本")
-        all_items = store.all_charts()
-        items = filtered(
-            all_items, difficulty=difficulty, constant_min=constant_min, constant_max=constant_max
+        return completion_matrix(
+            store.all_charts(),
+            store.waterfish_map,
+            difficulty=difficulty,
+            constant_min=constant_min,
+            constant_max=constant_max,
+            cn_range=(cn_version_min, cn_version_max),
         )
-        versions = [
-            dict(version)
-            for version in getattr(all_items, "cn_matrix_versions", [])
-            if (cn_version_min is None or int(version["value"]) >= cn_version_min)
-            and (cn_version_max is None or int(version["value"]) <= cn_version_max)
-        ]
-        # An unknown CN release cannot be placed inside a known release range.
-        if (
-            cn_version_min is None
-            and cn_version_max is None
-            and any(c.get("_cn_version_group") is None for c in items)
-        ):
-            versions.append({"value": "__unknown__", "label": "未知", "title": "国服版本待核实"})
-
-        def empty_count():
-            return {"complete": 0, "total": 0, "remaining": 0}
-
-        totals = {version["value"]: empty_count() for version in versions}
-        summary = empty_count()
-        rows = {}
-        for chart in items:
-            version = str(chart.get("_cn_version_group") or "__unknown__")
-            if version not in totals:
-                continue
-            constant = chart["constant"]
-            if constant not in rows:
-                rows[constant] = {
-                    "constant": constant,
-                    "cells": {key: empty_count() for key in totals},
-                    "total": empty_count(),
-                }
-            row = rows[constant]
-            complete = int(bool(chart["is_complete"]))
-            for counts in (row["cells"][version], row["total"], totals[version], summary):
-                counts["complete"] += complete
-                counts["total"] += 1
-                counts["remaining"] += 1 - complete
-        return {
-            "versions": versions,
-            "rows": [rows[value] for value in sorted(rows, reverse=True)],
-            "totals": totals,
-            "summary": summary,
-        }
 
     @app.get("/api/charts/{chart_key}")
     def chart(chart_key: str):
@@ -644,12 +417,13 @@ def create_app(store=None, updater=None):
         return {**records, "items": public_many(records["items"])}
 
     def record_conflict(chart_key):
+        chart = store.chart(chart_key)
         return HTTPException(
             409,
             {
                 "code": "record_conflict",
                 "message": "记录已在其他页面更新，请重新载入后再保存。",
-                "chart": public(store.chart(chart_key)) if store.chart(chart_key) else None,
+                "chart": public(chart) if chart else None,
             },
         )
 

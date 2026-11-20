@@ -1725,6 +1725,9 @@ textarea {
 .preferences-panel {
   margin-bottom: var(--space-4);
 }
+.export-panel {
+  margin-top: var(--space-4);
+}
 .preferences-fields {
   min-width: 0;
   margin: 0;

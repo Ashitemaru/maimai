@@ -1,6 +1,5 @@
 """Snapshot reuse must never weaken AP transaction or publication semantics."""
 
-import sqlite3
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -45,7 +44,7 @@ class ChartReadCacheTests(unittest.TestCase):
             ]
         }
 
-    def test_simultaneous_cold_reads_assemble_once_and_return_owned_rows(self):
+    def test_simultaneous_cold_reads_assemble_once_and_share_the_snapshot(self):
         barrier = threading.Barrier(8)
 
         def read(_):
@@ -57,26 +56,20 @@ class ChartReadCacheTests(unittest.TestCase):
         ) as build:
             with ThreadPoolExecutor(max_workers=8) as pool:
                 reads = list(pool.map(read, range(8)))
+            self.assertIs(self.store.chart(self.key), reads[0][0])
             self.assertEqual(build.call_count, 1)
-        self.assertEqual(len({id(rows) for rows in reads}), 8)
-        self.assertEqual(len({id(rows[0]) for rows in reads}), 8)
-        self.assertEqual(len({id(rows[0]["warnings"]) for rows in reads}), 8)
+        self.assertEqual(len({id(rows) for rows in reads}), 1)
 
-    def test_nested_consumer_mutations_do_not_poison_shared_state(self):
+    def test_version_token_changes_on_personal_write_and_catalog_switch_only(self):
+        token = self.store.version_token()
+        self.store.all_charts()
+        self.store.meta("preferences")
+        self.assertEqual(self.store.version_token(), token)
         self.save()
-        first = self.store.all_charts()
-        first[0]["title"] = "incorrect"
-        first[0]["pending_record"]["venue"] = "incorrect"
-        first[0]["warnings"].append("incorrect")
-        first.cn_versions.append({"value": "incorrect"})
-        single = self.store.chart(self.key)
-        self.assertEqual(single["title"], "Example")
-        self.assertEqual(single["pending_record"]["venue"], "测试机厅")
-        self.assertNotIn("incorrect", single["warnings"])
-        single["pending_record"]["reason"] = "incorrect"
-        second = self.store.all_charts()
-        self.assertEqual(second.cn_versions, [])
-        self.assertEqual(second[0]["pending_record"]["reason"], "等待水鱼核准")
+        saved = self.store.version_token()
+        self.assertNotEqual(saved, token)
+        self.store.install_catalog((self.store.catalog, self.store.waterfish_map))
+        self.assertNotEqual(self.store.version_token(), saved)
 
     def test_personal_save_edit_cancel_and_sync_invalidate_without_a_timer(self):
         self.assertIsNone(self.store.chart(self.key)["pending_record"])
@@ -89,31 +82,6 @@ class ChartReadCacheTests(unittest.TestCase):
         self.store.import_provider(self.score_payload())
         self.assertTrue(self.store.chart(self.key)["is_ap"])
 
-    def test_external_database_commit_invalidates_read_cache(self):
-        self.assertFalse(self.store.chart(self.key)["is_ap"])
-        with sqlite3.connect(self.store.db_path) as conn:
-            conn.execute(
-                "INSERT INTO provider VALUES(?,?,?,?,?)", (self.key, 100.9, "ap", "fixture", "{}")
-            )
-        self.assertTrue(self.store.chart(self.key)["is_ap"])
-
-    def test_database_replacement_reopens_change_observer(self):
-        self.assertFalse(self.store.chart(self.key)["is_ap"])
-        replacement = self.runtime / "replacement.sqlite3"
-        source = sqlite3.connect(self.store.db_path)
-        destination = sqlite3.connect(replacement)
-        try:
-            source.backup(destination)
-            destination.execute(
-                "INSERT INTO provider VALUES(?,?,?,?,?)", (self.key, 100.9, "ap", "fixture", "{}")
-            )
-            destination.commit()
-        finally:
-            source.close()
-            destination.close()
-        replacement.replace(self.store.db_path)
-        self.assertTrue(self.store.chart(self.key)["is_ap"])
-
     def test_commit_during_build_is_not_cached_under_a_newer_version(self):
         original = self.store._assemble_charts
         calls = 0
@@ -123,7 +91,7 @@ class ChartReadCacheTests(unittest.TestCase):
             result = original(*args, **kwargs)
             calls += 1
             if calls == 1:
-                with sqlite3.connect(self.store.db_path) as conn:
+                with self.store.db() as conn:
                     conn.execute(
                         "INSERT INTO provider VALUES(?,?,?,?,?)",
                         (self.key, 100.9, "ap", "fixture", "{}"),
@@ -270,14 +238,6 @@ class ChartReadCacheTests(unittest.TestCase):
         self.assertNotIn("evidence_json", selects)
         self.assertNotIn("chart_json", selects)
         self.assertNotIn("select * from provider", selects)
-
-    def test_close_releases_observer_and_next_read_can_reopen(self):
-        self.store.all_charts()
-        connection = self.store._version_connection
-        self.store.close()
-        with self.assertRaises(sqlite3.ProgrammingError):
-            connection.execute("PRAGMA data_version")
-        self.assertEqual(self.store.chart(self.key)["title"], "Example")
 
 
 if __name__ == "__main__":

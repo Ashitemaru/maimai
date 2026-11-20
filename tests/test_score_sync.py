@@ -6,10 +6,9 @@ import httpx
 from fastapi.testclient import TestClient
 
 from backend.score_sync import RECORDS_ENDPOINT, ScoreSync, ScoreSyncError
-from backend.store import Store, SyncBusyError
-from backend.test_app import FakeUpdater
 from tests import test_chart_store
 from tests.support import create_app
+from tests.test_app import FakeUpdater
 
 TEST_TOKEN = "test-token-for-isolated-fixtures-only"
 
@@ -139,14 +138,14 @@ class ScoreSyncTests(unittest.TestCase):
             self.job().start()
         self.assertEqual(failure.exception.code, "no_token")
         self.store.save_token(TEST_TOKEN)
-        other = Store(runtime=self.runtime, catalog_dir=self.catalog)
-        with other.sync_lease():
+        jobs, release = self.job(), threading.Event()
+        with patch("backend.score_sync.fetch_records", side_effect=lambda _: release.wait(4)):
+            jobs.start()
             with self.assertRaises(ScoreSyncError) as failure:
-                self.job().start()
+                jobs.start()
             self.assertEqual(failure.exception.code, "sync_busy")
-        with self.store.sync_lease():
-            with self.assertRaises(SyncBusyError), other.sync_lease():
-                pass
+            release.set()
+            self.finish(jobs)
 
     def test_shutdown_waits_for_worker_and_rejects_new_jobs(self):
         jobs = self.job()

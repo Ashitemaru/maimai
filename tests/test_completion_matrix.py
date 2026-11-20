@@ -9,8 +9,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from backend.store import ChartIndex, Store
-from backend.test_app import FakeUpdater
 from tests.support import ROOT, create_app
+from tests.test_app import FakeUpdater
 
 OLD_VERSIONS = [
     (10000, "maimai", "初"),
@@ -154,7 +154,7 @@ class CompletionMatrixTests(unittest.TestCase):
         )
         self.assert_conservation(matrix)
 
-    def test_completion_matches_table_including_legacy_provider_and_manual_corrections(self):
+    def test_completion_matches_table_including_legacy_and_provider(self):
         keys = self.install(
             [
                 {"cn_version": 10000, "constant": 12.0},
@@ -170,18 +170,13 @@ class CompletionMatrixTests(unittest.TestCase):
                     "INSERT INTO legacy VALUES (?, 'high', 13.3, 1, '', '', 'fixture', 1, 1)",
                     (key,),
                 )
-            for key, ap in ((keys[1], 1), (keys[4], 0)):
+            for key, fc in ((keys[1], "ap"), (keys[2], "ap"), (keys[4], "fc")):
                 conn.execute(
-                    "INSERT INTO manual VALUES (?, ?, 'Fixture arcade', NULL, '', NULL, 'fixture')",
-                    (key, ap),
-                )
-            for key in (keys[2], keys[4]):
-                conn.execute(
-                    "INSERT INTO provider VALUES (?, 100.5, 'ap', 'fixture', '{}')", (key,)
+                    "INSERT INTO provider VALUES (?, 100.5, ?, 'fixture', '{}')", (key, fc)
                 )
         matrix = self.get_matrix()
         table = self.client.get("/api/completion-table").json()
-        self.assertEqual(matrix["summary"], {"complete": 3, "total": 5, "remaining": 2})
+        self.assertEqual(matrix["summary"], {"complete": 4, "total": 5, "remaining": 1})
         self.assertEqual(matrix["summary"]["complete"], table["summary"]["complete"])
         self.assertEqual(matrix["summary"]["total"], table["total"])
         self.assertEqual([row["constant"] for row in matrix["rows"]], [14.9, 13.3, 12.0])
@@ -189,8 +184,8 @@ class CompletionMatrixTests(unittest.TestCase):
             matrix["totals"]["10000"]["complete"], 1
         )  # Legacy completion, no confirmed AP.
         self.assertEqual(
-            matrix["totals"]["19500"]["complete"], 0
-        )  # Explicit false overrides both sources.
+            matrix["totals"]["19500"]["complete"], 1
+        )  # A later non-AP score never removes legacy completion.
         self.assert_conservation(matrix)
 
     def test_cn_and_jp_releases_are_independent_and_each_chart_can_drill_down(self):

@@ -89,12 +89,7 @@ const charts = [1, 12.5, 13, 13.5, 13.9, 14.5, 15].map((constant, index) => ({
   legacy_complete: false,
   legacy_venue: '',
   manual_revision: 0,
-  manual_ap: null,
-  manual_venue: '',
   venue: '',
-  note: '',
-  manual_date: null,
-  achievement: index % 2 ? null : 100.9876,
   provider_achievement: index % 2 ? null : 100.9876,
   provider_fc: index % 2 ? null : 'ap',
   provider_synced_at: null,
@@ -102,7 +97,6 @@ const charts = [1, 12.5, 13, 13.5, 13.9, 14.5, 15].map((constant, index) => ({
   is_complete: index % 2 === 0,
   status: index % 2 ? 'incomplete' : 'ap',
   conflict: false,
-  warnings: [],
 }));
 const matrixVersions = [{ value: '25500', label: '彩', title: '舞萌DX 2026' }];
 function filtered(params) {

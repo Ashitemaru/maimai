@@ -121,12 +121,7 @@ const charts = Array.from({ length: 18 }, (_, index) => ({
   legacy_complete: false,
   legacy_venue: '',
   manual_revision: 0,
-  manual_ap: index % 3 === 0 ? true : null,
-  manual_venue: index % 3 === 0 ? '上海 · 星光游乐城' : '',
   venue: index % 3 === 0 ? '上海 · 星光游乐城' : '',
-  note: '',
-  manual_date: index % 3 === 0 ? '2026-10-01' : null,
-  achievement: index % 3 === 0 ? 100.9876 : null,
   provider_achievement: index % 3 === 0 ? 100.9876 : null,
   provider_fc: index % 3 === 0 ? 'ap' : null,
   provider_synced_at: null,
@@ -134,7 +129,6 @@ const charts = Array.from({ length: 18 }, (_, index) => ({
   is_complete: index % 3 === 0,
   status: index % 3 === 0 ? 'ap' : 'incomplete',
   conflict: false,
-  warnings: [],
 }));
 Object.assign(charts[1], {
   constant: 14.9,
@@ -143,14 +137,13 @@ Object.assign(charts[1], {
   status: 'legacy',
 });
 Object.assign(charts[2], {
-  achievement: 101,
   provider_achievement: 101,
   provider_fc: 'app',
   is_ap: true,
   is_complete: true,
   status: 'app',
 });
-Object.assign(charts[4], { achievement: 99.7, provider_achievement: 99.7, provider_fc: 'fc' });
+Object.assign(charts[4], { provider_achievement: 99.7, provider_fc: 'fc' });
 // Distinct canned API orders test transport and rendering; backend comparator semantics have their own tests.
 const sortOrders = {
   constant_desc: [

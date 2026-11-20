@@ -39,7 +39,6 @@ interface GameUIManifest {
 interface VersionChart {
   difficulty_index: number;
   jp_release_version?: string | null;
-  release_status?: string;
 }
 export interface ResolvedVersion {
   key: string | null;
@@ -101,16 +100,9 @@ export function resolveVersion(
       normalizeVersion(asset.version_name) === normalized ||
       normalizeVersion(key) === normalized,
   );
-  const notices = [];
-  if (!override && chart.release_status === 'conflict') notices.push('版本有冲突，暂用已保留版本');
   if (!entry)
-    return {
-      key: null,
-      asset: null,
-      versionName: value,
-      notice: [...notices, `${value} 的版本素材尚未收录`].join(' · '),
-    };
+    return { key: null, asset: null, versionName: value, notice: `${value} 的版本素材尚未收录` };
   const [key, asset] = entry;
-  if (asset.status !== 'ready' || !asset.background_png) notices.push('这个版本的底图尚未就绪');
-  return { key, asset, versionName: value, notice: notices.join(' · ') };
+  const notice = asset.status !== 'ready' || !asset.background_png ? '这个版本的底图尚未就绪' : '';
+  return { key, asset, versionName: value, notice };
 }

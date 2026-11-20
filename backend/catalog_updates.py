@@ -71,7 +71,7 @@ def build(stage):
 
 
 def validate(stage):
-    from scripts.catalog_chart_compiler import validate as validate_catalog
+    from scripts.catalog_validate import validate as validate_catalog
 
     return validate_catalog(stage)
 
@@ -509,12 +509,10 @@ class CatalogUpdates:
         self._manifest(target, ident, None, "baseline", None)
         return ident
 
-    def _new_stage(self, previous, ident):
-        target = self.workspace / "staging" / ident
+    def _new_stage(self, previous, target):
         target.parent.mkdir(parents=True, exist_ok=True)
         clone(previous, target)
         write(target / "catalog_adjudications.json", self.decisions.snapshot())
-        return target
 
     def _publish(self, target, loaded, previous_id, metadata):
         decisions_file = target / "catalog_adjudications.json"
@@ -544,28 +542,69 @@ class CatalogUpdates:
         self._state.update(revision=target.name, snapshot_at=at, previous_snapshot=previous_id)
         self._state["history"] = (self._state["history"] + [metadata])[-30:]
 
+    def _ship(self, ident, kind, live, fill=lambda stage: None, progress=lambda phase: None):
+        """Stage, build, validate, freeze and publish one snapshot; clean up on any failure."""
+        previous = self.store.catalog_directory()
+        parent = self._baseline(previous)
+        stage, target = self.workspace / "staging" / ident, self.snapshots / ident
+        try:
+            self._new_stage(previous, stage)
+            result = fill(stage)
+            progress("build")
+            built = self._build(stage)
+            progress("validate")
+            self._validate(stage)
+            loaded = self.store.load_catalog(stage)
+            progress("publish")
+            metadata = self._manifest(stage, ident, parent, kind, ident)
+            stage.rename(target)
+            with self._lock:
+                if not live():
+                    raise Cancelled()
+                # Remy runs beside main jobs; only the pointer swap takes the lease.
+                lease = self._lease() if kind == "remy" else None
+                try:
+                    rollback = parent
+                    if kind != "catalog":  # Rebuilds keep the user's previous CN version.
+                        rollback = self._state.get("previous_snapshot") or parent
+                    self._publish(target, loaded, rollback, metadata)
+                    self._prune()
+                finally:
+                    if lease:
+                        lease.close()
+        except Exception:
+            shutil.rmtree(stage, ignore_errors=True)
+            if target.exists() and self.store.catalog_directory() != target:
+                shutil.rmtree(target, ignore_errors=True)
+            raise
+        return result, built
+
+    def _prune(self, keep=3):
+        """Keep current, previous and the newest few other snapshots."""
+        protected = {self._state["revision"], self._state.get("previous_snapshot")}
+        others = sorted(
+            (p for p in self.snapshots.iterdir() if p.is_dir() and p.name not in protected),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for old in others[keep:]:
+            shutil.rmtree(old, ignore_errors=True)
+
     def _update(self, ident, lease, epoch):
         succeeded = False
         try:
-            previous = self.store.catalog_directory()
-            parent = self._baseline(previous)
-            stage = self._new_stage(previous, ident)
-            result = self._prepare(
-                stage, previous, lambda phase, detail=None: self._progress(epoch, phase, detail)
+            result, built = self._ship(
+                ident,
+                "catalog",
+                lambda: not self._closed and epoch == self._epoch,
+                fill=lambda stage: self._prepare(
+                    stage,
+                    self.store.catalog_directory(),
+                    lambda phase, detail=None: self._progress(epoch, phase, detail),
+                ),
+                progress=lambda phase: self._progress(epoch, phase),
             )
-            self._progress(epoch, "build")
-            built = self._build(stage)
-            self._progress(epoch, "validate")
-            self._validate(stage)
-            loaded = self.store.load_catalog(stage)
-            self._progress(epoch, "publish")
-            metadata = self._manifest(stage, ident, parent, "catalog", ident)
-            target = self.snapshots / ident
-            stage.rename(target)
             with self._lock:
-                if self._closed or epoch != self._epoch:
-                    raise Cancelled()
-                self._publish(target, loaded, parent, metadata)
                 self._state["main"].update(
                     status="succeeded",
                     stage="finished",
@@ -606,22 +645,13 @@ class CatalogUpdates:
 
     def _rebuild(self, ident, lease, epoch):
         try:
-            previous = self.store.catalog_directory()
-            parent = self._baseline(previous)
-            stage = self._new_stage(previous, ident)
-            self._progress(epoch, "build")
-            built = self._build(stage)
-            self._progress(epoch, "validate")
-            self._validate(stage)
-            loaded = self.store.load_catalog(stage)
-            metadata = self._manifest(stage, ident, parent, "decisions", ident)
-            target = self.snapshots / ident
-            stage.rename(target)
+            _, built = self._ship(
+                ident,
+                "decisions",
+                lambda: not self._closed and epoch == self._epoch,
+                progress=lambda phase: self._progress(epoch, phase),
+            )
             with self._lock:
-                if self._closed or epoch != self._epoch:
-                    raise Cancelled()
-                rollback_to = self._state.get("previous_snapshot") or parent
-                self._publish(target, loaded, rollback_to, metadata)
                 self._state["main"].update(
                     status="succeeded",
                     stage="finished",
@@ -657,7 +687,6 @@ class CatalogUpdates:
         )
 
     def _check_remy(self, epoch, previous, cancelled):
-        lease = None
         try:
             with self._lock:
                 if epoch != self._epoch or cancelled.is_set():
@@ -680,7 +709,6 @@ class CatalogUpdates:
                     conflicts=len(report["conflicts"]),
                     fetch_count=report["fetch_count"],
                 )
-                write(self.workspace / "remy-reports" / (uuid.uuid4().hex + ".json"), report)
             conflicts_file = previous / "remy_conflicts.json"
             old_conflicts = (
                 read(conflicts_file).get("conflicts", []) if conflicts_file.exists() else []
@@ -693,46 +721,37 @@ class CatalogUpdates:
                 with self._lock:
                     if epoch != self._epoch or self.store.catalog_directory() != previous:
                         raise Cancelled()
-                ident = "remy-" + uuid.uuid4().hex[:16]
-                parent = self._baseline(previous)
-                stage = self._new_stage(previous, ident)
                 proposed = deepcopy(report["proposed_overrides"])
                 conflicts = deepcopy(conflicts)
-                records = list(proposed["overrides"])
-                for conflict in conflicts:
-                    records.extend(conflict.get("candidates", []))
-                    if isinstance(conflict.get("current"), dict):
-                        records.append(conflict["current"])
-                for record in records:
-                    filename = record.get("evidence_file")
-                    if filename and Path(filename).is_absolute():
-                        source = Path(filename)
-                        sha = digest(source)
-                        if sha != record.get("evidence_sha256"):
-                            raise ValueError("Remy 证据缓存校验失败")
-                        relative = f"remy-evidence/{sha}.html"
-                        destination = stage / relative
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        if not destination.exists():
-                            shutil.copy2(source, destination)
-                        record["evidence_file"] = relative
-                write(stage / "remy_release_overrides.json", proposed)
-                write(stage / "remy_conflicts.json", {"conflicts": conflicts})
-                self._build(stage)
-                self._validate(stage)
-                loaded = self.store.load_catalog(stage)
-                metadata = self._manifest(stage, ident, parent, "remy", ident)
-                target = self.snapshots / ident
-                stage.rename(target)
-                with self._lock:
-                    if epoch != self._epoch or cancelled.is_set():
-                        raise Cancelled()
-                    # Main updates run throughout parsing/building; only the final
-                    # pointer exchange takes the shared publication lease.
-                    lease = self._lease()
-                    # Metadata enrichment should not consume the user's previous CN version.
-                    rollback_to = self._state.get("previous_snapshot") or parent
-                    self._publish(target, loaded, rollback_to, metadata)
+
+                def fill(stage):
+                    records = list(proposed["overrides"])
+                    for conflict in conflicts:
+                        records.extend(conflict.get("candidates", []))
+                        if isinstance(conflict.get("current"), dict):
+                            records.append(conflict["current"])
+                    for record in records:
+                        filename = record.get("evidence_file")
+                        if filename and Path(filename).is_absolute():
+                            source = Path(filename)
+                            sha = digest(source)
+                            if sha != record.get("evidence_sha256"):
+                                raise ValueError("Remy 证据缓存校验失败")
+                            relative = f"remy-evidence/{sha}.html"
+                            destination = stage / relative
+                            destination.parent.mkdir(parents=True, exist_ok=True)
+                            if not destination.exists():
+                                shutil.copy2(source, destination)
+                            record["evidence_file"] = relative
+                    write(stage / "remy_release_overrides.json", proposed)
+                    write(stage / "remy_conflicts.json", {"conflicts": conflicts})
+
+                self._ship(
+                    "remy-" + uuid.uuid4().hex[:16],
+                    "remy",
+                    lambda: epoch == self._epoch and not cancelled.is_set(),
+                    fill=fill,
+                )
             with self._lock:
                 if epoch != self._epoch:
                     return
@@ -799,9 +818,6 @@ class CatalogUpdates:
                         self._save()
                     except OSError:
                         pass
-        finally:
-            if lease:
-                lease.close()
 
     def close(self):
         with self._lock:

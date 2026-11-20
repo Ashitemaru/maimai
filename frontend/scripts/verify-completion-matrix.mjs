@@ -109,12 +109,7 @@ function chart(version, constant, difficulty, complete, title) {
     legacy_complete: complete && id % 2 === 0,
     legacy_venue: '',
     manual_revision: 0,
-    manual_ap: null,
-    manual_venue: '',
     venue: '',
-    note: '',
-    manual_date: null,
-    achievement: complete ? 100.9876 : null,
     provider_achievement: complete ? 100.9876 : null,
     provider_fc: complete ? 'ap' : null,
     provider_synced_at: null,
@@ -122,7 +117,6 @@ function chart(version, constant, difficulty, complete, title) {
     is_complete: complete,
     status: complete ? (id % 2 === 0 ? 'legacy' : 'ap') : 'incomplete',
     conflict: false,
-    warnings: [],
   };
   charts.push(row);
   return row;

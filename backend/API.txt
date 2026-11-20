@@ -6,6 +6,20 @@ POST /api/auth/logout revokes the session. Personal APIs require authentication.
 
 GET /api/ready -> {ok, release_sha, checks:{catalog,personal}}; HTTP 503 unless every check
   passes. The deployer waits for ok with the expected release_sha before finishing.
+GET /api/version -> {token}
+  Opaque string that changes whenever the catalog snapshot is published or any personal
+  data is written (records, sync, preferences, venues, token, Bilibili jobs). Cheap: no
+  database read. Clients may skip refetching on focus while the token is unchanged.
+GET /api/export/venues.csv -> attachment mai-journal-venues.csv
+  UTF-8 CSV with BOM, columns chart_key,title,type,difficulty,venue,source,recorded_at.
+  One row per chart with a recorded venue: source=import (original TSV, recorded_at empty)
+  or app (confirmed claim, recorded_at = when the claim was registered).
+GET /api/export/venue-locations.csv -> attachment mai-journal-venue-locations.csv
+  UTF-8 CSV with BOM, columns venue,city,latitude,longitude,updated_at; every known venue,
+  coordinates empty when unlocated. All coordinates are user-set (WGS84).
+GET /api/export/assets.zip -> attachment mai-journal-assets.zip (application/zip)
+  Every file of the cover asset directory (MAIMAI_ASSETS_DIR), built in a temporary file
+  and streamed. All export responses require the session and are Cache-Control: no-store.
 GET /api/completion-table?<chart filters>&sort -> {items,total,summary,generated_at}
   Every matching chart with completion fields, unpaginated, for the completion table view.
 GET /api/completion-matrix?difficulty&constant_min&constant_max&cn_version_min&cn_version_max
@@ -80,7 +94,7 @@ GET /api/venues/map -> {items:[{name,city,total,pending_count,location,jackets}]
   coordinates. A location edit never renames or reassigns AP records.
   jackets contains at most three confirmed AP charts per venue, with chart_key,
   title,jacket_url,thumbnail_url,difficulty,difficulty_name,level,constant,status,
-  type,achievement. No pending claim counts as a completed AP.
+  type,achievement (the provider achievement). No pending claim counts as a completed AP.
 GET /api/venues/charts?name=&offset=0&limit=60 -> {items:[Chart],total,offset,limit}
   Exact venue match, confirmed AP only; max limit 100. Sort by current constant
   descending, then ID and difficulty ascending. Only the requested page is returned.
@@ -95,7 +109,7 @@ GET /api/venues/search?q=&city= -> {items,provider,attribution,attribution_url}
   Results contain a transient place_name/address label and WGS84 coordinates.
   The labels are not stored on the venue. Results
   are cached for 7 days (at most 512 queries). Uncached requests are limited to
-  one per second across app workers. HTTP timeouts and safe error messages keep
+  one per second. HTTP timeouts and safe error messages keep
   provider errors separate from direct map selection. Display attribution.
   All venue map/location APIs require the existing session and use no-store.
 GET /api/settings/divingfish -> {configured,source:"environment"|"local"|null,sync}
@@ -118,21 +132,21 @@ POST /api/sync/divingfish (no body) -> HTTP 202, job object
   request discards the response (token_changed).
   Receipt={ok,source:"divingfish",records,matched,unmatched,synced_at,sync_id,confirmed,
   pending,conflicts,venue_pending}.
-  Jobs share a nonblocking process/file lease (busy -> 409); starts have a short
-  cooldown (429). The UI polls status.
+  Only one sync job runs at a time (busy -> 409); starts have a short cooldown (429).
+  The UI polls status.
 Chart fields:
 id, difficulty, chart_key (id:difficulty), lxns_song_id, song_id (alias of id),
 title, display_title, artist, type, difficulty_index (alias of difficulty),
 difficulty_name, level, constant, divingfish_id, jacket_url, thumbnail_url,
 jp_release_version, jp_release_version_candidate, release_status,
-group(low/high/catalog), in_original_table, requires_venue, legacy_complete, legacy_venue,
-manual_ap(null/true/false), manual_venue, venue, note, manual_date,
-achievement(null or number, explicit manual score preferred),
-provider_achievement, provider_fc, provider_synced_at, provider_source(divingfish/null),
+cn_version, group(low/high/catalog), in_original_table, requires_venue, legacy_complete,
+legacy_venue, venue, provider_achievement, provider_fc, provider_synced_at, provider_source(divingfish/null),
 provider_fs, provider_dx_score, provider_rate, provider_ra,
 pending_record(null or {id,venue,created_at,updated_at,revision,reason}),
 record_revision, venue_pending, ap_confirmed_at, venue_confirmed_at,
-is_ap, is_complete, status(app/ap/legacy/incomplete), conflict, warnings.
+is_ap, is_complete, status(app/ap/legacy/incomplete), conflict.
+conflict is true when the latest sync returned a non-AP score for a chart with legacy
+completion or earlier AP evidence. achievement sorts use provider_achievement.
 Legacy completion is distinct from verified AP because original table includes deletion exemptions.
 Low/high are imported directly from original TSV source. Catalog-only charts remain a separate group.
 requires_venue is true for imported high charts, false for imported low charts;
@@ -153,11 +167,13 @@ GET /jackets/{song_id}.png -> active snapshot image, falling back to base catalo
   Original resolution is retained for cover/completion exports.
 GET /jackets/thumbnails/{song_id}/{revision}.webp -> authenticated 160px WebP preview
   thumbnail_url is generated from the current source asset; source changes produce a new URL.
-  Private browser caching and ETag/304 are supported. Server-generated previews are bounded.
+  Private browser caching and ETag/304 are supported. Previews are cached on disk, one
+  file per jacket; a new source revision replaces the previous preview.
   Preview URLs do not replace jacket_url and are not used for high-resolution exports.
 Personal JSON APIs and exports remain no-store. Static artwork caching never unlocks API access.
-Chart reads reuse one assembled snapshot until personal writes or catalog publication change it;
-transactional sync reads bypass that cache so their receipt includes the transaction's own writes.
+Chart reads share one assembled, read-only snapshot (with a chart_key index) until personal
+writes or catalog publication change it; transactional sync reads bypass that cache so their
+receipt includes the transaction's own writes.
 GET / -> frontend/dist/index.html, React + TypeScript app built with Vite.
 
 Run: ./start-app.sh (installs missing dependencies and builds the React app)
@@ -217,11 +233,13 @@ GET /api/bilibili/videos?page=1
   Lists every upload of the signed-in account, including ones still in review. Each item
   has organized=true when it is already a member of a handplay collection named
   "maimai <level> AP" (for example maimai 13+ AP). Unorganized uploads come first, then
-  newest first; 20 items per page. Incomplete upstream results fail. A collection the
+  newest first; 20 items per page. Each item has combo: "ap", "app" (AP+) or null, parsed
+  from the end of the existing title (mirrored upload: leading PA/+PA). Incomplete upstream results fail. A collection the
   public listing refuses (draft/under review) is skipped and named in
   unavailable_collections. Page 1 re-reads B 站; later pages reuse that snapshot for
   up to 5 minutes. Applying a publishing job clears the snapshot.
-GET /api/bilibili/videos/{bvid} -> existing title, both covers, revision and mirror_horizontal.
+GET /api/bilibili/videos/{bvid} -> existing title, both covers, revision, mirror_horizontal
+  and combo (same parsing as the listing).
   Explicitly loading an owned BV remains available for new, uncollected handplays.
 GET /api/bilibili/collections/order -> {checked_at,sections:[OrderReport]}
   Explicit read-only inspection of all owned collection sections. Each OrderReport
@@ -252,6 +270,8 @@ POST /api/bilibili/apply {plan_id,cover16,cover43} -> persistent job receipt.
   Rechecks ownership and the frozen revision before updating covers/title/section.
   The existing archive metadata and video files are preserved. Unsupported archive
   configurations are rejected before editing. This does not upload a new video.
+  A collection section that changed after the preview returns 409 (regenerate the
+  preview); chart identities of the other items are not re-resolved at apply time.
   Checks the frozen section before any upload/edit, then verifies exact membership
   before reordering. Preserves section metadata and sends all episode IDs, never
   only the newly added video. A job completes only after order has been read back.
@@ -261,6 +281,6 @@ POST /api/bilibili/jobs/{job_id}/retry -> resumes with those exact saved PNGs.
   An uncertain write is read back before retrying, never blindly submitted again.
   Unresolved writes block a competing job on the same video; safely superseded jobs
   cannot retry. No external mutation occurs while listing videos or preparing a plan.
-  Session credentials stay in a private runtime file, covered by encrypted backup.
+  Session credentials stay in a private runtime file.
   All routes require the site's authenticated session; upstream login errors do not
   invalidate that session. Error responses never include credentials or raw payloads.

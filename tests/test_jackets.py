@@ -14,9 +14,9 @@ from PIL import Image
 from backend.auth import hash_master_key
 from backend.jackets import IMMUTABLE_CACHE, REVALIDATE_CACHE, JacketPreviews
 from backend.store import Store
-from backend.test_app import FakeUpdater
 from tests.fixtures.catalog import write_catalog
 from tests.support import create_app
+from tests.test_app import FakeUpdater
 
 MASTER_KEY = "isolated-jacket-test-master-key"
 MASTER_KEY_HASH = hash_master_key(MASTER_KEY)
@@ -131,20 +131,20 @@ class JacketPreviewTests(unittest.TestCase):
         with patch.object(restarted, "_render", side_effect=AssertionError("should reuse cache")):
             self.assertEqual(restarted.image("22", revision), results[0])
 
-    def test_cache_eviction_is_bounded_and_does_not_touch_originals(self):
-        previews = JacketPreviews(self.root / "small-cache", lambda: [self.catalog], max_files=1)
+    def test_new_revision_replaces_cached_preview_and_keeps_original(self):
+        previews = JacketPreviews(self.root / "small-cache", lambda: [self.catalog])
         _, first = previews.source("22.png")
         previews.image("22", first)
         Image.new("RGB", (400, 400), "orange").save(self.catalog / "jackets/30.png")
-        _, second = previews.source("30.png")
-        previews.image("30", second)
-        self.assertEqual(len(list(previews.directory.glob("*.webp"))), 1)
+        previews.image("30", previews.source("30.png")[1])
+        Image.new("RGB", (400, 400), "blue").save(self.original)
+        _, second = previews.source("22.png")
+        previews.image("22", second)
+        self.assertEqual(
+            sorted(path.name for path in previews.directory.glob("*.webp")),
+            sorted([f"22-{second}.webp", f"30-{previews.source('30.png')[1]}.webp"]),
+        )
         self.assertTrue(self.original.is_file())
-        previews.image("22", first)
-        self.assertEqual(len(list(previews.directory.glob("*.webp"))), 1)
-        tiny = JacketPreviews(self.root / "tiny-cache", lambda: [self.catalog], max_bytes=1)
-        self.assertTrue(tiny.image("22", first))
-        self.assertEqual(list(tiny.directory.glob("*.webp")), [])
 
     def test_api_projection_preserves_original_and_keeps_personal_responses_uncached(self):
         self.login()

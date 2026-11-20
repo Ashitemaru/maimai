@@ -9,7 +9,6 @@ import { formatTimestamp } from './dateTime';
 import type { Chart, ChartList } from './types';
 import {
   parseBvid,
-  videoTitleCombo,
   matchingCollectionSection,
   publishingState,
   publishingComplete,
@@ -470,13 +469,13 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
       if (manualCombo.current?.bvid === result.bvid) setCombo(manualCombo.current.value);
       else {
         manualCombo.current = null;
-        setCombo(videoTitleCombo(result) || 'ap');
+        setCombo(result.combo || 'ap');
       }
       setConstant('');
       setVersion('');
       setSection('');
       setAutomaticSection(true);
-      setMirror(result.mirror_horizontal || result.bvid === 'BV1bJouBSEiH');
+      setMirror(!!result.mirror_horizontal);
     } catch (error) {
       if (request === videoRequest.current) notify(messageOf(error));
     } finally {

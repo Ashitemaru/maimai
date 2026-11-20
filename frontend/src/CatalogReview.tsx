@@ -4,6 +4,7 @@ import type { CatalogUpdateControl, CatalogUpdateState } from './useCatalogUpdat
 import { ChartTypeBadge, DifficultyBadge } from './ChartBadges';
 import { formatDate } from './dateTime';
 import { useNotify, useToastMessage } from './Toast';
+import { difficultyNames } from './chartLabels';
 
 type Value = unknown;
 interface SourceOption {
@@ -110,9 +111,7 @@ const sourceName = (source: string) =>
     manual: '人工记录',
   })[sourceKey(source)] || source;
 const difficultyName = (record: Pick<ChartRecord, 'difficulty' | 'difficulty_name'>) =>
-  record.difficulty_name ||
-  ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master'][record.difficulty] ||
-  '宴';
+  record.difficulty_name || difficultyNames[record.difficulty] || '宴';
 const fieldNames: Record<string, string> = {
   title: '曲名',
   artist: '作者',

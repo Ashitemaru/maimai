@@ -11,8 +11,8 @@ from uuid import uuid4
 import httpx
 from fastapi.testclient import TestClient
 
+from backend import venue_locations
 from backend.store import Store
-from backend.test_app import FakeUpdater
 from backend.venue_locations import (
     SEARCH_CACHE_LIMIT,
     SEARCH_USER_AGENT,
@@ -21,6 +21,7 @@ from backend.venue_locations import (
 )
 from tests.fixtures.catalog import write_catalog, write_imports
 from tests.support import create_app
+from tests.test_app import FakeUpdater
 
 
 def sample_chart(number, *, venue="【测试】机厅", is_ap=True):
@@ -276,8 +277,7 @@ class VenueLocationTests(unittest.TestCase):
             result = self.client.get("/api/venues/search", params={"q": "地点"})
             self.assertEqual(result.status_code, 502)
             self.assertNotIn("internal", result.text)
-        with self.store.db() as conn:
-            conn.execute("DELETE FROM venue_geocoder_rate_limit")
+        venue_locations._last_search = 0.0
         reply = httpx.Response(
             200, json={"bad": "data"}, request=httpx.Request("GET", "https://geocoder.invalid/api/")
         )

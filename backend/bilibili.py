@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import fcntl
 import hashlib
 import io
 import json
@@ -41,6 +40,7 @@ from .bilibili_order import (
     order_report,
     parsed_title,
     section_snapshot,
+    title_combo,
 )
 from .clock import now
 
@@ -142,22 +142,17 @@ class BilibiliService:
                     payload TEXT NOT NULL, cover16 TEXT, cover43 TEXT
                 );
             """)
-
-        # If the process stopped after sending, preserve the per-step write marker.
-        # A retry first reads back that step; it never repeats an uncertain edit.
-        try:
-            with self.operation(), store.db() as db:
-                for row in db.execute("SELECT job_id,payload FROM bilibili_jobs").fetchall():
-                    job = json.loads(row["payload"])
-                    if job["state"] == "running":
-                        job["state"] = "uncertain"
-                        job["error"] = "上次处理已中断，请检查结果后继续"
-                        db.execute(
-                            "UPDATE bilibili_jobs SET payload=? WHERE job_id=?",
-                            (json.dumps(job), row["job_id"]),
-                        )
-        except BilibiliError:
-            pass  # Another process is still actively handling this account.
+            # If the process stopped after sending, preserve the per-step write marker.
+            # A retry first reads back that step; it never repeats an uncertain edit.
+            for row in db.execute("SELECT job_id,payload FROM bilibili_jobs").fetchall():
+                job = json.loads(row["payload"])
+                if job["state"] == "running":
+                    job["state"] = "uncertain"
+                    job["error"] = "上次处理已中断，请检查结果后继续"
+                    db.execute(
+                        "UPDATE bilibili_jobs SET payload=? WHERE job_id=?",
+                        (json.dumps(job), row["job_id"]),
+                    )
 
     def close(self):
         for entry in self._logins.values():
@@ -169,16 +164,7 @@ class BilibiliService:
         if not self._lock.acquire(blocking=False):
             raise BilibiliError("另一项 B 站操作正在进行", status=409)
         try:
-            path = self.store.runtime / ".bilibili-operation.lock"
-            with path.open("a") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise BilibiliError("另一项 B 站操作正在进行", status=409) from None
-                try:
-                    yield
-                finally:
-                    fcntl.flock(lock, fcntl.LOCK_UN)
+            yield
         finally:
             self._lock.release()
 
@@ -322,7 +308,10 @@ class BilibiliService:
             organized.update(video["bvid"] for video in members)
         items = {}
         for video in uploads:
-            items[video["bvid"]] = {**video, "organized": video["bvid"] in organized}
+            items[video["bvid"]] = video | {
+                "organized": video["bvid"] in organized,
+                "combo": title_combo(video["title"], video["bvid"]),
+            }
         self._listing_cache = {
             "mid": account["mid"],
             "at": time.monotonic(),
@@ -357,6 +346,7 @@ class BilibiliService:
         return {key: archive.get(key, "") for key in ("bvid", "title", "cover", "cover43")} | {
             "revision": archive_revision(data),
             "mirror_horizontal": bvid == MIRROR_BVID,
+            "combo": title_combo(archive.get("title", ""), bvid),
         }
 
     def bind_chart(self, account_mid, bvid, chart, observed_title):
@@ -380,15 +370,30 @@ class BilibiliService:
                     (account_mid, bvid, json.dumps(binding), now()),
                 )
 
-    def _resolver(self, client, account):
+    def _bindings(self, account_mid):
         with self.store.db() as db:
-            bindings = {
+            return {
                 row["bvid"]: json.loads(row["payload"])
                 for row in db.execute(
                     "SELECT bvid,payload FROM bilibili_chart_bindings WHERE account_mid=?",
-                    (account["mid"],),
+                    (account_mid,),
                 )
             }
+
+    def _save_new_bindings(self, account_mid, bindings):
+        # Keep bindings the user changed after this preview.
+        current = self._bindings(account_mid)
+        self._save_bindings(
+            account_mid,
+            {
+                bvid: binding
+                for bvid, binding in bindings.items()
+                if bvid not in current or current[bvid]["chart_key"] == binding["chart_key"]
+            },
+        )
+
+    def _resolver(self, client, account):
+        bindings = self._bindings(account["mid"])
         latest = None
 
         def latest_title(bvid):
@@ -451,49 +456,20 @@ class BilibiliService:
             target=target,
             explicit=plan["chart"],
         )
-        keys = {item["chart_key"] for item in plan["order"]["desired"] if item["chart_key"]}
-        catalog = {
-            chart["chart_key"]: {
-                "identity": chart_identity(chart),
-                "version": chart.get("jp_release_version"),
-            }
-            for chart in resolver.charts.values()
-            if chart["chart_key"] in keys
-        }
         plan["_order"] = {
             "schema": 1,
             "snapshot": snapshot,
             "target": target,
             "desired_aids": [item["aid"] for item in plan["order"]["desired"]],
             "bindings": resolver.evidence,
-            "catalog": catalog,
         }
 
-    def _order_catalog_current(self, plan):
+    @staticmethod
+    def _order_applicable(plan):
         if not plan.get("_order") or plan["_order"].get("schema") != 1:
             raise BilibiliError("此预览缺少合集排序核对，请重新生成预览", status=409)
         if plan["order"]["status"] == "blocked":
             raise BilibiliError("合集存在无法确定谱面或版本的稿件，请先完成对应", status=409)
-        with self.store.db() as db:
-            bindings = {
-                row["bvid"]: json.loads(row["payload"])
-                for row in db.execute(
-                    "SELECT bvid,payload FROM bilibili_chart_bindings WHERE account_mid=?",
-                    (plan["_account_mid"],),
-                )
-            }
-        for bvid, expected in plan["_order"]["bindings"].items():
-            if bvid in bindings and bindings[bvid]["chart_key"] != expected["chart_key"]:
-                raise BilibiliError("稿件对应谱面的选择已变化，请重新生成预览", status=409)
-        current = {chart["chart_key"]: chart for chart in self.store.all_charts()}
-        for key, expected in plan["_order"]["catalog"].items():
-            chart = current.get(key)
-            if (
-                not chart
-                or {"identity": chart_identity(chart), "version": chart.get("jp_release_version")}
-                != expected
-            ):
-                raise BilibiliError("参与排序的谱面信息已变化，请重新生成预览", status=409)
 
     def _order_snapshot(self, client, plan):
         header = plan["_order"]["snapshot"]["section"]
@@ -501,20 +477,8 @@ class BilibiliService:
             client.section(header["id"]), section_id=header["id"], season_id=header["seasonId"]
         )
 
-    def _order_titles_current(self, client, plan):
-        resolver = self._resolver(client, {"mid": plan["_account_mid"]})
-        resolver.bindings = plan["_order"]["bindings"]
-        for episode in plan["_order"]["snapshot"]["episodes"]:
-            if episode["bvid"] == plan["bvid"]:
-                continue  # Full owned-archive revision checks protect the selected video.
-            expected = plan["_order"]["bindings"].get(episode["bvid"])
-            chart, problem = resolver.resolve(episode)
-            if expected and (problem or not chart or chart["chart_key"] != expected["chart_key"]):
-                raise BilibiliError("合集内稿件的真实标题已变化，请重新生成预览", status=409)
-
     def _order_preflight(self, client, plan):
-        self._order_catalog_current(plan)
-        self._order_titles_current(client, plan)
+        self._order_applicable(plan)
         if digest(self._order_snapshot(client, plan)) != plan["order"]["revision"]:
             raise BilibiliError("合集在预览后发生变化，请重新生成预览", status=409)
 
@@ -671,7 +635,7 @@ class BilibiliService:
                 if job["state"] == "superseded":
                     raise BilibiliError("该任务已由新的预览取代", status=409)
                 if job["steps"].get("order") not in ("sending", "submitted", "verified"):
-                    self._order_catalog_current(plan)
+                    self._order_applicable(plan)
             else:
                 if time.time() > expires:
                     raise BilibiliError("预览已过期，请重新生成", status=409)
@@ -808,12 +772,7 @@ class BilibiliService:
             self._save_job(job)
         self._collection(client, plan, job, data)
         self._apply_order(client, plan, job)
-        try:
-            self._order_catalog_current(plan)
-        except BilibiliError:
-            pass  # A sent order can be acknowledged without replacing newer bindings.
-        else:
-            self._save_bindings(account["mid"], plan["_order"]["bindings"])
+        self._save_new_bindings(account["mid"], plan["_order"]["bindings"])
         job["state"] = "complete"
         self._save_job(job)
 
@@ -848,7 +807,7 @@ class BilibiliService:
     def _apply_order(self, client, plan, job):
         stage = job["steps"].get("order")
         if stage not in ("sending", "submitted", "verified"):
-            self._order_catalog_current(plan)
+            self._order_applicable(plan)
         current = self._order_snapshot(client, plan)
         expected_ids = self._order_members(
             current, plan, check_original_order=stage not in ("sending", "submitted", "verified")
@@ -867,8 +826,7 @@ class BilibiliService:
             job["_order_expected_ids"] = expected_ids
             self._save_job(job)
             return
-        self._order_titles_current(client, plan)
-        # Title reads may span pages; recheck members immediately before the write.
+        # Recheck members immediately before the write.
         fresh = self._order_snapshot(client, plan)
         if digest(fresh) != digest(current):
             raise BilibiliError("合集在排序核对时发生变化，请重新生成预览", status=409)

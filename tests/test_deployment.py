@@ -15,9 +15,9 @@ from fastapi.testclient import TestClient
 
 from backend.auth import hash_master_key
 from backend.store import Store
-from backend.test_app import FakeUpdater
 from tests.fixtures.catalog import write_catalog
 from tests.support import create_app
+from tests.test_app import FakeUpdater
 
 
 class DeploymentTests(unittest.TestCase):

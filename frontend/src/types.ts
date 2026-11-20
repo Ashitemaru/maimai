@@ -40,10 +40,8 @@ export interface Chart {
   jp_release_version: string | null;
   cn_version?: number | null;
   jp_release_date?: string | null;
-  release_status: string;
   requires_venue: boolean;
   venue: string;
-  achievement: number | null;
   provider_achievement: number | null;
   provider_fc: string | null;
   provider_fs?: string | null;
@@ -54,7 +52,6 @@ export interface Chart {
   is_complete: boolean;
   status: 'app' | 'ap' | 'legacy' | 'incomplete';
   conflict: boolean;
-  warnings: string[];
 }
 interface Counts {
   total: number;
@@ -106,7 +103,6 @@ export type CompletionChart = Pick<
   | 'is_ap'
   | 'status'
   | 'conflict'
-  | 'achievement'
   | 'provider_achievement'
   | 'pending_record'
   | 'record_revision'

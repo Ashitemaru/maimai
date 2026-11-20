@@ -74,9 +74,8 @@ counts.total/admitted/pending 分别为来源谱面数、正式谱面数、待�
   field_decisions（按字段保存已生效的持久裁决）
 兼容与原始来源字段不是独立取信来源；衍生状态和 URL/本地路径由代码生成。
 
-SQLite：metadata、charts、aliases、external_ids、search_terms；没有 songs 表。
-charts 主键 (id,difficulty)，chart_key UNIQUE；业务字段有结构化列，完整条目保存在 data_json。
-aliases、external_ids、search_terms 用 (id,difficulty) 外键指向 charts。
+SQLite 只供应用读取：metadata(versions_cn、snapshot_at) 与 charts(id,difficulty,type,data_json)，
+主键 (id,difficulty)，完整条目在 data_json；其余字段只在 catalog.json。旧快照的宽表仍可直接读取。
 chart_key_map.json 包含全部原始谱面（包括待入库）的新旧键映射。
 AP 接口的 song_id/difficulty_index 是兼容别名，分别等于新 id/difficulty。
 

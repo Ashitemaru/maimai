@@ -12,6 +12,7 @@ export interface PublishingVideo {
   cover: string;
   mirror_horizontal?: boolean;
   organized?: boolean;
+  combo: 'ap' | 'app' | null;
 }
 export interface PublishingCollection {
   id: number;
@@ -75,19 +76,6 @@ export interface PublishingImages {
 
 export function parseBvid(value: string) {
   return value.match(/BV[0-9A-Za-z]{10}/)?.[0] || '';
-}
-
-export function videoTitleCombo(
-  video: Pick<PublishingVideo, 'bvid' | 'title'>,
-): 'ap' | 'app' | null {
-  const title = video.title.normalize('NFKC').trim();
-  const ordinary = /(?:^|\s)AP(\s*\+)?$/i.exec(title);
-  if (ordinary) return ordinary[1] ? 'app' : 'ap';
-  if (video.bvid === 'BV1bJouBSEiH') {
-    const mirrored = /^(\+\s*)?PA(?:\s|$)/i.exec(title);
-    if (mirrored) return mirrored[1] ? 'app' : 'ap';
-  }
-  return null;
 }
 
 export function matchingCollectionSection(collections: PublishingCollection[], constant: string) {

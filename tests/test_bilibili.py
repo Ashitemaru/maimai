@@ -455,13 +455,6 @@ class BilibiliServiceTests(unittest.TestCase):
         self.assertEqual(saved["state"], "uncertain")
         self.assertEqual(saved["steps"]["metadata"], "sending")
 
-    def test_different_service_same_runtime_has_operation_lock(self):
-        second = BilibiliService(self.store, client_factory=self.client)
-        self.addCleanup(second.close)
-        with self.service.operation(), self.assertRaises(BilibiliError):
-            with second.operation():
-                self.fail("second process acquired the operation lock")
-
     def test_collection_changed_after_preview_stops_before_edit(self):
         plan = self.prepare()
         self.client.collection_members[20] = [{"id": 666, "aid": 456}]

@@ -34,7 +34,7 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
    The manifest records the actual builder version and the deployer checks it.
    Create the locked service account
    `maimai` with no interactive login. Create `/srv/mai-journal` owned by `maimai`,
-   mode 0700, and `releases`, `backups`, `shared/runtime`, `shared/catalog`,
+   mode 0700, and `releases`, `shared/runtime`, `shared/catalog`,
    `shared/assets` beneath it. Existing private runtime/catalog files remain 0600;
    all application and deployment files run as the same uid, so no shared-user
    permission relaxation is needed.
@@ -56,7 +56,7 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
    exact application service, and `mai-deploy` only starting the deployment unit,
    reading its journal and running `ci_receive.py` as `maimai`. The application unit's `NoNewPrivileges` prevents
    it from using sudo; its filesystem sandbox permits writes only to catalog and
-   runtime. The deployment unit can write release/current/backup paths.
+   runtime. The deployment unit can write release/current paths.
 6. Run `systemctl daemon-reload`, then `systemctl start mai-journal-deploy.service`.
    Inspect its journal and `/api/ready` through localhost. Enable
    `mai-journal.service` only after initial validation. If an older install enabled
@@ -129,9 +129,8 @@ A filesystem flock serializes the complete deployment. Uploading the current SHA
 a no-op. A consumed or failed upload is deleted; a rerun of the CI job uploads again.
 
 The deployer writes a recovery journal, stops the single application service
-(60-second systemd budget; a running Diving-Fish sync gives up after at most 40 seconds), makes SQLite online-backup copies of personal and
-adjudications databases (plus the session database when present), changes
-`current` atomically and starts the new code.
+(60-second systemd budget; a running Diving-Fish sync gives up after at most 40 seconds), changes `current` atomically and starts
+the new code.
 It accepts `/api/ready` only when `ok` is true and `release_sha` matches. A failed
 activation stops the new process before restoring the old pointer and restarting
 it. Rollback never overwrites personal data. An interrupted activation is rolled
@@ -140,10 +139,8 @@ After fixing an environment problem, rerun the CI deploy job.
 Keep the previous release directory: recovery intentionally fails closed if it is
 missing. A failed initial deployment has no previous release and remains stopped.
 
-Each activation also makes SQLite online-backup copies in `backups/<UTC timestamp>-<random>/`
-(the newest 10 are kept) and deletes every release except the active and previous one.
-An absent personal database prevents activation. Daily encrypted off-host backups are
-described in [backup.md](backup.md). Code rollback assumes
+Each activation deletes every release except the active and previous one. An absent
+personal database prevents activation. Code rollback assumes
 schema-compatible releases; destructive migrations need a separate reviewed plan.
 
 Tests use synthetic archives, fake service management and temporary SQLite

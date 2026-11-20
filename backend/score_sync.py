@@ -9,11 +9,13 @@ from uuid import uuid4
 
 import httpx
 
-from .store import SyncBusyError, SyncTokenChangedError
-
 RECORDS_ENDPOINT = "https://www.diving-fish.com/api/maimaidxprober/player/records"
 JOB_COOLDOWN_SECONDS = 3
 SHUTDOWN_GRACE_SECONDS = 40
+
+
+class SyncTokenChangedError(Exception):
+    """A provider response belongs to credentials that have since changed."""
 
 
 class ScoreSyncError(Exception):
@@ -84,43 +86,37 @@ class ScoreSync:
                 and time.monotonic() - self._last_started < JOB_COOLDOWN_SECONDS
             ):
                 raise ScoreSyncError(429, "sync_cooldown", "操作过于频繁，请稍后再试。")
-            lease = self.store.sync_lease()
-            try:
-                token, generation = lease.__enter__()
-            except SyncBusyError:
-                raise ScoreSyncError(409, "sync_busy", "水鱼同步正在进行，请等待完成。") from None
-            try:
-                # Pending claims are frozen before the request; edits made during
-                # the pull wait for the next sync.
-                eligible = self.store.pending_snapshot()
-                job = {
-                    "id": str(uuid4()),
-                    "kind": "divingfish",
-                    "state": "running",
-                    "stage": "fetching",
-                    "message": "正在读取水鱼成绩",
-                    "error": None,
-                    "result": None,
-                }
-                self._job = job
-                self._last_started = time.monotonic()
-                self._thread = threading.Thread(
-                    target=self._run,
-                    args=(token, generation, eligible, lease),
-                    daemon=True,
-                    name="personal-score-sync",
-                )
-                self._thread.start()
-            except Exception:
-                lease.__exit__(None, None, None)
-                raise
+            with self.store._token_lock:
+                token, _ = self.store.token()
+                generation = self.store._token_generation
+            # Pending claims are frozen before the request; edits made during
+            # the pull wait for the next sync.
+            eligible = self.store.pending_snapshot()
+            job = {
+                "id": str(uuid4()),
+                "kind": "divingfish",
+                "state": "running",
+                "stage": "fetching",
+                "message": "正在读取水鱼成绩",
+                "error": None,
+                "result": None,
+            }
+            self._job = job
+            self._last_started = time.monotonic()
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(token, generation, eligible),
+                daemon=True,
+                name="personal-score-sync",
+            )
+            self._thread.start()
             return copy.deepcopy(job)
 
     def _update(self, **values):
         with self._lock:
             self._job.update(values)
 
-    def _run(self, token, generation, eligible, lease):
+    def _run(self, token, generation, eligible):
         try:
             payload = fetch_records(token)
             self._update(stage="validating", message="正在核对并保存成绩")
@@ -146,8 +142,6 @@ class ScoreSync:
             self._fail(
                 ScoreSyncError(500, "sync_failed", "同步未完成，请稍后重试。本地记录已保留。")
             )
-        finally:
-            lease.__exit__(None, None, None)
 
     def _fail(self, error):
         self._update(state="failed", stage="failed", message=error.message, error=error.detail())

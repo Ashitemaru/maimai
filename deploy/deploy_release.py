@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import fcntl
 import hashlib
 import json
@@ -26,7 +25,6 @@ from pathlib import Path, PurePosixPath
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SERVICE = "mai-journal.service"
-KEEP_BACKUPS = 10
 READY_URL = "http://127.0.0.1:8766/api/ready"
 MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_EXTRACTED = 256 * 1024 * 1024
@@ -418,34 +416,6 @@ class Deployer:
         log("Recovering an interrupted activation before installing new code")
         self.rollback(previous, target)
 
-    def backup(self, previous, target):
-        label = datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
-        directory = self.root / "backups" / label
-        directory.mkdir(parents=True, mode=0o700)
-        names = {
-            "personal.sqlite3": self.root / "shared/runtime/personal.sqlite3",
-            "adjudications.sqlite3": self.root / "shared/catalog/updates/adjudications.sqlite3",
-            "auth.sqlite3": self.root / "shared/runtime/auth.sqlite3",
-        }
-        completed = []
-        for name, source in names.items():
-            if not source.is_file():
-                if name == "personal.sqlite3":
-                    raise DeployError("Personal database must be initialized before deployment")
-                continue
-            with contextlib.closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src:
-                with contextlib.closing(sqlite3.connect(directory / name)) as dest:
-                    src.backup(dest)
-                    if dest.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                        raise DeployError("SQLite backup integrity check failed")
-            (directory / name).chmod(0o600)
-            completed.append(name)
-        atomic_json(
-            directory / "receipt.json",
-            {"previous": previous, "target": target, "databases": completed},
-        )
-        return directory
-
     def prepare(self, sha):
         release = self.releases / sha
         if release.exists():
@@ -484,12 +454,13 @@ class Deployer:
             (self.incoming / f"mai-journal-{sha}.tar.gz").unlink()
             log(f"Already installed {sha}; no changes")
             return "unchanged"
+        if not (self.root / "shared/runtime/personal.sqlite3").is_file():
+            raise DeployError("Personal database must be initialized before deployment")
         log(f"Preparing uploaded release {sha}")
         self.prepare(sha)
         atomic_json(self.journal, {"previous": previous, "target": sha})
         try:
             self.host.service("stop")
-            self.backup(previous, sha)
             switch_current(self.root, sha)
             self.host.service("start")
             if not self.host.ready(sha):
@@ -503,19 +474,17 @@ class Deployer:
         return "deployed"
 
     def prune(self, keep):
-        """Keep the active and rollback releases and the newest deployment backups.
+        """Keep only the active and rollback releases.
 
         Best effort: the new release is already live, so a leftover directory (for
         example files created by root) is logged instead of failing the deployment.
         """
-        backups = self.root / "backups"
-        labels = sorted(p for p in backups.iterdir() if p.is_dir()) if backups.is_dir() else []
         stale = [
             release
             for release in self.releases.iterdir()
             if release.name not in keep and SHA.fullmatch(release.name) and release.is_dir()
         ]
-        for path in stale + labels[:-KEEP_BACKUPS]:
+        for path in stale:
             try:
                 shutil.rmtree(path)
             except OSError as exc:

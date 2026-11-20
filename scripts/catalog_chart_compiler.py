@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import sqlite3
 from collections import defaultdict
 from contextlib import closing
@@ -16,9 +15,8 @@ from datetime import date
 from pathlib import Path
 
 from .catalog_pipeline import atomic_json as write
-from .catalog_pipeline import check_source, merge_and_diff
 from .catalog_policy import source_policy
-from .catalog_record_review import _notes, build_record_review
+from .catalog_record_review import build_record_review
 from .catalog_versions import empty_release, fingerprint, resolve_field_versions
 
 FIELDS = {
@@ -508,88 +506,33 @@ def load_record_review(directory, adjudications=None):
     return review
 
 
+SQL_METADATA = ("versions_cn", "snapshot_at")
+
+
+def sql_text(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 def write_sqlite(path, catalog):
+    """Runtime index: the app reads charts.data_json plus two metadata keys."""
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
     temporary.unlink(missing_ok=True)
     try:
         with closing(sqlite3.connect(temporary)) as conn, conn:
-            conn.execute("PRAGMA foreign_keys=ON")
             conn.executescript("""
                 CREATE TABLE metadata (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
-                CREATE TABLE charts (
-                    id INTEGER NOT NULL, difficulty INTEGER NOT NULL, chart_key TEXT NOT NULL UNIQUE,
-                    legacy_chart_key TEXT NOT NULL UNIQUE, lxns_song_id INTEGER NOT NULL,
-                    type TEXT NOT NULL, difficulty_name TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL,
-                    bpm REAL, genre TEXT, level TEXT, constant REAL, note_designer TEXT, notes_json TEXT NOT NULL,
-                    cn_version INTEGER, api_version INTEGER, jp_release_version TEXT, jp_release_date TEXT,
-                    jp_release_provider TEXT, release_status TEXT, version_pending INTEGER NOT NULL,
-                    jacket_path TEXT NOT NULL, jacket_available INTEGER NOT NULL, jacket_source_json TEXT,
-                    aliases_json TEXT NOT NULL, source_ids_json TEXT NOT NULL, field_decisions_json TEXT NOT NULL,
-                    data_json TEXT NOT NULL, PRIMARY KEY(id,difficulty)
-                );
-                CREATE TABLE aliases (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,alias TEXT NOT NULL,
-                    PRIMARY KEY(id,difficulty,alias),FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
-                CREATE TABLE external_ids (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,namespace TEXT NOT NULL,
-                    external_id TEXT NOT NULL,type TEXT,source_title TEXT,
-                    FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
-                CREATE TABLE search_terms (id INTEGER NOT NULL,difficulty INTEGER NOT NULL,kind TEXT NOT NULL,term TEXT NOT NULL,
-                    FOREIGN KEY(id,difficulty) REFERENCES charts(id,difficulty));
-                CREATE INDEX charts_constant ON charts(constant,id,difficulty);
+                CREATE TABLE charts (id INTEGER NOT NULL, difficulty INTEGER NOT NULL,
+                    type TEXT NOT NULL, data_json TEXT NOT NULL, PRIMARY KEY(id, difficulty));
             """)
-
-            def encode(value):
-                return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-            for key, value in catalog.items():
-                if key != "charts":
-                    conn.execute("INSERT INTO metadata VALUES (?,?)", (key, encode(value)))
-            columns = [r[1] for r in conn.execute("PRAGMA table_info(charts)")]
-            for chart in catalog["charts"]:
-                values = []
-                for column in columns:
-                    value = (
-                        chart
-                        if column == "data_json"
-                        else chart[column[:-5]]
-                        if column.endswith("_json")
-                        else chart[column]
-                    )
-                    values.append(
-                        encode(value)
-                        if column.endswith("_json")
-                        else int(value)
-                        if isinstance(value, bool)
-                        else value
-                    )
-                conn.execute(
-                    "INSERT INTO charts VALUES (" + ",".join("?" for _ in values) + ")", values
-                )
-                pair = (chart["id"], chart["difficulty"])
-                for alias in chart["aliases"]:
-                    conn.execute("INSERT INTO aliases VALUES (?,?,?)", (*pair, alias))
-                for external in chart["external_ids"]:
-                    conn.execute(
-                        "INSERT INTO external_ids VALUES (?,?,?,?,?,?)",
-                        (
-                            *pair,
-                            external["namespace"],
-                            external["id"],
-                            external.get("type"),
-                            external.get("source_title"),
-                        ),
-                    )
-                for kind, term in [
-                    ("title", chart["title"]),
-                    *[("alias", a) for a in chart["aliases"]],
-                ]:
-                    conn.execute("INSERT INTO search_terms VALUES (?,?,?,?)", (*pair, kind, term))
-            conn.commit()
-            if (
-                conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok"
-                or conn.execute("PRAGMA foreign_key_check").fetchall()
-            ):
-                raise ValueError("Schema 2 SQLite validation failed")
+            conn.executemany(
+                "INSERT INTO metadata VALUES (?,?)",
+                [(key, sql_text(catalog[key])) for key in SQL_METADATA],
+            )
+            conn.executemany(
+                "INSERT INTO charts VALUES (?,?,?,?)",
+                [(c["id"], c["difficulty"], c["type"], sql_text(c)) for c in catalog["charts"]],
+            )
         temporary.replace(path)
     except BaseException:
         temporary.unlink(missing_ok=True)
@@ -699,236 +642,3 @@ def build(directory):
     }
     write(directory / "build_report.json", report)
     return report
-
-
-def _require(condition, message):
-    if not condition:
-        raise ValueError("Catalog validation failed: " + message)
-
-
-def validate(directory):
-    """Recompute the admission boundary and every permanent exception from receipts."""
-    try:
-        return _validate(Path(directory))
-    except (KeyError, IndexError, TypeError, AttributeError) as error:
-        # Malformed generated files fail validation like any other mismatch.
-        raise ValueError(
-            f"Catalog validation failed: malformed catalog data ({error!r})"
-        ) from error
-
-
-def _validate(directory):
-    require = _require
-    catalog = read(directory / "catalog.json")
-    report = read(directory / "build_report.json")
-    require(isinstance(catalog, dict), "catalog.json is missing")
-    require(isinstance(report, dict), "build_report.json is missing")
-    require(
-        catalog.get("schema_version") == 2 and "songs" not in catalog, "schema 2 flat chart catalog"
-    )
-    require(
-        catalog.get("primary_source") == "lxns" and catalog.get("data_region") == "CN",
-        "metadata authority",
-    )
-    require(
-        catalog.get("source_policy") == source_policy() == report.get("source_policy"),
-        "source policy",
-    )
-    for receipt in read(directory / "raw/sources.json", []):
-        path = directory / "raw" / receipt["file"]
-        require(
-            path.is_file()
-            and digest(path) == receipt["sha256"]
-            and path.stat().st_size == receipt["bytes"],
-            "raw source hash: " + receipt["file"],
-        )
-        check_source(
-            receipt["file"],
-            read(path),
-            allow_empty=receipt.get("fetch_status") in ("stale", "unavailable"),
-        )
-    for receipt in catalog.get("input_files", []):
-        path = directory / receipt["path"]
-        require(
-            path.is_file()
-            and digest(path) == receipt["sha256"]
-            and path.stat().st_size == receipt["bytes"],
-            "input hash: " + receipt["path"],
-        )
-    for receipt in report.get("outputs", []):
-        path = directory / receipt["path"]
-        require(
-            path.is_file()
-            and digest(path) == receipt["sha256"]
-            and path.stat().st_size == receipt["bytes"],
-            "output hash: " + receipt["path"],
-        )
-    if (directory / "effective_lxns_songs.json").exists():
-        effective, _ = merge_and_diff(
-            read(directory / "raw/lxns_songs.json"),
-            read(directory / "retained_lxns_records.json"),
-            read(directory / "pipeline_report.json")["started_at"],
-        )
-        require(
-            effective == read(directory / "effective_lxns_songs.json"),
-            "effective raw/retained projection",
-        )
-    calculated = calculate(directory)
-    require(
-        catalog["charts"] == calculated["charts"],
-        "admitted charts differ from source/decisions or pending chart leaked",
-    )
-    require(
-        read(directory / "catalog_record_review.json") == calculated["review"],
-        "pending review differs from source/decisions",
-    )
-    require(
-        read(directory / "chart_key_map.json") == calculated["mappings"],
-        "canonical chart identity mapping",
-    )
-    require(
-        read(directory / "pending_charts.json")
-        == {
-            "schema_version": 2,
-            "counts": calculated["review"]["counts"],
-            "records": [r for r in calculated["review"]["records"] if r["status"] == "pending"],
-        },
-        "pending chart artifact",
-    )
-    require(
-        catalog["decision_revision"]
-        == report["decision_revision"]
-        == calculated["document"].get("revision", 0),
-        "decision revision",
-    )
-    for key, count in calculated["review"]["counts"].items():
-        require(catalog["counts"][key] == count == report["counts"][key], "admission count " + key)
-    require(catalog["counts"]["charts"] == len(catalog["charts"]), "formal chart count")
-    require(
-        catalog["versions_cn"] == calculated["lxns"]["versions"]
-        and catalog["genres"] == calculated["lxns"]["genres"],
-        "LXNS version/genre metadata",
-    )
-    by_key = {c["chart_key"]: c for c in catalog["charts"]}
-    require(len(by_key) == len(catalog["charts"]), "unique chart keys")
-    for chart in catalog["charts"]:
-        key = chart["chart_key"]
-        require(key == f"{chart['id']}:{chart['difficulty']}", "canonical key " + key)
-        require(chart["cn_version"] == chart["api_version"], "chart CN version " + key)
-        require(
-            "level_value" not in chart and "version" not in chart,
-            "legacy raw business aliases " + key,
-        )
-        require(chart["admission_status"] == "admitted", "pending formal chart " + key)
-        require(
-            all(isinstance(chart[f], str) for f in ("title", "artist", "genre", "level")),
-            "chart text fields " + key,
-        )
-        require(
-            type(chart["bpm"]) in (int, float) and math.isfinite(chart["bpm"]), "chart BPM " + key
-        )
-        require(
-            chart["constant"] is None
-            or type(chart["constant"]) in (int, float)
-            and math.isfinite(chart["constant"]),
-            "chart constant " + key,
-        )
-        require(_notes(chart["notes"], chart["type"]) is not None, "chart notes " + key)
-    # All source jackets remain validated even when their charts await admission.
-    from PIL import Image
-
-    jacket_report = read(directory / "jacket_manifest.json")
-    require(
-        isinstance(jacket_report, dict) and isinstance(jacket_report.get("jackets"), list),
-        "jacket_manifest.json is missing",
-    )
-    jackets = {r["song_id"]: r for r in jacket_report["jackets"]}
-    require(
-        len(jackets) == len(jacket_report["jackets"]) == len(calculated["lxns"]["songs"]),
-        "jacket coverage",
-    )
-    decoded = 0
-    for song in calculated["lxns"]["songs"]:
-        row = jackets[song["id"]]
-        require(
-            row["file"] == f"jackets/{song['id']}.png" and row["asset_id"] == song["id"] % 10000,
-            "jacket resource mapping",
-        )
-        if row["status"] == "ok":
-            path = directory / row["file"]
-            require(
-                path.is_file()
-                and digest(path) == row["sha256"]
-                and path.stat().st_size == row["bytes"],
-                "jacket hash",
-            )
-            try:
-                with Image.open(path) as image:
-                    valid = image.format == "PNG" and image.size == (row["width"], row["height"])
-                    image.load()
-            except OSError:
-                valid = False
-            require(valid, "jacket image format")
-            decoded += 1
-    for name in ("remy_release_overrides.json", "remy_conflicts.json"):
-        evidence = read(directory / name, {})
-        rows = (
-            evidence.get("overrides", [])
-            if name.endswith("overrides.json")
-            else [c for r in evidence.get("conflicts", []) for c in r.get("candidates", [])]
-        )
-        for row in rows:
-            if row.get("evidence_file") and row.get("evidence_sha256"):
-                path = directory / row["evidence_file"]
-                require(
-                    path.is_file() and digest(path) == row["evidence_sha256"],
-                    "Remy page evidence hash",
-                )
-    with closing(sqlite3.connect(f"file:{directory / 'catalog.sqlite'}?mode=ro", uri=True)) as conn:
-        require(conn.execute("PRAGMA integrity_check").fetchone() == ("ok",), "SQLite integrity")
-        require(not conn.execute("PRAGMA foreign_key_check").fetchall(), "SQLite FK")
-        require(
-            not conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='songs'"
-            ).fetchone(),
-            "SQL songs entity is forbidden",
-        )
-        schema = conn.execute("PRAGMA table_info(charts)").fetchall()
-        require(
-            [(r[1], r[5]) for r in schema if r[5]] == [("id", 1), ("difficulty", 2)],
-            "SQL chart composite primary key",
-        )
-        require(
-            conn.execute("SELECT COUNT(*) FROM charts").fetchone()[0] == len(by_key),
-            "SQL admitted count",
-        )
-        conn.row_factory = sqlite3.Row
-        for row in conn.execute("SELECT * FROM charts"):
-            require(row["chart_key"] in by_key, "SQL pending/unknown chart")
-            chart = by_key[row["chart_key"]]
-            for field in row.keys():
-                expected = (
-                    chart
-                    if field == "data_json"
-                    else chart[field[:-5]]
-                    if field.endswith("_json")
-                    else chart[field]
-                )
-                value = json.loads(row[field]) if field.endswith("_json") else row[field]
-                require(value == expected, "SQL column mismatch: " + field)
-        metadata = {
-            r[0]: json.loads(r[1]) for r in conn.execute("SELECT key,value_json FROM metadata")
-        }
-        require(metadata == {k: v for k, v in catalog.items() if k != "charts"}, "SQL metadata")
-    validation = {
-        "schema_version": 2,
-        "status": "ok",
-        "charts_checked": len(by_key),
-        "total_charts": calculated["review"]["counts"]["total"],
-        "pending_charts": calculated["review"]["counts"]["pending"],
-        "images_decoded_and_hash_checked": decoded,
-        "sqlite_integrity": "ok",
-        "sqlite_foreign_key_errors": 0,
-    }
-    write(directory / "validation_report.json", validation)
-    return validation

@@ -35,7 +35,6 @@ const charts = ['Alpha', 'Beta'].map((title, index) => ({
   in_original_table: false,
   legacy_complete: false,
   legacy_venue: '',
-  manual_ap: true,
   manual_revision: 0,
   record_revision: 1,
   pending_record: {
@@ -46,11 +45,7 @@ const charts = ['Alpha', 'Beta'].map((title, index) => ({
     created_at: '2026-10-12T01:00:00+08:00',
     updated_at: '2026-10-12T01:00:00+08:00',
   },
-  manual_venue: '',
   venue: '',
-  note: 'Original record',
-  manual_date: null,
-  achievement: 100.5,
   provider_achievement: null,
   provider_fc: null,
   provider_synced_at: null,
@@ -58,7 +53,6 @@ const charts = ['Alpha', 'Beta'].map((title, index) => ({
   is_complete: true,
   status: 'ap',
   conflict: false,
-  warnings: [],
 }));
 const summary = {
   total: 2,
@@ -192,7 +186,7 @@ try {
           updated_at: '2026-10-12T01:00:00+08:00',
         };
       } else chart.pending_record = null;
-      await route.fulfill({ json: method === 'PUT' ? { chart, warnings: [] } : { ok: true } });
+      await route.fulfill({ json: method === 'PUT' ? { chart } : { ok: true } });
       return;
     }
     assert.equal(method, 'GET', 'Unexpected mutation must not reach a real service');
@@ -216,6 +210,8 @@ try {
       return;
     }
     const fixtures = {
+      // Like the backend token, this changes with every record write from any device.
+      '/api/version': { token: charts.map((chart) => chart.record_revision).join(':') },
       '/api/settings/preferences': { default_constant_min: 13, default_constant_max: 13.9 },
       '/api/sync/status': idleScoreSync,
       '/api/settings/divingfish': { configured: false, source: null, sync: null },

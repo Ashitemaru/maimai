@@ -41,13 +41,8 @@ const chart = {
   in_original_table: false,
   legacy_complete: false,
   legacy_venue: '',
-  manual_ap: true,
   manual_revision: 1,
-  manual_venue: '',
   venue: '',
-  note: '',
-  manual_date: null,
-  achievement: 100.5,
   provider_achievement: 100.5,
   provider_fc: 'ap',
   provider_synced_at: null,
@@ -55,7 +50,6 @@ const chart = {
   is_complete: true,
   status: 'ap',
   conflict: false,
-  warnings: [],
 };
 const counts = { total: 1, complete: 1, ap: 1, remaining: 0, conflicts: 0, legacy_complete: 0 };
 const summary = {
@@ -438,7 +432,6 @@ try {
         Object.assign(chart, {
           provider_achievement: achievement,
           provider_fc: combo,
-          achievement,
         });
         await page.locator('.cover-song').tap();
         await page.locator('.pick-song').first().tap();

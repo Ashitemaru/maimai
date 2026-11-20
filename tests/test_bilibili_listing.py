@@ -16,7 +16,7 @@ from backend.bilibili_client import (
     BilibiliError,
     CollectionUnavailableError,
 )
-from backend.test_bilibili import ACCOUNT, BV, FakeClient, FakeStore
+from tests.test_bilibili import ACCOUNT, BV, FakeClient, FakeStore
 
 
 def video(index, **changes):
@@ -176,6 +176,15 @@ class HandplayListingTests(unittest.TestCase):
             [call.args for call in self.client.collection_videos.call_args_list],
             [(11, ACCOUNT["mid"]), (12, ACCOUNT["mid"]), (13, ACCOUNT["mid"])],
         )
+
+    def test_listing_reports_title_combo_marker(self):
+        self.uploads = [
+            video(3, title="【maimai】Song Master13.9 AP+"),
+            video(2, title="【maimai】Song Master13.9 ap"),
+            video(1, title="raw upload"),
+        ]
+        combos = {v["aid"]: v["combo"] for v in self.service.videos(1)["items"]}
+        self.assertEqual(combos, {3: "app", 2: "ap", 1: None})
 
     def test_unorganized_before_organized_then_newest_first(self):
         self.uploads = [video(i) for i in range(25, 0, -1)]

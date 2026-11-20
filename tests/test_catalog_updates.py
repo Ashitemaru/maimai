@@ -155,6 +155,33 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse((self.root / "current").exists())
         self.assertEqual(self.store.catalog["1:dx:4"]["constant"], 0)
 
+    def test_publish_keeps_current_previous_and_three_newest_snapshots(self):
+        service = self.service()
+        for _ in range(6):
+            service.start()
+            self.finish(service)
+        names = {p.name for p in service.snapshots.iterdir()}
+        self.assertEqual(len(names), 5)
+        self.assertIn(service.status()["revision"], names)
+        self.assertIn(service._state["previous_snapshot"], names)
+        self.assertEqual(list((service.workspace / "staging").iterdir()), [])
+
+    def test_failed_or_cancelled_job_leaves_no_staging_or_orphan_snapshot(self):
+        service = self.service(validate_fn=lambda stage: 1 / 0)
+        service.start()
+        self.finish(service)
+        self.assertEqual(service.status()["main"]["status"], "failed")
+
+        def cancel(stage):
+            cancelled._closed = True  # Cancelled after the stage became a snapshot.
+
+        cancelled = self.service(validate_fn=cancel)
+        cancelled.start()
+        self.finish(cancelled)
+        self.assertEqual({p.name[:9] for p in service.snapshots.iterdir()}, {"baseline-"})
+        self.assertEqual(list((service.workspace / "staging").iterdir()), [])
+        self.assertFalse((self.root / "current").exists())
+
     def test_duplicate_update_rejected_and_personal_preserved(self):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)

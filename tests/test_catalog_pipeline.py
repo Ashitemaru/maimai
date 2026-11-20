@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from scripts.catalog_chart_compiler import build, load_record_review, validate, write_sqlite
+from scripts.catalog_chart_compiler import build, load_record_review, write_sqlite
 from scripts.catalog_pipeline import (
     SOURCES,
     atomic_json,
@@ -23,6 +23,7 @@ from scripts.catalog_pipeline import (
 )
 from scripts.catalog_policy import source_policy
 from scripts.catalog_record_review import build_record_review
+from scripts.catalog_validate import validate
 from scripts.catalog_versions import fingerprint
 
 
@@ -215,7 +216,7 @@ class PipelineTests(unittest.TestCase):
         self.prepare()
         build(self.stage)
         catalog = self.catalog()
-        del catalog["charts"][0]["title"]
+        del catalog["charts"][0]["type"]
         target = self.stage / "catalog.sqlite"
         before = target.read_bytes()
         with self.assertRaises(KeyError):
@@ -276,12 +277,9 @@ class PipelineTests(unittest.TestCase):
         build(self.stage)
         original = (self.stage / "catalog.sqlite").read_bytes()
         for statement, column in (
-            ("UPDATE charts SET constant=99 WHERE chart_key='1:3'", "constant"),
-            ("UPDATE charts SET jacket_available=0 WHERE id=1", "jacket_available"),
-            (
-                "UPDATE charts SET notes_json='{}' WHERE chart_key='1:3'",
-                "notes_json",
-            ),
+            ("UPDATE charts SET data_json=json_set(data_json,'$.constant',99) WHERE id=1", "1"),
+            ("UPDATE charts SET type='utage' WHERE id=1", "2"),
+            ("DELETE FROM metadata WHERE key='versions_cn'", "3"),
         ):
             with self.subTest(column=column):
                 (self.stage / "catalog.sqlite").write_bytes(original)
@@ -295,7 +293,7 @@ class PipelineTests(unittest.TestCase):
                             (self.stage / "catalog.sqlite").read_bytes()
                         ).hexdigest()
                 atomic_json(self.stage / "build_report.json", report)
-                with self.assertRaisesRegex(ValueError, column):
+                with self.assertRaisesRegex(ValueError, "SQL"):
                     validate(self.stage)
 
     def test_validator_checks_remy_conflict_candidate_page_hash(self):

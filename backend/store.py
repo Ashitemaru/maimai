@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import csv
-import fcntl
-import hashlib
 import json
 import os
 import re
@@ -12,27 +9,17 @@ import sqlite3
 import tempfile
 import threading
 import unicodedata
-import weakref
+import uuid
 from contextlib import contextmanager, nullcontext
-from copy import deepcopy
-from dataclasses import dataclass
 from pathlib import Path
 
 from .ap_records import APRecords, initialize_records, pending_record, read_record_state
-from .clock import now
+from .legacy_import import import_legacy
 
 ROOT = Path(__file__).resolve().parents[1]
-DIFFICULTIES = {"BAS": 0, "ADV": 1, "EXP": 2, "MAS": 3, "ReM": 4}
 DEFAULT_PREFERENCES = {"default_constant_min": 13.0, "default_constant_max": 13.9}
-
-
-class SyncBusyError(Exception):
-    """Only one provider request may be in flight for this account."""
-
-
-class SyncTokenChangedError(Exception):
-    """A provider response belongs to credentials that have since changed."""
-
+# Tables written by removed features; dropped idempotently at startup.
+DEAD_TABLES = ("manual", "score_sync_sources", "score_uploads")
 
 CN_VERSION_SHORT_LABELS = {
     "maimai": "初",
@@ -102,48 +89,45 @@ class ChartIndex(dict):
 
 
 class ChartList(list):
-    """Chart rows and filter metadata from one published catalog snapshot."""
+    """Chart rows, a chart_key index and filter metadata from one catalog snapshot.
+
+    Cached lists and their rows are shared by every reader and must not be mutated.
+    """
 
     def __init__(self, *args, cn_versions=(), cn_matrix_versions=()):
         super().__init__(*args)
         self.cn_versions = cn_versions
         self.cn_matrix_versions = cn_matrix_versions
+        self.by_key = {}
 
 
-@dataclass(frozen=True)
-class ChartReadSnapshot:
-    """One internal snapshot; every public reader receives its own mutable copy."""
-
-    token: tuple
-    charts: ChartList
-    mutable_fields: tuple
-
-    @classmethod
-    def from_charts(cls, token, charts):
-        mutable_fields = tuple(
-            {
-                key
-                for chart in charts
-                for key, value in chart.items()
-                if isinstance(value, dict | list | set)
-            }
-        )
-        return cls(token, charts, mutable_fields)
-
-    def copy_chart(self, chart):
-        copied = chart.copy()
-        for key in self.mutable_fields:
-            value = chart.get(key)
-            if value is not None:
-                copied[key] = deepcopy(value)
-        return copied
-
-    def copy_charts(self):
-        return ChartList(
-            (self.copy_chart(chart) for chart in self.charts),
-            cn_versions=deepcopy(self.charts.cn_versions),
-            cn_matrix_versions=deepcopy(self.charts.cn_matrix_versions),
-        )
+CHART_FIELDS = (
+    "id",
+    "difficulty",
+    "chart_key",
+    "song_id",
+    "lxns_song_id",
+    "title",
+    "display_title",
+    "artist",
+    "type",
+    "difficulty_index",
+    "difficulty_name",
+    "level",
+    "constant",
+    "divingfish_id",
+    "jacket_url",
+    "jp_release_version",
+    "jp_release_version_candidate",
+    "jp_release_provider",
+    "jp_release_date",
+    "release_status",
+    "release_source_scope",
+    "type_release_version_candidate",
+    "version_pending",
+    "cn_version",
+    "_search",
+)
 
 
 def requires_venue(chart, legacy):
@@ -164,13 +148,14 @@ class Store(APRecords):
             catalog_dir or os.environ.get("MAIMAI_CATALOG_DIR", ROOT / "data/catalog")
         ).resolve()
         self._token_lock = threading.RLock()
-        self._sync_lock = threading.Lock()
         self._token_generation = 0
-        self._chart_cache_lock = threading.RLock()
+        # One process serves the app; every personal write goes through db().
+        self._boot = uuid.uuid4().hex[:12]
+        self._revision_lock = threading.Lock()
+        self._personal_revision = 0
+        self._catalog_revision = 0
+        self._build_lock = threading.Lock()
         self._chart_cache = None
-        self._version_connection = None
-        self._version_file_identity = None
-        self._close_version_connection = None
         if os.environ.get("MAIMAI_ENV") == "production":
             if not (self.catalog_directory() / "catalog.sqlite").is_file():
                 raise RuntimeError("Production catalog.sqlite is missing; set MAIMAI_CATALOG_DIR.")
@@ -209,9 +194,9 @@ class Store(APRecords):
 
     def install_catalog(self, loaded_tuple):
         # Publish both indexes together; readers retain their existing snapshot.
-        with self._chart_cache_lock:
+        with self._revision_lock:
             self._catalog_snapshot = tuple(loaded_tuple)
-            self._chart_cache = None
+            self._catalog_revision += 1
 
     def reload_catalog(self):
         self.install_catalog(self.load_catalog(self.catalog_directory()))
@@ -224,63 +209,38 @@ class Store(APRecords):
             yield conn
             conn.commit()
             if conn.total_changes:
-                self._invalidate_chart_cache()
+                self._personal_changed()
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
 
-    def _invalidate_chart_cache(self):
-        with self._chart_cache_lock:
-            self._chart_cache = None
+    def _personal_changed(self):
+        with self._revision_lock:
+            self._personal_revision += 1
+
+    def version_token(self):
+        """Changes whenever the catalog snapshot or personal data changes."""
+        with self._revision_lock:
+            return f"{self._boot}-{self._catalog_revision}-{self._personal_revision}"
 
     def close(self):
-        """Release the read-only change observer when the application shuts down."""
-        with self._chart_cache_lock:
-            if self._close_version_connection is not None:
-                self._close_version_connection()
-            self._version_connection = None
-            self._version_file_identity = None
-            self._close_version_connection = None
-            self._chart_cache = None
+        self._chart_cache = None
 
-    def _personal_data_version(self):
-        # PRAGMA data_version is comparable only across reads on the same connection.
-        # Inode checks also detect atomic restores/replacements of the database file.
-        stat = self.db_path.stat()
-        identity = (stat.st_dev, stat.st_ino)
-        if self._version_connection is None or identity != self._version_file_identity:
-            self.close()
-            connection = sqlite3.connect(
-                f"{self.db_path.resolve().as_uri()}?mode=ro",
-                uri=True,
-                check_same_thread=False,
-                isolation_level=None,
-                timeout=20,
-            )
-            self._version_connection = connection
-            self._version_file_identity = identity
-            self._close_version_connection = weakref.finalize(self, connection.close)
-        version = self._version_connection.execute("PRAGMA data_version").fetchone()[0]
-        return (*identity, version)
-
-    def _read_chart_snapshot(self):
-        # Serialize cold builds, not request rendering. A single published snapshot
-        # serves concurrent endpoints; writers invalidate after committing.
-        with self._chart_cache_lock:
-            catalog = self.catalog
-            before = self._personal_data_version()
-            token = (id(catalog), len(catalog), before)
-            if self._chart_cache is not None and self._chart_cache.token == token:
-                return self._chart_cache
+    def _charts(self):
+        # Serialize cold builds. A commit during a build leaves the result tagged with
+        # the older revision, so the next read rebuilds.
+        with self._build_lock:
+            with self._revision_lock:
+                catalog = self.catalog
+                revision = (self._catalog_revision, self._personal_revision)
+            cached = self._chart_cache
+            if cached and cached[0] == revision:
+                return cached[1]
             charts = self._assemble_charts(catalog=catalog)
-            snapshot = ChartReadSnapshot.from_charts(token, charts)
-            # An external connection may commit while this read is being assembled.
-            # Return that coherent read, but never cache it under the later version.
-            if before == self._personal_data_version() and catalog is self.catalog:
-                self._chart_cache = snapshot
-            return snapshot
+            self._chart_cache = (revision, charts)
+            return charts
 
     def load_catalog(self, path):
         conn = sqlite3.connect(
@@ -391,9 +351,6 @@ class Store(APRecords):
               chart_key TEXT PRIMARY KEY, group_name TEXT NOT NULL, constant REAL NOT NULL,
               complete INTEGER NOT NULL, venue TEXT NOT NULL, label TEXT NOT NULL,
               source_file TEXT NOT NULL, source_row INTEGER NOT NULL, source_col INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS manual(
-              chart_key TEXT PRIMARY KEY, ap INTEGER NOT NULL, venue TEXT NOT NULL,
-              achievement REAL, note TEXT NOT NULL, achieved_date TEXT, updated_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS provider(
               chart_key TEXT PRIMARY KEY, achievement REAL, fc TEXT NOT NULL,
               synced_at TEXT NOT NULL, raw_json TEXT NOT NULL);
@@ -401,6 +358,8 @@ class Store(APRecords):
               id INTEGER PRIMARY KEY AUTOINCREMENT, chart_key TEXT, kind TEXT NOT NULL,
               created_at TEXT NOT NULL, data_json TEXT NOT NULL);
             """)
+            for table in DEAD_TABLES:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
             initialize_records(conn)
             if not conn.execute("SELECT 1 FROM metadata WHERE key='import' ").fetchone():
                 self._import(conn)
@@ -411,91 +370,8 @@ class Store(APRecords):
         self.db_path.chmod(0o600)
 
     def _import(self, conn):
-        source_names = {
-            "low": "maimai AP - （低难度）谱面表.tsv",
-            "high": "maimai AP - （高难度）谱面表.tsv",
-            "levels": "maimai AP - 等级完成进度.tsv",
-            "summary": "maimai AP - 汇总表.tsv",
-        }
-        # The source title disambiguates Link (131) from Link(CoF) (383).
-        index = {}
         catalog, waterfish_map = self._catalog_snapshot
-        for c in getattr(catalog, "source_charts", catalog).values():
-            source_title = waterfish_map.get(str(c["divingfish_id"]), {}).get("source_title")
-            name = source_title if source_title is not None else c["title"]
-            index.setdefault((normalized(name), c["type"], c["difficulty_index"]), []).append(c)
-        sources, records = {}, []
-        for group, filename in source_names.items():
-            path = self.import_dir / filename
-            raw = path.read_bytes()
-            rows = list(csv.reader(raw.decode("utf-8-sig").splitlines(), delimiter="\t"))
-            sources[group] = {
-                "file": filename,
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "rows": len(rows),
-            }
-            if group not in ("low", "high"):
-                sources[group]["values"] = rows
-                continue
-            for col in range(0, len(rows[0]), 2):
-                if not rows[0][col].strip():
-                    continue
-                constant = float(rows[0][col])
-                for rownum, row in enumerate(rows[2:], 3):
-                    label = row[col].strip() if col < len(row) else ""
-                    if not label:
-                        continue
-                    match = re.fullmatch(r"\[(BAS|ADV|EXP|MAS|ReM),\s*(SD|DX)\]\s*(.*)", label)
-                    if not match:
-                        raise ValueError(f"Unrecognized label {filename}:{rownum}:{col + 1}")
-                    diff, kind, title = match.groups()
-                    candidates = index.get(
-                        (
-                            normalized(title),
-                            "dx" if kind == "DX" else "standard",
-                            DIFFICULTIES[diff],
-                        ),
-                        [],
-                    )
-                    if len(candidates) != 1:
-                        raise ValueError(
-                            f"Unmatched/ambiguous chart {filename}:{rownum}:{col + 1}: {label}"
-                        )
-                    chart = candidates[0]
-                    if abs(chart["constant"] - constant) > 1e-6:
-                        raise ValueError(f"Constant changed: {chart['chart_key']}")
-                    mark = row[col + 1].strip() if col + 1 < len(row) else ""
-                    records.append(
-                        (
-                            chart["chart_key"],
-                            group,
-                            constant,
-                            bool(mark),
-                            mark if group == "high" else "",
-                            label,
-                            filename,
-                            rownum,
-                            col + 1,
-                        )
-                    )
-        conn.executemany("INSERT INTO legacy VALUES(?,?,?,?,?,?,?,?,?)", records)
-        report = {
-            "imported_at": now(),
-            "total": len(records),
-            "legacy_complete": sum(r[3] for r in records),
-            "groups": {
-                g: {
-                    "total": sum(r[1] == g for r in records),
-                    "complete": sum(r[3] for r in records if r[1] == g),
-                }
-                for g in ("low", "high")
-            },
-            "note": "原表完成包含删除但删除前未完成；原表标记不等同已核实AP。",
-            "sources": sources,
-        }
-        conn.execute(
-            "INSERT INTO metadata VALUES('import',?)", (json.dumps(report, ensure_ascii=False),)
-        )
+        import_legacy(conn, self.import_dir, catalog, waterfish_map, normalized)
 
     def meta(self, name):
         with self.db() as conn:
@@ -515,11 +391,10 @@ class Store(APRecords):
         return value
 
     def all_charts(self, connection=None):
+        """Shared read-only rows; pass a connection to see its uncommitted writes."""
         if connection is not None:
-            # The sync transaction must see its own unpublished writes and must not
-            # acquire the shared-cache lock while holding a SQLite write lock.
             return self._assemble_charts(connection=connection)
-        return self._read_chart_snapshot().copy_charts()
+        return self._charts()
 
     def _assemble_charts(self, connection=None, catalog=None):
         if catalog is None:
@@ -529,106 +404,44 @@ class Store(APRecords):
             if connection is None:
                 conn.execute("BEGIN")
             legacy = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM legacy")}
-            manual = {r["chart_key"]: dict(r) for r in conn.execute("SELECT * FROM manual")}
             provider = {
                 row["chart_key"]: dict(row)
                 for row in conn.execute("SELECT chart_key,achievement,fc,synced_at FROM provider")
             }
             record_state = read_record_state(conn)
-            row = conn.execute("SELECT value FROM metadata WHERE key='last_sync'").fetchone()
-            last_sync = json.loads(row[0]) if row else None
+            synced = conn.execute("SELECT 1 FROM metadata WHERE key='last_sync'").fetchone()
         items = ChartList(
             cn_versions=catalog.cn_versions, cn_matrix_versions=catalog.cn_matrix_versions
         )
         for key, c in catalog.items():
-            old, user, remote = legacy.get(key), manual.get(key), provider.get(key)
+            old, remote = legacy.get(key), provider.get(key)
             evidence = record_state["evidence"].get(key)
             confirmed = record_state["confirmed"].get(key)
             pending = record_state["pending"].get(key)
             record_revision = record_state["revisions"].get(key)
             details = record_state["details"].get(key)
-            fields = (
-                "id",
-                "difficulty",
-                "chart_key",
-                "song_id",
-                "lxns_song_id",
-                "title",
-                "display_title",
-                "artist",
-                "type",
-                "difficulty_index",
-                "difficulty_name",
-                "level",
-                "constant",
-                "divingfish_id",
-                "jacket_url",
-                "jp_release_version",
-                "jp_release_version_candidate",
-                "jp_release_provider",
-                "jp_release_date",
-                "release_status",
-                "release_source_scope",
-                "type_release_version_candidate",
-                "version_pending",
-                "_search",
-            )
-            item = {name: c.get(name) for name in fields}
-            item["cn_version"] = c.get("cn_version")
+            item = {name: c.get(name) for name in CHART_FIELDS}
             item["_cn_version_group"] = catalog.cn_version_group(item["cn_version"])
-            manual_ap = bool(user["ap"]) if user else None
             provider_ap = bool(remote and remote["fc"] in ("ap", "app"))
             is_ap = bool(confirmed or evidence or provider_ap)
-            if user and not confirmed:
-                is_ap = manual_ap
-            # Import completion remains observable until explicitly corrected; sync never deletes it.
+            # Import completion remains observable; sync never deletes it.
             complete = bool(is_ap or (old and old["complete"]))
-            if user and not confirmed:
-                complete = manual_ap
-            venue = (
-                confirmed["venue"]
-                if confirmed
-                else user["venue"]
-                if user
-                else old["venue"]
-                if old
-                else ""
-            )
-            achievement = user["achievement"] if user and user["achievement"] is not None else None
-            warnings = []
-            if manual_ap is True and not provider_ap:
-                if last_sync:
-                    warnings.append("已保存你的 AP 记录；水鱼尚未记录 AP，可能还未更新成绩。")
-                else:
-                    warnings.append("已保存你的 AP 记录；尚未同步成绩。")
-            if manual_ap is False and provider_ap:
-                warnings.append("本地已按你的修改标为未完成；水鱼仍有 AP 记录。")
-            if old and old["complete"] and not is_ap and manual_ap is None:
-                warnings.append("原表完成标记尚未核实为 AP（原表可能包含删曲豁免）。")
-                if last_sync:
-                    warnings.append("水鱼暂未记录 AP；保留原表完成状态，可稍后核对。")
-            if evidence and not remote:
-                warnings.append("本次水鱼未返回这张成绩；保留此前核准记录。")
-            elif evidence and not provider_ap:
-                warnings.append("水鱼当前成绩与此前 AP 证据不一致；保留已核准记录。")
+            venue = confirmed["venue"] if confirmed else old["venue"] if old else ""
+            needs_venue = requires_venue(c, old)
+            app = (evidence and evidence["fc"] == "app") or (remote and remote["fc"] == "app")
             item.update(
                 {
                     "group": old["group_name"] if old else "catalog",
                     "in_original_table": bool(old),
-                    "requires_venue": requires_venue(c, old),
+                    "requires_venue": needs_venue,
                     "legacy_complete": bool(old and old["complete"]),
                     "legacy_venue": old["venue"] if old else "",
-                    "manual_ap": manual_ap,
-                    "manual_venue": user["venue"] if user else "",
                     "venue": venue,
-                    "venue_pending": bool(is_ap and requires_venue(c, old) and not venue),
+                    "venue_pending": bool(is_ap and needs_venue and not venue),
                     "pending_record": pending_record(pending) if pending else None,
                     "record_revision": record_revision["revision"] if record_revision else 0,
                     "ap_confirmed_at": evidence["confirmed_at"] if evidence else None,
                     "venue_confirmed_at": confirmed["confirmed_at"] if confirmed else None,
-                    "note": user["note"] if user else "",
-                    "manual_date": user["achieved_date"] if user else None,
-                    "achievement": achievement,
                     "provider_achievement": remote["achievement"] if remote else None,
                     "provider_fc": remote["fc"] if remote else None,
                     "provider_synced_at": remote["synced_at"] if remote else None,
@@ -640,39 +453,26 @@ class Store(APRecords):
                     "is_ap": is_ap,
                     "is_complete": complete,
                     "status": "app"
-                    if is_ap
-                    and (
-                        (manual_ap is True and achievement == 101)
-                        or (evidence and evidence["fc"] == "app")
-                        or (manual_ap is None and remote and remote["fc"] == "app")
-                    )
+                    if is_ap and app
                     else "ap"
                     if is_ap
                     else "legacy"
                     if complete
                     else "incomplete",
                     "conflict": bool(
-                        last_sync
-                        and (
-                            (manual_ap is not None and manual_ap != provider_ap)
-                            or (
-                                manual_ap is None
-                                and old
-                                and old["complete"]
-                                and remote
-                                and not provider_ap
-                            )
-                            or (evidence and remote and not provider_ap)
-                        )
+                        synced
+                        and remote
+                        and not provider_ap
+                        and ((old and old["complete"]) or evidence)
                     ),
-                    "warnings": warnings,
                 }
             )
             items.append(item)
+            items.by_key[key] = item
         return items
 
     def chart(self, key):
-        return next((chart for chart in self.all_charts() if chart["chart_key"] == key), None)
+        return self._charts().by_key.get(key)
 
     def token(self):
         token = os.environ.get("DIVINGFISH_IMPORT_TOKEN", "").strip()
@@ -702,28 +502,9 @@ class Store(APRecords):
                     os.fsync(handle.fileno())
                 temp.replace(self.secret_path)
                 self._token_generation += 1
+                self._personal_changed()
             finally:
                 temp.unlink(missing_ok=True)
-
-    @contextmanager
-    def sync_lease(self):
-        if not self._sync_lock.acquire(blocking=False):
-            raise SyncBusyError()
-        try:
-            descriptor = os.open(self.runtime / ".score-sync.lock", os.O_CREAT | os.O_RDWR, 0o600)
-            try:
-                try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise SyncBusyError() from None
-                with self._token_lock:
-                    token, _ = self.token()
-                    generation = self._token_generation
-                yield token, generation
-            finally:
-                os.close(descriptor)
-        finally:
-            self._sync_lock.release()
 
     def readiness(self):
         checks = {"catalog": False, "personal": False}
@@ -751,7 +532,7 @@ class Store(APRecords):
                             isinstance(json.loads(metadata[key]), dict)
                             for key in ("import", "preferences")
                         )
-                        for table in ("manual", "legacy", "provider", "events"):
+                        for table in ("legacy", "provider", "events"):
                             conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
                 finally:
                     conn.close()

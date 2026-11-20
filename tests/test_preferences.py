@@ -11,8 +11,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from backend.store import Store
-from backend.test_app import FakeUpdater
 from tests.support import ROOT, create_app
+from tests.test_app import FakeUpdater
 
 
 class PreferencesTests(unittest.TestCase):
@@ -35,7 +35,7 @@ class PreferencesTests(unittest.TestCase):
         with self.store.db() as conn:
             result = {
                 table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
-                for table in ("legacy", "manual", "provider", "events")
+                for table in ("legacy", "provider", "events")
             }
             result["metadata"] = [
                 tuple(row)

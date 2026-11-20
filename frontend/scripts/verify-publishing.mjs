@@ -23,11 +23,11 @@ const bvid = 'BV1iWMh6iECe';
 const plusBvid = 'BV1PLUS11111';
 const ordinaryBvid = 'BV1PLAIN1111';
 const titleFixtures = new Map([
-  [plusBvid, '【maimai】Our Wrenally Expert13.0 AP＋'],
-  [ordinaryBvid, '【maimai】Our Wrenally Expert13.0 AP'],
-  ['BV1MUSIC1111', '【maimai】AP+ Expert13.0'],
-  ['BV1bJouBSEiH', '+PA 0.31trepxE yllanerW ruO【iamiam】'],
-  ['BV1OTHER1111', '+PA 0.31trepxE yllanerW ruO【iamiam】'],
+  [plusBvid, ['【maimai】Our Wrenally Expert13.0 AP＋', 'app']],
+  [ordinaryBvid, ['【maimai】Our Wrenally Expert13.0 AP', 'ap']],
+  ['BV1MUSIC1111', ['【maimai】AP+ Expert13.0', null]],
+  ['BV1bJouBSEiH', ['+PA 0.31trepxE yllanerW ruO【iamiam】', 'app']],
+  ['BV1OTHER1111', ['+PA 0.31trepxE yllanerW ruO【iamiam】', null]],
 ]);
 const appBadge =
   '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><circle cx="40" cy="40" r="35" fill="#0cfa69"/><path d="M20 40h40M40 20v40" stroke="white" stroke-width="7"/></svg>';
@@ -49,7 +49,6 @@ const chart = {
   release_status: 'verified',
   provider_achievement: 100.9999,
   provider_fc: 'app',
-  achievement: 100.9999,
 };
 const orderItem = (aid, bvid, song_title, version, position) => ({
   episode_id: aid,
@@ -182,7 +181,9 @@ try {
       if (pathname === '/api/bilibili/videos') {
         if (ambiguous) await new Promise((resolve) => setTimeout(resolve, 900));
         return send({
-          items: [{ bvid, title: 'Our Wrenally old title', cover: '/jackets/9200.png' }],
+          items: [
+            { bvid, title: 'Our Wrenally old title', cover: '/jackets/9200.png', combo: null },
+          ],
           page: 1,
           has_more: false,
           collections: [
@@ -204,12 +205,14 @@ try {
           title: 'Our Wrenally old title',
           revision: '1',
           mirror_horizontal: false,
+          combo: null,
         });
       const extraBvid = pathname.match(/^\/api\/bilibili\/videos\/(BV[0-9A-Za-z]{10})$/)?.[1];
       if (titleFixtures.has(extraBvid))
         return send({
           bvid: extraBvid,
-          title: titleFixtures.get(extraBvid),
+          title: titleFixtures.get(extraBvid)[0],
+          combo: titleFixtures.get(extraBvid)[1],
           revision: '1',
           mirror_horizontal: extraBvid === 'BV1bJouBSEiH',
         });

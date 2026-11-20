@@ -219,6 +219,8 @@ await page.route('**/api/**', async (route) => {
   const defaults = {
     '/api/settings/preferences': { default_constant_min: 1, default_constant_max: 15 },
     '/api/sync/status': idleScoreSync,
+    // A new version token per request keeps every focus refresh of the original fixture.
+    '/api/version': { token: crypto.randomUUID() },
     '/api/settings/divingfish': { configured: false, sync: null },
     '/api/venues': { items: [] },
     '/api/ap-records': { items: [], count: 0 },

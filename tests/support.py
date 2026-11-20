@@ -1,6 +1,6 @@
 """Configure isolated paths before any API test uses the application factory.
 
-Works for direct ``python -m unittest backend.test_app`` as well as the runner.
+Works for direct ``python -m unittest tests.test_app`` as well as the runner.
 All generated catalog, legacy imports, preferences, secrets and decisions live in
 one temporary tree. The runner additionally denies network connections.
 """

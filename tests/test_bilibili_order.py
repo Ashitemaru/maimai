@@ -5,18 +5,35 @@ import unittest
 
 import httpx
 
-from backend import test_bilibili as fixtures
 from backend.bilibili_client import BilibiliClient, BilibiliError
 from backend.bilibili_order import (
+    MIRROR_BVID,
     ChartResolver,
     chart_identity,
     order_report,
     parsed_title,
     section_snapshot,
+    title_combo,
 )
+from tests import test_bilibili as fixtures
 
 BV = fixtures.BV
 preparation = fixtures.preparation
+
+
+class TitleComboTests(unittest.TestCase):
+    def test_trailing_marker_and_mirrored_prefix(self):
+        for title, bvid, expected in (
+            ("【maimai】Song Expert13.0 AP", BV, "ap"),
+            ("【maimai】Song Expert13.0 AP +", BV, "app"),
+            ("【maimai】Song Expert13.0 ＡＰ＋", BV, "app"),
+            ("【maimai】Song Expert13.0 FC", BV, None),
+            ("+PA 0.31retsaM gnoS【iamiam】", MIRROR_BVID, "app"),
+            ("PA 0.31retsaM gnoS【iamiam】", MIRROR_BVID, "ap"),
+            ("PA 0.31retsaM gnoS【iamiam】", BV, None),
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(title_combo(title, bvid), expected)
 
 
 def chart(key, song, version="UNiVERSE", kind="standard", difficulty=3):
@@ -196,23 +213,10 @@ class OrderServiceTests(unittest.TestCase):
             rows = db.execute("SELECT bvid FROM bilibili_chart_bindings").fetchall()
         self.assertEqual([row[0] for row in rows], [BV])
 
-    def test_section_stale_or_catalog_stale_aborts_before_upload(self):
+    def test_section_changed_after_preview_aborts_before_upload(self):
         self.populate()
         plan = self.prepare()
         self.client.collection_members[10].reverse()
-        with self.assertRaises(BilibiliError):
-            self.apply(plan)
-        self.assertEqual(self.client.calls, [])
-        self.client.collection_members[10].reverse()
-        self.store.extra_charts[0]["jp_release_version"] = "maimai"
-        with self.assertRaises(BilibiliError):
-            self.apply(plan)
-        self.assertEqual(self.client.calls, [])
-
-    def test_real_title_change_with_unchanged_section_aborts_before_upload(self):
-        self.populate()
-        plan = self.prepare()
-        self.client.extra_videos[0]["title"] = "【maimai】Other song Master13.9 AP"
         with self.assertRaises(BilibiliError):
             self.apply(plan)
         self.assertEqual(self.client.calls, [])

@@ -16,8 +16,8 @@ scripts/ 下的曲库模块没有命令行入口，只由后端更新任务调�
    普通日服版本由 arcade-songs 提供，白谱由已有 Remy 证据提供。
 5. 没有未决值冲突的 chart 写正式库；其余整个 entry 写待入库区，并列出所有差异选项。
    仅无版本证据不算矛盾，可带 null/version_pending 入库。
-6. 补曲绘；构建 flat JSON、复合主键 SQLite、搜索索引、差异及准入报告。
-7. 校验来源/哈希、准入集合、主键、SQL/JSON、图片与证据；预载 Store，再原子切换快照。
+6. 补曲绘；构建 flat JSON、运行用 SQLite、差异及准入报告。
+7. scripts/catalog_validate.py 校验来源/哈希、准入集合、SQL/JSON、图片与证据；预载 Store，再原子切换快照。
 8. 发布后排队低频 Remy；缺失或失败不阻塞主更新。补证后仍经过同一准入规则。
 
 新普通谱面准入后自动进入 AP 图鉴和统计，包括解禁谱；宴保留在库中，当前不计普通 AP。
@@ -55,9 +55,10 @@ Remy
 
 磁盘
   data/catalog/current -> updates/snapshots/<revision>
-  updates/staging/：构建暂存；updates/snapshots/：不可变来源、证据、正式库与待入库快照
+  updates/staging/：构建暂存，失败或取消即删除
+  updates/snapshots/：不可变快照；发布后只保留当前、上一国服版本和其余最新 3 个
   updates/adjudications.sqlite3：独立裁决及历史；updates/status.json：任务状态
-  updates/remy-reports/、data/catalog/remy-cache/：Remy 报告及限流缓存
+  data/catalog/remy-cache/：Remy 限流缓存
   backend/runtime/personal.sqlite3：独立的 AP、机厅、水鱼、原表和备注
 更新写入使用临时文件 replace，不原地截断共享硬链接。
 发布前检查任务代次和裁决修订号，防止旧异步任务覆盖新决定。

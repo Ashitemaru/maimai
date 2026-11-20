@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 
 from backend.catalog_decisions import StaleDecisionError
 from backend.catalog_updates import BusyError
-from backend.store import ChartIndex, Store, normalized, summarize
+from backend.chart_query import selection_summary
+from backend.store import ChartIndex, Store, normalized
 from tests.fixtures.catalog import (
     CHART_COUNT,
     HIGH_COMPLETE,
@@ -143,9 +144,7 @@ class AppTests(unittest.TestCase):
             "conflict": False,
             "legacy_complete": False,
             "status": "incomplete",
-            "achievement": None,
             "provider_achievement": None,
-            "manual_ap": None,
             "venue": "",
             "jp_release_version": "PiNK",
             "jp_release_version_candidate": None,
@@ -177,21 +176,21 @@ class AppTests(unittest.TestCase):
                         [c["type"] for c in items if c["song_id"] == 2], ["dx", "standard"]
                     )
 
-    def test_achievement_sort_uses_manual_then_provider_keeps_zero_and_nulls_last(self):
+    def test_achievement_sort_uses_provider_keeps_zero_and_nulls_last(self):
         fixtures = [
-            self.fixture_chart(10, achievement=99, provider_achievement=101),
-            self.fixture_chart(20, achievement=0, provider_achievement=100),
+            self.fixture_chart(10, provider_achievement=101),
+            self.fixture_chart(20, provider_achievement=100),
             self.fixture_chart(2, provider_achievement=100.2),
             self.fixture_chart(4, provider_achievement=101),
             self.fixture_chart(3, constant=15),
-            self.fixture_chart(1, achievement=100.2, provider_achievement=98),
+            self.fixture_chart(1, provider_achievement=98),
             self.fixture_chart(30, provider_achievement=0),
             self.fixture_chart(6, constant=12),
         ]
         with patch.object(self.store, "all_charts", return_value=fixtures):
             for sort, ids in (
-                ("achievement_desc", [4, 1, 2, 10, 20, 30, 3, 6]),
-                ("achievement_asc", [20, 30, 10, 1, 2, 4, 3, 6]),
+                ("achievement_desc", [4, 10, 2, 20, 1, 30, 3, 6]),
+                ("achievement_asc", [30, 1, 20, 2, 4, 10, 3, 6]),
             ):
                 with self.subTest(sort=sort):
                     response = self.client.get("/api/charts", params={"sort": sort})
@@ -216,7 +215,7 @@ class AppTests(unittest.TestCase):
             self.fixture_chart(
                 2, is_ap=True, is_complete=True, status="ap", type="dx", difficulty_index=3
             ),
-            self.fixture_chart(1, constant=14, manual_ap=False, provider_fc="app"),
+            self.fixture_chart(1, constant=14, provider_fc="app"),
             self.fixture_chart(
                 3, constant=15, is_complete=True, legacy_complete=True, status="legacy"
             ),
@@ -297,8 +296,8 @@ class AppTests(unittest.TestCase):
             summary = self.client.get("/api/summary", params=params).json()
             self.assertEqual([c["song_id"] for c in listing["items"]], [1])
             self.assertEqual(listing["total"], summary["total"])
-            for key, value in summarize(listing["items"]).items():
-                self.assertEqual(summary[key], value)
+            expected = selection_summary(listing["items"], summary["sync"])
+            self.assertEqual(summary, expected)
             self.assertEqual([(v["level"], v["total"]) for v in summary["levels"]], [("13", 1)])
             self.assertEqual(
                 [(v["constant"], v["total"]) for v in summary["constants"]], [(13.3, 1)]
@@ -328,11 +327,8 @@ class AppTests(unittest.TestCase):
                 is_ap=i % 3 == 1,
                 legacy_complete=i % 3 == 2,
                 status=("incomplete", "app", "legacy")[i % 3],
-                achievement=101 if i % 3 == 1 else None,
                 provider_achievement=99.0 + i / 100 if i % 3 == 0 else None,
                 venue="Private arcade",
-                note="Private note",
-                manual_date="2026-10-01",
             )
             for i in range(24)
         ]
@@ -351,7 +347,6 @@ class AppTests(unittest.TestCase):
             "is_ap",
             "status",
             "conflict",
-            "achievement",
             "provider_achievement",
             "pending_record",
             "record_revision",
@@ -383,8 +378,9 @@ class AppTests(unittest.TestCase):
                     self.assertEqual(len({(c["id"], c["difficulty"]) for c in result["items"]}), 24)
                     for item in result["items"]:
                         self.assertEqual(set(item), allowed)
-                    for field, value in summarize(fixtures).items():
-                        self.assertEqual(result["summary"][field], value)
+                    expected = selection_summary(fixtures, None)
+                    for field in ("total", "complete", "ap", "remaining", "legacy_complete"):
+                        self.assertEqual(result["summary"][field], expected[field])
                     self.assertNotIn("Private", response.text)
                     self.assertIsNotNone(datetime.fromisoformat(result["generated_at"]).tzinfo)
         self.assertEqual(
@@ -480,15 +476,7 @@ class AppTests(unittest.TestCase):
             result["summary"]["complete"], sum(c["is_complete"] for c in result["items"])
         )
         for item in result["items"]:
-            for field in (
-                "venue",
-                "manual_venue",
-                "note",
-                "manual_date",
-                "manual_updated_at",
-                "warnings",
-                "_search",
-            ):
+            for field in ("venue", "_search"):
                 self.assertNotIn(field, item)
 
     def test_version_uses_japanese_chart_debut_and_retains_unknowns(self):
@@ -692,7 +680,7 @@ class AppTests(unittest.TestCase):
         )
         self.assertEqual(self.client.get("/api/charts/22:4").json()["cn_version"], 20000)
         # A reader already holding rows also retains that snapshot's version menu.
-        with patch.object(self.store, "all_charts", return_value=captured):
+        with patch.object(self.store, "_charts", return_value=captured):
             self.assertEqual(self.client.get("/api/chart-filters").json()["cn_versions"], expected)
             self.assertEqual(self.client.get("/api/charts/22:4").json()["cn_version"], 25504)
 
@@ -892,13 +880,13 @@ class AppTests(unittest.TestCase):
         shutil.copy2(ROOT / "data/catalog/catalog.sqlite", base / "catalog.sqlite")
         self.store.catalog_root = base
         self.store.reload_catalog()
-        with self.store.db() as conn:
-            conn.execute(
-                "INSERT INTO manual VALUES(?,?,?,?,?,?,?)",
-                ("30:0", 1, "", None, "keep", None, "fixture"),
-            )
         self.store.import_provider(
-            {"records": [{"song_id": 10030, "level_index": 0, "fc": "ap", "achievements": 100.5}]}
+            {
+                "records": [
+                    {"song_id": 10030, "level_index": 0, "fc": "ap", "achievements": 100.5},
+                    {"song_id": 30, "level_index": 0, "fc": "ap", "achievements": 100.6},
+                ]
+            }
         )
         personal_before = self.store.db_path.read_bytes()
         original = self.store._catalog_snapshot
@@ -946,7 +934,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.store.db_path.read_bytes(), personal_before)
         self.assertTrue(self.store.chart("30:0")["is_ap"])
         self.assertFalse(self.store.chart("30:0")["requires_venue"])
-        self.assertEqual(self.store.chart("30:0")["note"], "keep")
+        self.assertEqual(self.store.chart("30:0")["provider_achievement"], 100.6)
         self.assertTrue(self.store.chart("10030:0")["is_ap"])
         listing = self.client.get("/api/charts", params={"q": "90001"}).json()
         summary = self.client.get("/api/summary", params={"q": "90001"}).json()
@@ -958,7 +946,7 @@ class AppTests(unittest.TestCase):
         # A restart resolves the same pointer without reimporting the user's TSV.
         restarted = Store(runtime=self.tmp.name, catalog_dir=base)
         self.assertEqual(len(restarted.catalog), CHART_COUNT + 1)
-        self.assertEqual(restarted.chart("30:0")["note"], "keep")
+        self.assertTrue(restarted.chart("30:0")["is_ap"])
         self.store.install_catalog(original)
         self.assertNotIn("90001:0", self.store.catalog)
         self.assertTrue(self.store.chart("30:0")["is_ap"])
@@ -1027,20 +1015,6 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.json(), expected)
         self.assertEqual(response.headers["cache-control"], "no-store")
 
-    def test_legacy_manual_records_remain_readable(self):
-        key = "22:4"
-        with self.store.db() as conn:
-            conn.execute(
-                "INSERT INTO manual VALUES(?,?,?,?,?,?,?)",
-                (key, 1, "测试机厅", 100.9876, "历史记录", None, "fixture"),
-            )
-        self.store.import_provider(
-            {"records": [{"song_id": 22, "level_index": 4, "fc": "fc", "achievements": 100.2}]}
-        )
-        chart = self.client.get(f"/api/charts/{key}").json()
-        self.assertTrue(chart["conflict"])
-        self.assertEqual((chart["venue"], chart["achievement"]), ("测试机厅", 100.9876))
-
     def test_venue_policy_is_exposed_and_low_claim_needs_no_venue(self):
         high, low = "131:3", "30:0"
         self.add_venue("测试机厅")
@@ -1072,6 +1046,7 @@ class AppTests(unittest.TestCase):
                 "chart_key": key,
                 "constant": constant,
             }
+            self.store.install_catalog(self.store._catalog_snapshot)
             chart = self.client.get(f"/api/charts/{key}").json()
             self.assertFalse(chart["in_original_table"])
             self.assertEqual(chart["requires_venue"], required)
@@ -1090,8 +1065,6 @@ class AppTests(unittest.TestCase):
         self.assertFalse(self.store.chart("10030:0")["is_ap"])
         self.assertTrue(self.store.chart("30:0")["is_ap"])
         self.assertEqual(self.store.chart("30:0")["status"], "app")
-        # Remote values are distinct from user-confirmed cover score.
-        self.assertIsNone(self.store.chart("30:0")["achievement"])
         charts = self.client.get("/api/charts", params={"q": "10030", "group": "catalog"}).json()[
             "items"
         ]

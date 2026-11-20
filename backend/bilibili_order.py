@@ -44,6 +44,18 @@ def parsed_title(title, bvid):
     }
 
 
+def title_combo(title, bvid):
+    """AP/AP+ marker at the end of an existing title ("ap", "app" or None)."""
+    title = unicodedata.normalize("NFKC", title).strip()
+    match = re.search(r"(?:^|\s)AP(\s*\+)?$", title, re.IGNORECASE)
+    if match is None and bvid == MIRROR_BVID:
+        # The mirrored upload reads backwards and starts with PA/+PA.
+        match = re.match(r"^(\+\s*)?PA(?:\s|$)", title, re.IGNORECASE)
+    if match is None:
+        return None
+    return "app" if match[1] else "ap"
+
+
 def chart_identity(chart):
     return {
         "song": normalized(chart.get("display_title") or chart["title"]),

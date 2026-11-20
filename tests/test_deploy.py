@@ -194,27 +194,12 @@ class DeploymentTests(unittest.TestCase):
             old.unlink()
         (incoming / f"mai-journal-{sha}.tar.gz").write_bytes(data or archive_bytes(sha))
 
-    def test_success_stops_before_backup_then_starts_exact_sha(self):
-        make_database(self.root / "shared/runtime/auth.sqlite3", "persistent login")
-        real_backup = self.deployer.backup
-
-        def backup(previous, target):
-            self.assertEqual(self.host.events[-1], ("stop", OLD))
-            self.host.events.append(("backup", OLD))
-            return real_backup(previous, target)
-
-        with patch.object(self.deployer, "backup", side_effect=backup):
-            self.assertEqual(self.deployer.run(), "deployed")
+    def test_success_stops_then_starts_exact_sha(self):
+        self.assertEqual(self.deployer.run(), "deployed")
         self.assertEqual(
-            self.host.events,
-            [("install", NEW), ("stop", OLD), ("backup", OLD), ("start", NEW), ("ready", NEW)],
+            self.host.events, [("install", NEW), ("stop", OLD), ("start", NEW), ("ready", NEW)]
         )
         self.assertEqual(self.deployer.installed(), NEW)
-        backups = list((self.root / "backups").iterdir())
-        self.assertEqual(len(backups), 1)
-        self.assertEqual(database_value(backups[0] / "personal.sqlite3"), "before")
-        self.assertEqual(database_value(backups[0] / "adjudications.sqlite3"), "permanent decision")
-        self.assertEqual(database_value(backups[0] / "auth.sqlite3"), "persistent login")
         self.assertEqual(
             (self.root / "current/release.env").read_text(), f"MAIMAI_RELEASE_SHA={NEW}\n"
         )
@@ -253,16 +238,11 @@ class DeploymentTests(unittest.TestCase):
             self.deployer.run()
         self.assertEqual(self.deployer.installed(), OTHER)
 
-    def test_success_prunes_old_releases_and_backups(self):
+    def test_success_prunes_old_releases(self):
         for name in (OTHER, "d" * 40):
             (self.root / "releases" / name).mkdir()
-        for index in range(12):
-            (self.root / "backups" / f"20260101T0000{index:02d}-x").mkdir(parents=True)
         self.assertEqual(self.deployer.run(), "deployed")
         self.assertEqual(sorted(p.name for p in (self.root / "releases").iterdir()), [OLD, NEW])
-        backups = sorted(p.name for p in (self.root / "backups").iterdir())
-        self.assertEqual(len(backups), 10)
-        self.assertNotIn("20260101T000000-x", backups)
 
     def test_multiple_uploads_are_not_deployed(self):
         (self.root / "incoming" / f"mai-journal-{OTHER}.tar.gz").write_bytes(b"x")
@@ -285,13 +265,12 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.host.events[-3:], [("stop", NEW), ("start", OLD), ("ready", OLD)])
         self.assertFalse(self.deployer.journal.exists())
 
-    def test_backup_failure_restarts_previous_without_switch(self):
+    def test_missing_personal_database_stops_before_touching_the_service(self):
         self.personal.unlink()
         with self.assertRaisesRegex(DeployError, "Personal database"):
             self.deployer.run()
         self.assertEqual(self.deployer.installed(), OLD)
-        self.assertNotIn(("start", NEW), self.host.events)
-        self.assertIn(("start", OLD), self.host.events)
+        self.assertEqual(self.host.events, [])
 
     def test_process_interruption_is_recovered_before_next_probe(self):
         def crash(sha):
