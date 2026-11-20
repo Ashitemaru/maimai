@@ -18,6 +18,8 @@ scripts/ 下的曲库模块没有命令行入口，只由后端更新任务调�
 5. 没有未决值冲突的 chart 写正式库；其余整个 entry 写待入库区，并列出所有差异选项。
    上一版已发布的 chart 出现冲突时保留在正式库，冲突字段沿用上一版发布值
    （published_baseline.json），同时列入待裁决（published=true），来源一致或裁决后再更新。
+   落雪与水鱼的曲目表（STD id / DX id+10000，不含宴）不全等时，说明有一方还没跟上本次更新：
+   已发布 chart 的差异不进待裁决，直接沿用上一版值，更新结果提示哪一方缺几首；全等后再比较。
    仅无版本证据不算矛盾，可带 null/version_pending 入库。
 6. 补曲绘；构建 flat JSON、运行用 SQLite、差异及准入报告。
 7. scripts/catalog_validate.py 校验来源/哈希、准入集合、SQL/JSON、图片与证据；预载 Store，再原子切换快照。

@@ -828,6 +828,10 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(public_warnings({}, built), [])
         built["counts"]["pending"] = 1
         self.assertEqual(public_warnings({}, built), ["1 张谱面待裁决"])
+        lagging = {"counts": {"pending": 0, "source_lag": {"lxns_only": 3, "divingfish_only": 0}}}
+        self.assertEqual(
+            public_warnings({}, lagging), ["水鱼尚未跟上本次更新（缺 3 首），两边差异暂不处理"]
+        )
 
     def test_remy_summary_includes_unknown_versions_and_quarantined_white_charts(self):
         service = self.service()

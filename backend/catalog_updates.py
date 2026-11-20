@@ -119,6 +119,11 @@ def public_warnings(prepared, built):
     pending = built.get("counts", {}).get("pending", 0)
     if pending:
         messages.append(f"{pending} 张谱面待裁决")
+    lag = built.get("counts", {}).get("source_lag", {})
+    if lag.get("lxns_only"):
+        messages.append(f"水鱼尚未跟上本次更新（缺 {lag['lxns_only']} 首），两边差异暂不处理")
+    if lag.get("divingfish_only"):
+        messages.append(f"落雪尚未跟上本次更新（缺 {lag['divingfish_only']} 首），两边差异暂不处理")
     missing = prepared.get("diff", {}).get("counts", {}).get("missing_charts", 0)
     if missing:
         messages.append(f"落雪本次缺少 {missing} 张旧谱，原始记录和个人成绩已保留")

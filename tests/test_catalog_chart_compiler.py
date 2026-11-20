@@ -196,6 +196,22 @@ class ChartCompilerTests(unittest.TestCase):
         self.assertEqual(charts["1:3"]["constant"], 13.4)
         self.assertEqual(review[(1, 3)]["status"], "resolved")
 
+    def test_lagging_source_defers_differences_without_review(self):
+        self.update_sources([song(1)], [self.fish(1, 13.0)])
+        # 落雪 has this month's new song and constant; 水鱼 has neither yet.
+        charts, review = self.update_sources([song(1, 13.4), song(3)], [self.fish(1, 13.0)])
+        self.assertEqual(charts["1:3"]["constant"], 13.0)
+        self.assertEqual(review[(1, 3)]["status"], "resolved")
+        self.assertIn("3:3", charts)
+        counts = self.read("catalog.json")["counts"]
+        self.assertEqual((counts["pending"], counts["source_lag"]["lxns_only"]), (0, 1))
+        # 水鱼 catches up: the lists match again and the new value is published.
+        charts, _ = self.update_sources(
+            [song(1, 13.4), song(3)], [self.fish(1, 13.4), self.fish(3, 12.5)]
+        )
+        self.assertEqual(charts["1:3"]["constant"], 13.4)
+        self.assertEqual(self.read("catalog.json")["counts"]["source_lag"]["lxns_only"], 0)
+
     def test_numeric_choice_yields_when_sources_agree_on_another_value(self):
         self.update_sources([song(1)], [self.fish(1, 14.4)])
         decisions = self.choices()

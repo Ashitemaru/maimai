@@ -603,7 +603,16 @@ class PipelineTests(unittest.TestCase):
                     "from": "CN only",
                 },
                 "charts": [{"notes": [1, 0, 0, 0], "charter": "-"} for _ in range(4)],
-            }
+            },
+            {  # Same values as 落雪 so both lists contain the same songs.
+                "id": "2",
+                "title": "Song 2",
+                "type": "SD",
+                "ds": [1, 2, 3, 12, 13.0],
+                "level": ["1", "2", "3", "12", "13"],
+                "basic_info": {"title": "Song 2", "artist": "Artist", "bpm": 120},
+                "charts": [{"notes": [1, 0, 0, 0], "charter": "Designer"} for _ in range(5)],
+            },
         ]
         self.prepare()
         build(self.stage)

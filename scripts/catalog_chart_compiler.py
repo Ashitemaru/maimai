@@ -185,9 +185,30 @@ def published_baseline(catalog):
     }
 
 
-def compile_charts(lxns, legacy_catalog, legacy_review, document, published=None):
+def source_lag(lxns, fish):
+    """Songs (STD id / DX id+10000) present in only one of 落雪 and 水鱼; utage excluded.
+
+    Both sources gain every monthly update's new songs, so unequal lists mean one of
+    them has not caught up yet and its differing values are not real disagreements.
+    """
+    ours = {
+        (str(song["id"] + 10000 if kind == "dx" else song["id"]), "DX" if kind == "dx" else "SD")
+        for song in lxns.get("songs", [])
+        for kind, charts in song.get("difficulties", {}).items()
+        if charts and kind in ("standard", "dx")
+    }
+    theirs = {
+        (str(row["id"]), row["type"])
+        for row in fish or []
+        if row.get("type") in ("SD", "DX") and int(row["id"]) < 100000
+    }
+    return {"lxns_only": len(ours - theirs), "divingfish_only": len(theirs - ours)}
+
+
+def compile_charts(lxns, legacy_catalog, legacy_review, document, published=None, lag=None):
     """Pure admission result from normalized adapters and permanent selected values."""
     published = published or {}
+    in_sync = not lag or not any(lag.values())
     mappings = chart_mappings(lxns)
     by_legacy = {m["legacy_chart_key"]: m for m in mappings["mappings"]}
     record_by_song = {r["song_id"]: r for r in legacy_review["records"]}
@@ -341,6 +362,12 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document, published=None
                 flat["jp_release_version"] is None and "jp_release_version" not in decisions[key]
             )
             previous = published.get(key)
+            if conflicts and previous and not in_sync:
+                # One source is behind this update: keep published values, nothing to review.
+                deferred = [c for c in conflicts if c["field_key"] != "jp_release_version"]
+                for conflict in deferred:
+                    flat[conflict["field_key"]] = deepcopy(previous[conflict["field_key"]])
+                conflicts = [c for c in conflicts if c not in deferred]
             if conflicts and previous:
                 # Already published: keep the previous values until sources agree or a choice.
                 for conflict in conflicts:
@@ -396,6 +423,7 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document, published=None
         "total": len(mappings["mappings"]),
         "admitted": len(formal),
         "pending": sum(r["status"] == "pending" for r in review_records),
+        "source_lag": dict(lag or {"lxns_only": 0, "divingfish_only": 0}),
     }
     return {
         "charts": formal,
@@ -516,6 +544,10 @@ def calculate(directory, document=None):
         review,
         document,
         read(Path(directory) / BASELINE, {"charts": {}})["charts"],
+        source_lag(
+            read(Path(directory) / "raw/lxns_songs.json", {"songs": []}),
+            read(Path(directory) / "raw/divingfish_music_data.json", []),
+        ),
     )
     return {**result, "lxns": lxns, "versions": versions, "document": document}
 
