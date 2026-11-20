@@ -1,8 +1,12 @@
 # Server deployment
 
-The server polls public GitHub main every two minutes. It activates only a completed,
-successful `push` run of `ci.yml` in the same repository, plus the exact release tag
-`app-<40 lowercase hex SHA>`. The tag must resolve to that commit. Required release
+Deployment is push-triggered. On a push to main, the last CI job (`deploy`) runs after
+the `release` job and connects over SSH as `mai-deploy`. That key is limited to the
+forced command `ci-deploy.sh`, which starts `mai-journal-deploy.service` and prints its
+journal; the CI job fails when the deployment fails. There is no polling timer.
+The release job only runs after every check job succeeded, so the deployer accepts the
+exact release tag `app-<40 lowercase hex SHA>` of current main as CI approval. The tag
+must resolve to that commit. Required release
 assets are `mai-journal-<SHA>.tar.gz` and `SHA256SUMS` (sha256sum format). Downloads
 and redirects use HTTPS GitHub hosts only; the archive checksum, paths, file types,
 resource bounds and `RELEASE_SHA` are validated before installing dependencies.
@@ -32,7 +36,7 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
    rejects an uninitialized production database/catalog. Keep credentials in runtime
    or root-owned `app.env`, never in code/releases. Validate migrated data separately.
 3. Install the reviewed deployer at `/opt/mai-journal/deploy_release.py`, root-owned,
-   mode 0755. Copy the three unit files into `/etc/systemd/system`, root-owned 0644.
+   mode 0755. Copy `mai-journal.service` and `mai-journal-deploy.service` into `/etc/systemd/system`, root-owned 0644.
    Normal releases do not automatically update these root-owned bootstrap files.
 4. Create `/etc/mai-journal/app.env` and `deploy.env` from the examples, root-owned
    0600. Set the actual public repository and allowed HTTPS hostname. Generate
@@ -41,13 +45,24 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
    code or releases. Production refuses to start without a valid hash. The app
    unit adds production paths and reads the release SHA from `current/release.env`.
 5. Install the reviewed sudoers file at `/etc/sudoers.d/mai-journal`, root-owned
-   0440, and validate with `visudo -cf`. It permits only start/stop/restart of the
-   exact application service. The application unit's `NoNewPrivileges` prevents
+   0440, and validate with `visudo -cf`. It permits `maimai` only start/stop/restart of the
+   exact application service, and `mai-deploy` only starting the deployment unit and
+   reading its journal. The application unit's `NoNewPrivileges` prevents
    it from using sudo; its filesystem sandbox permits writes only to catalog and
    runtime. The deployment unit can write release/current/backup paths.
 6. Run `systemctl daemon-reload`, then `systemctl start mai-journal-deploy.service`.
    Inspect its journal and `/api/ready` through localhost. Enable
-   `mai-journal.service` and `mai-journal-deploy.timer` only after initial validation.
+   `mai-journal.service` only after initial validation. If an older install enabled
+   `mai-journal-deploy.timer`, run `systemctl disable --now mai-journal-deploy.timer`
+   and remove its unit file.
+7. CI deploy access: create the user `mai-deploy` with a normal shell and no password
+   (`useradd -m -s /bin/sh mai-deploy; passwd -l mai-deploy`). Install
+   `ci-deploy.sh` as `/opt/mai-journal/ci-deploy.sh`, root-owned 0755. Generate a
+   dedicated key pair (`ssh-keygen -t ed25519 -N "" -f mai-deploy`) and put the public
+   key into `~mai-deploy/.ssh/authorized_keys` as in `authorized_keys.example`. In the
+   GitHub repository secrets set `DEPLOY_HOST`, `DEPLOY_SSH_KEY` (private key),
+   `DEPLOY_KNOWN_HOSTS` (output of `ssh-keyscan -t ed25519 <host>`), and optionally
+   `DEPLOY_PORT` and `DEPLOY_USER`. Without `DEPLOY_HOST` the deploy job only warns.
    Configure Caddy from `Caddyfile.example`; never expose 8766 publicly. The app's
    login page uses one Master Key, without usernames. Caddy must overwrite the
    forwarded headers as shown so clients cannot forge the login rate-limit IP.
@@ -105,12 +120,11 @@ rebuilding it with the current packaging workflow under a new commit/tag.
 
 Main is rechecked after preparation. A filesystem flock serializes the complete
 deployment. The current
-SHA is a no-op, so ordinary timer ticks make just one unauthenticated GitHub API
-request. GitHub errors/rate limits keep the running version and are retried on a
-later timer run; a release in progress is not an error.
+SHA is a no-op. GitHub errors keep the running version and fail the CI deploy job;
+rerun that job to retry. A missing release fails the job without touching the app.
 
 Release archives stream into a private `downloads/` cache. Interrupted transfers
-retain their bytes and resume on the next connection or timer run; the partial
+retain their bytes and resume on the next connection or deployment; the partial
 filename includes the expected SHA-256. A resumed response must match the exact
 requested byte range. If GitHub ignores Range, the file restarts rather than
 appending incompatible data. Every complete archive is checked against SHA256SUMS
@@ -131,13 +145,13 @@ adjudications databases (plus the session database when present), changes
 It accepts `/api/ready` only when `ok` is true and `release_sha` matches. A failed
 activation stops the new process before restoring the old pointer and restarting
 it. Rollback never overwrites personal data. An interrupted activation is rolled
-back from the journal on the next timer run before another deployment is tried.
+back from the journal on the next deployment before another deployment is tried.
 An activation failure or interrupted activation records `failed-release.json`.
-Timer ticks keep the recovered app running and skip that same SHA, avoiding a
-two-minute cycle of outages. A different main SHA is eligible automatically.
+Later triggers keep the recovered app running and skip that same SHA instead of
+repeating the outage. A different main SHA is eligible automatically.
 After an operator fixes a transient environment problem, explicitly retry with
 `sudo -u maimai /usr/bin/python3 /opt/mai-journal/deploy_release.py --repository OWNER/REPOSITORY --retry-failed`.
-This still requires successful main CI, an exact release and all artifact checks.
+This still requires the exact release and all artifact checks.
 Keep the previous release directory: recovery intentionally fails closed if it is
 missing. A failed initial deployment has no previous release and remains stopped.
 

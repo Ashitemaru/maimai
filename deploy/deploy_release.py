@@ -24,7 +24,7 @@ import urllib.request
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -137,7 +137,9 @@ class GitHub:
                 return None
             raise DeployError(f"GitHub HTTP {exc.code}; current service was not changed") from None
         except (OSError, urllib.error.URLError) as exc:
-            raise DeployError("GitHub request failed; retry on the next timer run") from exc
+            raise DeployError(
+                "GitHub request failed; retry by rerunning the CI deploy job"
+            ) from exc
         if len(data) > limit:
             raise DeployError("Download exceeded its size limit")
         return data
@@ -158,21 +160,8 @@ class GitHub:
         return valid_sha(result.get("sha"))
 
     def release(self, sha):
-        query = urlencode({"branch": "main", "event": "push", "head_sha": sha, "per_page": 100})
-        runs = self.api("/actions/workflows/ci.yml/runs?" + query) or {}
-        accepted = any(
-            run.get("head_sha") == sha
-            and run.get("head_branch") == "main"
-            and run.get("event") == "push"
-            and run.get("status") == "completed"
-            and run.get("conclusion") == "success"
-            and run.get("repository", {}).get("full_name", "").lower() == self.repository.lower()
-            and run.get("head_repository", {}).get("full_name", "").lower()
-            == self.repository.lower()
-            for run in runs.get("workflow_runs", [])
-        )
-        if not accepted:
-            return None
+        # CI publishes app-<sha> only after every check job succeeded, and its deploy
+        # job triggers this run while the workflow itself is still in progress.
         tag = f"app-{sha}"
         release = self.api(f"/releases/tags/{tag}")
         if not release:
@@ -286,7 +275,7 @@ class GitHub:
             log(f"Archive transfer interrupted; saved {saved} bytes (attempt {attempt + 1})")
         saved = partial.stat().st_size if partial.exists() else 0
         raise DeployError(
-            f"Archive transfer incomplete; retained {saved} bytes for the next timer run"
+            f"Archive transfer incomplete; retained {saved} bytes for the next deployment"
         )
 
 
@@ -745,7 +734,7 @@ class Deployer:
             return "rejected"
         assets = self.github.release(sha)
         if assets is None:
-            log(f"Waiting for successful main CI and exact release {sha}")
+            log(f"No published release app-{sha}; CI has not passed for this commit")
             return "pending"
         log(f"Preparing approved release {sha}")
         self.prepare(sha, assets)
@@ -778,7 +767,7 @@ class Deployer:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                log("Another deployment is running; skipping this timer tick")
+                log("Another deployment is running; skipping this trigger")
                 return "busy"
             return self.run_locked()
 
@@ -795,11 +784,12 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        Deployer(args.root, GitHub(args.repository), retry_failed=args.retry_failed).run()
+        result = Deployer(args.root, GitHub(args.repository), retry_failed=args.retry_failed).run()
     except (DeployError, OSError, sqlite3.Error, ValueError) as exc:
         log(f"Deployment failed: {type(exc).__name__}: {exc}")
         return 1
-    return 0
+    # The CI deploy job reports this exit status; nothing deployed must not look green.
+    return 1 if result in ("pending", "rejected") else 0
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 [Unit]
-Description=Pull a CI-approved mai journal release
+Description=Install the CI-published mai journal release for main
 After=network-online.target
 Wants=network-online.target
 

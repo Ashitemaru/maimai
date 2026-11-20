@@ -1,0 +1,2 @@
+# /home/mai-deploy/.ssh/authorized_keys (owned by mai-deploy, mode 0600). One line:
+restrict,command="/opt/mai-journal/ci-deploy.sh" ssh-ed25519 AAAA... github-actions-mai-journal

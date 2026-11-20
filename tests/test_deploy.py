@@ -480,15 +480,6 @@ class ArchiveDownloadTests(unittest.TestCase):
 class GitHubApprovalTests(unittest.TestCase):
     def setUp(self):
         self.github = GitHub(REPO)
-        self.run = {
-            "head_sha": NEW,
-            "head_branch": "main",
-            "event": "push",
-            "status": "completed",
-            "conclusion": "success",
-            "repository": {"full_name": REPO},
-            "head_repository": {"full_name": REPO},
-        }
         self.release = {
             "tag_name": f"app-{NEW}",
             "draft": False,
@@ -507,37 +498,20 @@ class GitHubApprovalTests(unittest.TestCase):
             ],
         }
 
-    def test_only_successful_main_push_in_same_repository_is_accepted(self):
-        with patch.object(
-            self.github,
-            "api",
-            side_effect=[{"workflow_runs": [self.run]}, self.release, {"sha": NEW}],
-        ):
+    def test_exact_release_with_uploaded_assets_is_accepted(self):
+        with patch.object(self.github, "api", side_effect=[self.release, {"sha": NEW}]):
             self.assertEqual(
                 self.github.release(NEW),
                 {f"mai-journal-{NEW}.tar.gz": ASSET_API, "SHA256SUMS": CHECKSUM_API},
             )
-        for key, value in (
-            ("event", "pull_request"),
-            ("head_branch", "topic"),
-            ("head_sha", OTHER),
-            ("status", "in_progress"),
-            ("conclusion", "failure"),
-            ("head_repository", {"full_name": "fork/repo"}),
-        ):
-            with (
-                self.subTest(key=key),
-                patch.object(
-                    self.github, "api", return_value={"workflow_runs": [{**self.run, key: value}]}
-                ),
-            ):
-                self.assertIsNone(self.github.release(NEW))
+        with patch.object(self.github, "api", return_value=None):
+            self.assertIsNone(self.github.release(NEW))
 
     def test_tag_commit_and_asset_url_are_revalidated(self):
         with patch.object(
             self.github,
             "api",
-            side_effect=[{"workflow_runs": [self.run]}, self.release, {"sha": OLD}],
+            side_effect=[self.release, {"sha": OLD}],
         ):
             with self.assertRaisesRegex(DeployError, "tag does not resolve"):
                 self.github.release(NEW)
@@ -545,7 +519,7 @@ class GitHubApprovalTests(unittest.TestCase):
         with patch.object(
             self.github,
             "api",
-            side_effect=[{"workflow_runs": [self.run]}, self.release, {"sha": NEW}],
+            side_effect=[self.release, {"sha": NEW}],
         ):
             with self.assertRaisesRegex(DeployError, "asset URL"):
                 self.github.release(NEW)
@@ -567,7 +541,7 @@ class GitHubApprovalTests(unittest.TestCase):
                 with patch.object(
                     self.github,
                     "api",
-                    side_effect=[{"workflow_runs": [self.run]}, self.release, {"sha": NEW}],
+                    side_effect=[self.release, {"sha": NEW}],
                 ):
                     with self.assertRaisesRegex(DeployError, "asset API URL"):
                         self.github.release(NEW)
