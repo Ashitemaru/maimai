@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Store a release archive streamed by the CI deploy job for deploy_release.py.
+"""Server side of the CI deploy connection, run as the service user by ci-deploy.sh.
 
-Input on stdin: one line with the 40-hex commit SHA, then the archive bytes. The file
-is placed where the deployer resumes downloads, named by its SHA-256. The deployer
-still downloads SHA256SUMS from the GitHub release and uses this file only when the
-digest matches; anything else is discarded and downloaded from GitHub instead.
+`list` prints the digests of cached dependency wheels, so CI can leave them out of
+the upload. `upload` reads one line with the 40-hex commit SHA, then the release
+archive, and stores it as the single pending archive for deploy_release.py.
 """
 
-import hashlib
 import os
 import sys
 import tempfile
@@ -18,42 +16,54 @@ try:  # installed next to deploy_release.py in /opt/mai-journal
 except ImportError:  # repository checkout
     from deploy.deploy_release import MAX_ARCHIVE, DeployError, valid_sha
 
-DOWNLOADS = Path("/srv/mai-journal/downloads")
+ROOT = Path("/srv/mai-journal")
 
 
-def receive(source, downloads):
+def cached_digests(root):
+    wheels = root / "wheels"
+    if not wheels.is_dir():
+        return []
+    return sorted(p.name.removesuffix(".whl") for p in wheels.glob("*.whl"))
+
+
+def receive(source, root):
     try:
         sha = valid_sha(source.readline(64).decode("ascii").strip())
     except (UnicodeDecodeError, ValueError) as exc:
         raise DeployError("Expected a commit SHA line before the archive") from exc
-    name = f"mai-journal-{sha}.tar.gz"
-    downloads.mkdir(mode=0o700, exist_ok=True)
-    digest = hashlib.sha256()
+    incoming = root / "incoming"
+    incoming.mkdir(mode=0o700, exist_ok=True)
     size = 0
-    with tempfile.NamedTemporaryFile(dir=downloads, prefix=".incoming-", delete=False) as out:
+    with tempfile.NamedTemporaryFile(dir=incoming, prefix=".upload-", delete=False) as out:
         try:
             while chunk := source.read(1 << 20):
                 size += len(chunk)
                 if size > MAX_ARCHIVE:
                     raise DeployError("Uploaded archive exceeded its size limit")
-                digest.update(chunk)
                 out.write(chunk)
             out.flush()
             os.fsync(out.fileno())
         except BaseException:
             os.unlink(out.name)
             raise
-    for stale in downloads.glob(f"{name}*"):
+    for stale in incoming.glob("mai-journal-*"):
         stale.unlink()
-    target = downloads / f"{name}.{digest.hexdigest()}.part"
+    target = incoming / f"mai-journal-{sha}.tar.gz"
     os.replace(out.name, target)
     return target, size
 
 
-def main():
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else argv
     os.umask(0o077)
+    if args == ["list"]:
+        print("\n".join(cached_digests(ROOT)))
+        return 0
+    if args != ["upload"]:
+        print("Usage: ci_receive.py list|upload", file=sys.stderr)
+        return 2
     try:
-        target, size = receive(sys.stdin.buffer, DOWNLOADS)
+        target, size = receive(sys.stdin.buffer, ROOT)
     except (DeployError, OSError) as exc:
         print(f"Upload rejected: {exc}", file=sys.stderr)
         return 1

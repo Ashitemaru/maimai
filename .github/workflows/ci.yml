@@ -181,7 +181,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: release
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -190,7 +190,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: gh release download "app-$GITHUB_SHA" --pattern "mai-journal-$GITHUB_SHA.tar.gz"
-      - name: Upload the archive and run the server deployer over SSH
+      - name: Upload the release without cached wheels and run the server deployer
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -206,9 +206,25 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
-          # The server key is restricted to a forced command; the remote command is ignored.
-          # GitHub downloads from the server are slow, so the archive travels on stdin.
-          { echo "$GITHUB_SHA"; cat "mai-journal-$GITHUB_SHA.tar.gz"; } |
+          # The server key is restricted to a forced command that accepts only these words.
+          remote() {
             ssh -i ~/.ssh/deploy_key -p "${DEPLOY_PORT:-22}" \
               -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
-              "${DEPLOY_USER:-mai-deploy}@$DEPLOY_HOST" deploy
+              "${DEPLOY_USER:-mai-deploy}@$DEPLOY_HOST" "$1"
+          }
+          mkdir release
+          tar -xzf "mai-journal-$GITHUB_SHA.tar.gz" -C release
+          # Cross-border uploads are slow; wheels only change with requirements.lock.
+          remote wheels > cached-wheels.txt
+          python3 - <<'PY'
+          import json, pathlib
+          cached = set(pathlib.Path("cached-wheels.txt").read_text().split())
+          deps = pathlib.Path("release/dependencies")
+          for wheel in json.loads((deps / "manifest.json").read_text())["wheels"]:
+              if wheel["sha256"] in cached:
+                  (deps / wheel["filename"]).unlink()
+                  print("cached:", wheel["filename"])
+          PY
+          tar -czf upload.tar.gz -C release $(ls release)
+          ls -l upload.tar.gz
+          { echo "$GITHUB_SHA"; cat upload.tar.gz; } | remote deploy

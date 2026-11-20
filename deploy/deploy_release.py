@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pull a successful public-main release and activate it without overlapping workers."""
+"""Activate the release archive uploaded by the CI deploy job without overlapping workers."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
-import http.client
 import json
 import os
 import platform
@@ -24,17 +23,12 @@ import urllib.request
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
-REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SERVICE = "mai-journal.service"
 READY_URL = "http://127.0.0.1:8766/api/ready"
 MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_EXTRACTED = 256 * 1024 * 1024
-DOWNLOAD_ATTEMPTS = 4
-DOWNLOAD_SECONDS = 480
-DOWNLOAD_CHUNK = 64 * 1024
 DEPENDENCY_SCHEMA = 1
 PIP_VERSION = "26.2.1"
 WHEEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*\.whl\Z")
@@ -51,11 +45,6 @@ CORE_SCRIPTS = {
     "validate_catalog.py",
     "__init__.py",
 }
-DOWNLOAD_HOSTS = {
-    "github.com",
-    "release-assets.githubusercontent.com",
-    "objects.githubusercontent.com",
-}
 
 
 class DeployError(Exception):
@@ -70,264 +59,6 @@ def valid_sha(value):
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise DeployError("Invalid release SHA")
     return value
-
-
-def https_url(url, hosts):
-    parsed = urlsplit(url)
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname not in hosts
-        or parsed.username
-        or parsed.password
-        or parsed.port not in (None, 443)
-    ):
-        raise DeployError("Refused an unofficial or non-HTTPS download URL")
-    return url
-
-
-class OfficialRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, fp, code, message, headers, newurl):
-        https_url(newurl, DOWNLOAD_HOSTS)
-        return super().redirect_request(request, fp, code, message, headers, newurl)
-
-
-class GitHub:
-    def __init__(self, repository):
-        if not REPOSITORY.fullmatch(repository) or any(
-            p in {".", ".."} for p in repository.split("/")
-        ):
-            raise DeployError("Set MAIMAI_REPOSITORY to a public owner/repository")
-        self.repository = repository
-        self.base = f"https://api.github.com/repos/{repository}"
-        self.opener = urllib.request.build_opener(OfficialRedirects())
-
-    def is_asset_api(self, url):
-        return (
-            isinstance(url, str)
-            and re.fullmatch(re.escape(self.base) + r"/releases/assets/[1-9][0-9]*", url)
-            is not None
-        )
-
-    def asset_download_url(self, url):
-        hosts = {"api.github.com"} if self.is_asset_api(url) else DOWNLOAD_HOSTS
-        return https_url(url, hosts)
-
-    def read(self, url, limit):
-        hosts = {"api.github.com"} if url.startswith(self.base + "/") else DOWNLOAD_HOSTS
-        https_url(url, hosts)
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "mai-journal-pull-deploy/1",
-                "Accept": (
-                    "application/octet-stream"
-                    if self.is_asset_api(url)
-                    else "application/vnd.github+json"
-                ),
-                "X-GitHub-Api-Version": "2026-03-10",
-            },
-        )
-        try:
-            with self.opener.open(request, timeout=45) as response:
-                if self.is_asset_api(url):
-                    self.asset_download_url(response.geturl())
-                data = response.read(limit + 1)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                return None
-            raise DeployError(f"GitHub HTTP {exc.code}; current service was not changed") from None
-        except (OSError, urllib.error.URLError) as exc:
-            raise DeployError(
-                "GitHub request failed; retry by rerunning the CI deploy job"
-            ) from exc
-        if len(data) > limit:
-            raise DeployError("Download exceeded its size limit")
-        return data
-
-    def api(self, suffix):
-        content = self.read(self.base + suffix, 4 * 1024 * 1024)
-        if content is None:
-            return None
-        try:
-            return json.loads(content)
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise DeployError("GitHub returned invalid JSON") from exc
-
-    def main_sha(self):
-        result = self.api("/commits/main")
-        if not isinstance(result, dict):
-            raise DeployError("Public main branch was not found")
-        return valid_sha(result.get("sha"))
-
-    def release(self, sha):
-        # CI publishes app-<sha> only after every check job succeeded, and its deploy
-        # job triggers this run while the workflow itself is still in progress.
-        tag = f"app-{sha}"
-        release = self.api(f"/releases/tags/{tag}")
-        if not release:
-            return None
-        if release.get("tag_name") != tag or release.get("draft") or release.get("prerelease"):
-            raise DeployError("Release metadata does not match the approved SHA")
-        tagged = self.api(f"/commits/{tag}")
-        if not tagged or tagged.get("sha") != sha:
-            raise DeployError("Release tag does not resolve to the approved commit")
-        names = [f"mai-journal-{sha}.tar.gz", "SHA256SUMS"]
-        assets = {}
-        for name in names:
-            matches = [asset for asset in release.get("assets", []) if asset.get("name") == name]
-            if len(matches) != 1 or matches[0].get("state") != "uploaded":
-                raise DeployError("Release is missing exactly one required uploaded asset")
-            url = matches[0].get("browser_download_url", "")
-            expected = f"https://github.com/{self.repository}/releases/download/{tag}/{name}"
-            if url != expected:
-                raise DeployError("Release asset URL does not match its repository and tag")
-            asset_id = matches[0].get("id")
-            api_url = matches[0].get("url")
-            if (
-                type(asset_id) is not int
-                or asset_id <= 0
-                or api_url != f"{self.base}/releases/assets/{asset_id}"
-            ):
-                raise DeployError("Release asset API URL does not match its repository and ID")
-            assets[name] = api_url
-        return assets
-
-    def download(self, assets, sha, destination):
-        valid_sha(sha)
-        name = f"mai-journal-{sha}.tar.gz"
-        checksum_url = self.asset_download_url(assets["SHA256SUMS"])
-        url = self.asset_download_url(assets[name])
-        checksums = self.read(checksum_url, 65536)
-        if checksums is None:
-            raise DeployError("A release asset disappeared before download")
-        expected = checksum_for(checksums, name)
-        partial = destination.with_name(f"{destination.name}.{expected}.part")
-        for path in (destination, partial):
-            validate_download_file(path)
-            if path.exists() and file_digest(path) == expected:
-                if path == partial:
-                    partial.replace(destination)
-                return
-        destination.unlink(missing_ok=True)
-        deadline = time.monotonic() + DOWNLOAD_SECONDS
-        total = None
-        for attempt in range(DOWNLOAD_ATTEMPTS):
-            if time.monotonic() >= deadline:
-                break
-            offset = partial.stat().st_size if partial.exists() else 0
-            headers = {
-                "User-Agent": "mai-journal-pull-deploy/1",
-                "Accept": "application/octet-stream",
-                "Accept-Encoding": "identity",
-                "X-GitHub-Api-Version": "2026-03-10",
-            }
-            if offset:
-                headers["Range"] = f"bytes={offset}-"
-            request = urllib.request.Request(url, headers=headers)
-            try:
-                timeout = min(45, max(1, deadline - time.monotonic()))
-                with self.opener.open(request, timeout=timeout) as response:
-                    self.asset_download_url(response.geturl())
-                    response_total, append = download_response(response, offset)
-                    if total is not None and response_total is not None and total != response_total:
-                        raise DeployError("Archive total length changed during download")
-                    total = response_total
-                    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
-                    flags |= os.O_APPEND if append else os.O_TRUNC
-                    with os.fdopen(os.open(partial, flags, 0o600), "wb", buffering=0) as handle:
-                        received = offset if append else 0
-                        reached_eof = False
-                        reader = getattr(response, "read1", response.read)
-                        while time.monotonic() < deadline:
-                            chunk = reader(DOWNLOAD_CHUNK)
-                            if not chunk:
-                                reached_eof = True
-                                break
-                            received += len(chunk)
-                            if received > MAX_ARCHIVE or (total is not None and received > total):
-                                raise DeployError("Archive response exceeded its declared size")
-                            handle.write(chunk)
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    if (total is not None and received != total) or not reached_eof:
-                        raise OSError("incomplete archive body")
-                    if file_digest(partial) != expected:
-                        raise DeployError("Release archive checksum mismatch")
-                    partial.replace(destination)
-                    return
-            except DeployError:
-                partial.unlink(missing_ok=True)
-                raise
-            except urllib.error.HTTPError as exc:
-                exc.close()
-                if exc.code == 416:
-                    partial.unlink(missing_ok=True)
-                    raise DeployError(
-                        "Cached archive range was rejected; retry starts fresh"
-                    ) from None
-                if exc.code not in {408, 429, 500, 502, 503, 504}:
-                    raise DeployError(
-                        f"GitHub archive HTTP {exc.code}; current service was not changed"
-                    ) from None
-            except (OSError, urllib.error.URLError, http.client.HTTPException):
-                pass
-            saved = partial.stat().st_size if partial.exists() else 0
-            log(f"Archive transfer interrupted; saved {saved} bytes (attempt {attempt + 1})")
-        saved = partial.stat().st_size if partial.exists() else 0
-        raise DeployError(
-            f"Archive transfer incomplete; retained {saved} bytes for the next deployment"
-        )
-
-
-def validate_download_file(path):
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise DeployError("Archive download cache must contain regular files only")
-    if path.exists() and path.stat().st_size > MAX_ARCHIVE:
-        raise DeployError("Cached archive exceeded its size limit")
-
-
-def file_digest(path):
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-def download_response(response, offset):
-    """A range must start at the persisted byte; an ignored range restarts the file."""
-    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-        raise DeployError("Archive response must not use content encoding")
-    length = response.headers.get("Content-Length")
-    if length is not None:
-        if not re.fullmatch(r"[0-9]+", length) or int(length) > MAX_ARCHIVE:
-            raise DeployError("Invalid archive response length")
-        length = int(length)
-    content_range = response.headers.get("Content-Range")
-    if response.status == 206:
-        match = re.fullmatch(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)", content_range or "")
-        if match is None:
-            raise DeployError("Missing or invalid archive Content-Range")
-        start, end, total = map(int, match.groups())
-        if (
-            start != offset
-            or not start <= end < total <= MAX_ARCHIVE
-            or end != total - 1
-            or (length is not None and length != end - start + 1)
-        ):
-            raise DeployError("Archive Content-Range does not match the requested remainder")
-        return total, bool(offset)
-    if response.status != 200 or content_range is not None:
-        raise DeployError("Unexpected archive download response")
-    return length, False
-
-
-def checksum_for(data, name):
-    try:
-        rows = [line.split() for line in data.decode("ascii").splitlines() if line.strip()]
-    except UnicodeDecodeError as exc:
-        raise DeployError("Invalid checksum manifest") from exc
-    values = [parts[0] for parts in rows if len(parts) == 2 and parts[1].lstrip("*") == name]
-    if len(values) != 1 or not re.fullmatch(r"[0-9a-f]{64}", values[0]):
-        raise DeployError("Checksum manifest must contain exactly one matching archive")
-    return values[0]
 
 
 def allowed_file(parts):
@@ -353,8 +84,12 @@ def allowed_file(parts):
     )
 
 
-def extract_archive(archive, destination, sha):
-    """Stream only regular release files; never extract links, devices or private data."""
+def extract_archive(archive, destination, sha, wheel_cache=None):
+    """Stream only regular release files; never extract links, devices or private data.
+
+    The CI deploy job omits wheels the server already has; they are restored from
+    `wheel_cache` by digest and then verified with the rest of the bundle.
+    """
     seen, total = set(), 0
     try:
         with tarfile.open(archive, "r|gz") as tar:
@@ -407,7 +142,42 @@ def extract_archive(archive, destination, sha):
     if (destination / "RELEASE_SHA").read_text().strip() != sha:
         raise DeployError("Archive RELEASE_SHA does not match the approved commit")
     requirement_pins(destination / "requirements.lock")
+    if wheel_cache is not None:
+        restore_cached_wheels(destination, wheel_cache)
     dependency_bundle(destination)
+
+
+def manifest_wheels(release):
+    try:
+        manifest = json.loads((release / "dependencies/manifest.json").read_text())
+        return [(w["filename"], w["sha256"]) for w in manifest["wheels"]]
+    except (OSError, ValueError, UnicodeError, KeyError, TypeError) as exc:
+        raise DeployError("Invalid dependency bundle manifest") from exc
+
+
+def restore_cached_wheels(release, cache):
+    for name, digest in manifest_wheels(release):
+        target = release / "dependencies" / name
+        cached = cache / f"{digest}.whl"
+        if WHEEL_NAME.fullmatch(name) and not target.exists() and cached.is_file():
+            shutil.copyfile(cached, target)
+            target.chmod(0o600)
+
+
+def cache_wheels(release, cache):
+    """Keep exactly the verified wheels of `release` for the next upload."""
+    cache.mkdir(mode=0o700, exist_ok=True)
+    keep = set()
+    for name, digest in manifest_wheels(release):
+        keep.add(f"{digest}.whl")
+        cached = cache / f"{digest}.whl"
+        if not cached.exists():
+            temporary = cache / f".{digest}-{uuid.uuid4().hex}"
+            shutil.copyfile(release / "dependencies" / name, temporary)
+            temporary.replace(cached)
+    for path in cache.iterdir():
+        if path.name not in keep:
+            path.unlink()
 
 
 def requirement_pins(path):
@@ -590,25 +360,28 @@ class Host:
 
 
 class Deployer:
-    def __init__(self, root, github, host=None, *, retry_failed=False):
+    def __init__(self, root, host=None):
         self.root = Path(root).resolve()
         self.releases = self.root / "releases"
+        self.incoming = self.root / "incoming"
+        self.wheels = self.root / "wheels"
         self.journal = self.root / "deployment-pending.json"
-        self.failed_release = self.root / "failed-release.json"
-        self.github = github
         self.host = host or Host()
-        self.retry_failed = retry_failed
 
-    def failed_sha(self):
-        if not self.failed_release.exists():
+    def uploaded(self):
+        """The SHA of the single archive left by ci_receive.py, if any."""
+        if not self.incoming.is_dir() or self.incoming.is_symlink():
             return None
-        try:
-            return valid_sha(json.loads(self.failed_release.read_text())["sha"])
-        except (ValueError, KeyError, TypeError) as exc:
-            raise DeployError("Invalid failed-release marker; inspect before retrying") from exc
-
-    def mark_failed(self, sha):
-        atomic_json(self.failed_release, {"sha": sha, "failed_at": datetime.now(UTC).isoformat()})
+        found = [
+            path
+            for path in self.incoming.iterdir()
+            if re.fullmatch(r"mai-journal-[0-9a-f]{40}\.tar\.gz", path.name)
+        ]
+        if len(found) != 1 or found[0].is_symlink() or not found[0].is_file():
+            return None
+        if found[0].stat().st_size > MAX_ARCHIVE:
+            raise DeployError("Uploaded archive exceeded its size limit")
+        return found[0].name.removeprefix("mai-journal-").removesuffix(".tar.gz")
 
     def installed(self):
         current = self.root / "current"
@@ -652,11 +425,8 @@ class Deployer:
             raise DeployError("Invalid deployment journal; manual recovery required") from exc
         if previous and not (self.releases / previous / "RELEASE_SHA").is_file():
             raise DeployError("Previous release missing; manual recovery required")
-        log("Recovering an interrupted activation before checking for new code")
-        try:
-            self.mark_failed(target)
-        finally:
-            self.rollback(previous, target)
+        log("Recovering an interrupted activation before installing new code")
+        self.rollback(previous, target)
 
     def backup(self, previous, target):
         label = datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
@@ -686,7 +456,7 @@ class Deployer:
         )
         return directory
 
-    def prepare(self, sha, assets):
+    def prepare(self, sha):
         release = self.releases / sha
         if release.exists():
             if release.is_symlink() or not release.is_dir():
@@ -694,53 +464,38 @@ class Deployer:
             # Only inactive candidates reach preparation. A previous interrupted
             # venv install may be incomplete; rebuild instead of trusting it.
             shutil.rmtree(release)
-        downloads = self.root / "downloads"
-        if downloads.is_symlink() or (downloads.exists() and not downloads.is_dir()):
-            raise DeployError("Archive cache must be a real directory")
-        downloads.mkdir(mode=0o700, exist_ok=True)
-        name = f"mai-journal-{sha}.tar.gz"
-        for path in downloads.iterdir():
-            if not path.name.startswith(name) and re.fullmatch(
-                r"mai-journal-[0-9a-f]{40}\.tar\.gz(?:\.[0-9a-f]{64}\.part)?", path.name
-            ):
-                validate_download_file(path)
-                path.unlink()
-        archive = downloads / name
-        self.github.download(assets, sha, archive)
-        with tempfile.TemporaryDirectory(prefix=".prepare-", dir=self.releases) as temp:
-            staging = Path(temp)
-            extracted = staging / "code"
-            extracted.mkdir()
-            extract_archive(archive, extracted, sha)
-            extracted.replace(release)
-        archive.unlink()
+        archive = self.incoming / f"mai-journal-{sha}.tar.gz"
+        try:
+            with tempfile.TemporaryDirectory(prefix=".prepare-", dir=self.releases) as temp:
+                extracted = Path(temp) / "code"
+                extracted.mkdir()
+                extract_archive(archive, extracted, sha, self.wheels)
+                extracted.replace(release)
+        finally:
+            # A rerun of the CI deploy job uploads again; never reuse a consumed archive.
+            archive.unlink(missing_ok=True)
         try:
             self.host.install(release)
             (release / "release.env").write_text(f"MAIMAI_RELEASE_SHA={sha}\n")
         except Exception:
             shutil.rmtree(release)
             raise
+        cache_wheels(release, self.wheels)
         return release
 
     def run_locked(self):
         self.recover()
         previous = self.installed()
-        sha = self.github.main_sha()
+        sha = self.uploaded()
+        if sha is None:
+            log("No uploaded release archive; run the CI deploy job")
+            return "pending"
         if previous == sha:
+            (self.incoming / f"mai-journal-{sha}.tar.gz").unlink()
             log(f"Already installed {sha}; no changes")
             return "unchanged"
-        if self.failed_sha() == sha and not self.retry_failed:
-            log(f"Skipping failed release {sha}; use --retry-failed after fixing the cause")
-            return "rejected"
-        assets = self.github.release(sha)
-        if assets is None:
-            log(f"No published release app-{sha}; CI has not passed for this commit")
-            return "pending"
-        log(f"Preparing approved release {sha}")
-        self.prepare(sha, assets)
-        if self.github.main_sha() != sha:
-            log("main advanced during preparation; current service was not changed")
-            return "superseded"
+        log(f"Preparing uploaded release {sha}")
+        self.prepare(sha)
         atomic_json(self.journal, {"previous": previous, "target": sha})
         try:
             self.host.service("stop")
@@ -750,15 +505,10 @@ class Deployer:
             if not self.host.ready(sha):
                 raise DeployError("New release did not become ready")
             self.clear_journal()
-            self.failed_release.unlink(missing_ok=True)
-            fsync_directory(self.root)
             log(f"Activated {sha}")
             return "deployed"
         except Exception:
-            try:
-                self.mark_failed(sha)
-            finally:
-                self.rollback(previous, sha)
+            self.rollback(previous, sha)
             raise
 
     def run(self):
@@ -774,22 +524,16 @@ class Deployer:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repository", default=os.environ.get("MAIMAI_REPOSITORY", ""))
     parser.add_argument("--root", type=Path, default=Path("/srv/mai-journal"))
-    parser.add_argument(
-        "--retry-failed",
-        action="store_true",
-        help="Explicitly retry the current failed SHA after fixing its cause",
-    )
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        result = Deployer(args.root, GitHub(args.repository), retry_failed=args.retry_failed).run()
+        result = Deployer(args.root).run()
     except (DeployError, OSError, sqlite3.Error, ValueError) as exc:
         log(f"Deployment failed: {type(exc).__name__}: {exc}")
         return 1
     # The CI deploy job reports this exit status; nothing deployed must not look green.
-    return 1 if result in ("pending", "rejected") else 0
+    return 1 if result in ("pending", "busy") else 0
 
 
 if __name__ == "__main__":

@@ -1,16 +1,13 @@
 [Unit]
-Description=Install the CI-published mai journal release for main
-After=network-online.target
-Wants=network-online.target
+Description=Install the mai journal release uploaded by the CI deploy job
 
 [Service]
 Type=oneshot
 User=maimai
 Group=maimai
-EnvironmentFile=/etc/mai-journal/deploy.env
 WorkingDirectory=/srv/mai-journal
 ExecStart=/usr/bin/python3 /opt/mai-journal/deploy_release.py
-TimeoutStartSec=35min
+TimeoutStartSec=15min
 UMask=0077
 PrivateTmp=yes
 ProtectHome=yes
@@ -18,4 +15,3 @@ ProtectSystem=strict
 ReadWritePaths=/srv/mai-journal
 # This unit needs sudo for the three exact systemctl commands in sudoers.
 # Do not set NoNewPrivileges=yes here; the application unit does set it.
-

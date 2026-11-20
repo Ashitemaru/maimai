@@ -1,20 +1,22 @@
 # Server deployment
 
-Deployment is push-triggered. On a push to main, the last CI job (`deploy`) runs after
-the `release` job and connects over SSH as `mai-deploy`. That key is limited to the
-forced command `ci-deploy.sh`. The job streams the published archive over that SSH
-connection, because downloads from GitHub to the server are slow; `ci_receive.py`
-stores it where the deployer resumes downloads, named by its SHA-256. The script then
-starts `mai-journal-deploy.service` and prints its journal; the CI job fails when the
-deployment fails. The deployer still fetches SHA256SUMS from the release and uses the
-uploaded file only when it matches, otherwise it downloads from GitHub as before.
-There is no polling timer.
-The release job only runs after every check job succeeded, so the deployer accepts the
-exact release tag `app-<40 lowercase hex SHA>` of current main as CI approval. The tag
-must resolve to that commit. Required release
-assets are `mai-journal-<SHA>.tar.gz` and `SHA256SUMS` (sha256sum format). Downloads
-and redirects use HTTPS GitHub hosts only; the archive checksum, paths, file types,
-resource bounds and `RELEASE_SHA` are validated before installing dependencies.
+Deployment is push-triggered and the server never contacts GitHub. On a push to main,
+the last CI job (`deploy`) runs after the `release` job, which itself only runs after
+every check succeeded. It downloads the published archive and connects over SSH as
+`mai-deploy`, whose key is limited to the forced command `ci-deploy.sh`:
+
+- `wheels` lists the dependency wheels the server has cached (by SHA-256). CI removes
+  those from the archive, so an ordinary code change uploads only about 1 MB;
+  cross-border uploads from GitHub to the server are slow.
+- `deploy` reads the commit SHA and the reduced archive on stdin. `ci_receive.py`
+  stores it as the single pending upload in `incoming/`, then the script starts
+  `mai-journal-deploy.service` and prints its journal. The CI job fails when the
+  deployment fails; rerun the job to retry.
+
+The deployer restores omitted wheels from `wheels/`, then validates paths, file types,
+resource bounds, `RELEASE_SHA` and every wheel hash before installing dependencies.
+After activation `wheels/` keeps exactly the wheels of the new release. There is no
+polling timer and no deploy configuration file.
 
 The archive has no enclosing directory. It contains `backend/*.py` excluding tests,
 the core `scripts/*.py` allowlist in `deploy_release.py`, `requirements.lock`,
@@ -43,8 +45,8 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
 3. Install the reviewed deployer at `/opt/mai-journal/deploy_release.py`, root-owned,
    mode 0755. Copy `mai-journal.service` and `mai-journal-deploy.service` into `/etc/systemd/system`, root-owned 0644.
    Normal releases do not automatically update these root-owned bootstrap files.
-4. Create `/etc/mai-journal/app.env` and `deploy.env` from the examples, root-owned
-   0600. Set the actual public repository and allowed HTTPS hostname. Generate
+4. Create `/etc/mai-journal/app.env` from the example, root-owned
+   0600. Set the allowed HTTPS hostname. Generate
    `MAIMAI_MASTER_KEY_HASH` with `python -m backend.auth hash`, supplying the key
    through stdin. Keep the key in a password manager, never in shell arguments,
    code or releases. Production refuses to start without a valid hash. The app
@@ -123,25 +125,8 @@ without a network fallback or service stop. Installed older releases remain usab
 for rollback, but a fresh deployment of a historical code-only archive requires
 rebuilding it with the current packaging workflow under a new commit/tag.
 
-Main is rechecked after preparation. A filesystem flock serializes the complete
-deployment. The current
-SHA is a no-op. GitHub errors keep the running version and fail the CI deploy job;
-rerun that job to retry. A missing release fails the job without touching the app.
-
-Release archives stream into a private `downloads/` cache. Interrupted transfers
-retain their bytes and resume on the next connection or deployment; the partial
-filename includes the expected SHA-256. A resumed response must match the exact
-requested byte range. If GitHub ignores Range, the file restarts rather than
-appending incompatible data. Every complete archive is checked against SHA256SUMS
-before extraction. Each run limits archive transfers to four connections and
-approximately eight minutes; network failures leave the running app untouched.
-The cache retains only the current target release and is removed after extraction.
-Asset downloads use GitHub's official release-asset API with
-`Accept: application/octet-stream`, avoiding a connection to the browser-facing
-`github.com` host. The asset ID and API URL must belong to the approved repository;
-the browser URL must still match its exact release tag and filename. Direct API
-responses and redirects to the existing official download hosts are supported.
-See [GitHub's release-asset download contract](https://docs.github.com/en/rest/releases/assets#get-a-release-asset).
+A filesystem flock serializes the complete deployment. Uploading the current SHA is
+a no-op. A consumed or failed upload is deleted; a rerun of the CI job uploads again.
 
 The deployer writes a recovery journal, stops the single application service
 (210-second systemd budget, allowing an active game sync to finish session cleanup), makes SQLite online-backup copies of personal and
@@ -151,12 +136,7 @@ It accepts `/api/ready` only when `ok` is true and `release_sha` matches. A fail
 activation stops the new process before restoring the old pointer and restarting
 it. Rollback never overwrites personal data. An interrupted activation is rolled
 back from the journal on the next deployment before another deployment is tried.
-An activation failure or interrupted activation records `failed-release.json`.
-Later triggers keep the recovered app running and skip that same SHA instead of
-repeating the outage. A different main SHA is eligible automatically.
-After an operator fixes a transient environment problem, explicitly retry with
-`sudo -u maimai /usr/bin/python3 /opt/mai-journal/deploy_release.py --repository OWNER/REPOSITORY --retry-failed`.
-This still requires the exact release and all artifact checks.
+After fixing an environment problem, rerun the CI deploy job.
 Keep the previous release directory: recovery intentionally fails closed if it is
 missing. A failed initial deployment has no previous release and remains stopped.
 
@@ -168,8 +148,8 @@ adds daily consistent snapshots, retention and a Mac offsite copy. Do not delete
 by `deployment-pending.json`, or backups needed for recovery. Code rollback assumes
 schema-compatible releases; destructive migrations need a separate reviewed plan.
 
-Tests use fake GitHub archives, fake service management and temporary SQLite
-databases. They do not prove the first real asset download, server wheel install,
+Tests use synthetic archives, fake service management and temporary SQLite
+databases. They do not prove the SSH path, server wheel install,
 systemd sandbox or public proxy configuration. Validate those during bootstrap.
 
 When introducing the bundled-release format, install the reviewed updated

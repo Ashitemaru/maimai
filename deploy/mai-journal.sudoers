@@ -1,4 +1,4 @@
 # Install root-owned as /etc/sudoers.d/mai-journal, mode 0440; validate with visudo -cf.
 maimai ALL=(root) NOPASSWD: /usr/bin/systemctl start mai-journal.service, /usr/bin/systemctl stop mai-journal.service, /usr/bin/systemctl restart mai-journal.service
 mai-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start mai-journal-deploy.service, /usr/bin/journalctl -u mai-journal-deploy.service -n 60 -o cat --no-pager
-mai-deploy ALL=(maimai) NOPASSWD: /usr/bin/python3 /opt/mai-journal/ci_receive.py ""
+mai-deploy ALL=(maimai) NOPASSWD: /usr/bin/python3 /opt/mai-journal/ci_receive.py list, /usr/bin/python3 /opt/mai-journal/ci_receive.py upload
