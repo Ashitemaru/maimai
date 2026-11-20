@@ -1,13 +1,9 @@
 import io
-import json
 import random
 import struct
 import tempfile
-import threading
-import time
 import unittest
 import zlib
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,17 +26,10 @@ class CompletionExportTests(unittest.TestCase):
         self.client.close()
         self.temp.cleanup()
 
-    def create(self, height=3, parts=1, **changes):
-        return self.client.post(
-            "/api/completion-exports",
-            json={
-                "name": "完成表.png",
-                "width": 3200,
-                "height": height,
-                "parts": parts,
-                **changes,
-            },
-        )
+    def create(self):
+        response = self.client.post("/api/completion-exports")
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["id"]
 
     def png(self, color=(20, 40, 60, 255), height=3, width=3200, mode="RGBA"):
         buffer = io.BytesIO()
@@ -48,15 +37,21 @@ class CompletionExportTests(unittest.TestCase):
             image.save(buffer, format="PNG")
         return buffer.getvalue()
 
-    def upload(self, job_id, content, index=0, **headers):
-        return self.client.put(
-            f"/api/completion-exports/{job_id}/parts/{index}",
-            content=content,
-            headers={"Content-Type": "image/png", **headers},
-        )
+    def upload(self, job_id, content, index=0):
+        return self.client.put(f"/api/completion-exports/{job_id}/parts/{index}", content=content)
 
-    def finish(self, job_id):
-        return self.client.post(f"/api/completion-exports/{job_id}/finish")
+    def finish(self, job_id, parts=1):
+        return self.client.post(f"/api/completion-exports/{job_id}/finish", json={"parts": parts})
+
+    def export(self, *strips):
+        job_id = self.create()
+        for index, content in enumerate(strips):
+            self.assertEqual(self.upload(job_id, content, index).status_code, 200)
+        response = self.finish(job_id, len(strips))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertFalse((self.root / job_id).exists(), "parts are removed after stitching")
+        return response.content
 
     def filtered_png(self, rows, filters):
         """Make controlled PNG filters, including nonzero first-row predictors."""
@@ -92,63 +87,37 @@ class CompletionExportTests(unittest.TestCase):
         module._png_chunk(output, b"IEND", b"")
         return output.getvalue()
 
-    def test_roundtrip_preserves_pixels_at_strip_joins_and_downloads_one_png(self):
-        job_id = self.create(height=6, parts=3).json()["id"]
+    def test_strip_joins_preserve_pixels_and_png_is_valid(self):
         colors = [(255, 0, 0, 255), (0, 255, 0, 128), (0, 0, 255, 255)]
-        for index, height in enumerate((2, 3, 1)):
-            result = self.upload(job_id, self.png(colors[index], height=height), index)
-            self.assertEqual(result.status_code, 200, result.text)
-        result = self.finish(job_id)
-        self.assertEqual(result.status_code, 200, result.text)
-        self.assertEqual(self.finish(job_id).json(), result.json())
-        download = self.client.get(result.json()["url"])
-        self.assertEqual(download.status_code, 200)
-        self.assertEqual(download.headers["content-type"], "image/png")
-        self.assertIn("attachment;", download.headers["content-disposition"])
-        self.assertIn("filename*=utf-8''", download.headers["content-disposition"])
-        with Image.open(io.BytesIO(download.content)) as image:
+        content = self.export(*(self.png(colors[i], height=h) for i, h in enumerate((2, 3, 1))))
+        with Image.open(io.BytesIO(content)) as image:
             self.assertEqual(image.size, (3200, 6))
             for y, color in enumerate([colors[0]] * 2 + [colors[1]] * 3 + [colors[2]]):
                 self.assertEqual(image.getpixel((0, y)), color)
                 self.assertEqual(image.getpixel((3199, y)), color)
         offset = 8
         compressed = bytearray()
-        while offset < len(download.content):
-            length, kind = struct.unpack(">I4s", download.content[offset : offset + 8])
-            payload = download.content[offset + 8 : offset + 8 + length]
-            (crc,) = struct.unpack(
-                ">I", download.content[offset + 8 + length : offset + 12 + length]
-            )
-            self.assertEqual(crc, zlib.crc32(payload, zlib.crc32(kind)) & 0xFFFFFFFF)
+        while offset < len(content):
+            length, kind = struct.unpack(">I4s", content[offset : offset + 8])
+            payload = content[offset + 8 : offset + 8 + length]
+            (crc,) = struct.unpack(">I", content[offset + 8 + length : offset + 12 + length])
+            self.assertEqual(crc, zlib.crc32(payload, zlib.crc32(kind)))
             if kind == b"IDAT":
-                self.assertLessEqual(length, 65536)
                 compressed.extend(payload)
             offset += 12 + length
         self.assertEqual(len(zlib.decompress(compressed)), 6 * (3200 * 4 + 1))
-        self.assertEqual(list((self.root / job_id).glob("[0-9]*.png")), [])
-
-    def test_rgb_strip_is_converted_without_changing_color(self):
-        job_id = self.create().json()["id"]
-        self.assertEqual(self.upload(job_id, self.png((17, 45, 201), mode="RGB")).status_code, 200)
-        response = self.client.get(self.finish(job_id).json()["url"])
-        with Image.open(io.BytesIO(response.content)) as image:
-            self.assertEqual(image.getpixel((1234, 2)), (17, 45, 201, 255))
 
     def test_nonzero_first_row_filters_and_alpha_preserve_all_pixels_across_joins(self):
-        job_id = self.create(height=16, parts=4).json()["id"]
         expected = bytearray()
+        strips = []
         for index, first_filter in enumerate((1, 2, 3, 4)):
             rows = [
                 bytes((x * 7 + y * 31 + index * 79) % 256 for x in range(3200 * 4))
                 for y in range(4)
             ]
-            content = self.filtered_png(rows, [first_filter, 2, 3, 4])
-            self.assertEqual(self.upload(job_id, content, index).status_code, 200)
+            strips.append(self.filtered_png(rows, [first_filter, 2, 3, 4]))
             expected.extend(b"".join(rows))
-        result = self.finish(job_id)
-        self.assertEqual(result.status_code, 200, result.text)
-        download = self.client.get(result.json()["url"])
-        with Image.open(io.BytesIO(download.content)) as image:
+        with Image.open(io.BytesIO(self.export(*strips))) as image:
             self.assertEqual(image.size, (3200, 16))
             self.assertEqual(image.tobytes(), bytes(expected))
 
@@ -157,231 +126,69 @@ class CompletionExportTests(unittest.TestCase):
         base = bytes(rng.randrange(256) for _ in range(3200 * 4))
         rows = [bytes((value + y) % 256 for value in base) for y in range(100)]
         content = self.filtered_png(rows, [0] + [2] * 99)
-        job_id = self.create(height=200, parts=2).json()["id"]
-        for index in range(2):
-            self.assertEqual(self.upload(job_id, content, index).status_code, 200)
-        response = self.client.get(self.finish(job_id).json()["url"])
+        result = self.export(content, content)
         unfiltered_size = len(zlib.compress(b"".join(b"\0" + row for row in rows) * 2))
-        self.assertLess(len(response.content), unfiltered_size // 10)
-        with Image.open(io.BytesIO(response.content)) as image:
+        self.assertLess(len(result), unfiltered_size // 10)
+        with Image.open(io.BytesIO(result)) as image:
             self.assertEqual(image.tobytes(), b"".join(rows) * 2)
 
-    def test_palette_transparency_is_normalized_losslessly(self):
-        output = io.BytesIO()
+    def test_rgb_and_palette_strips_are_normalized_losslessly(self):
+        palette = io.BytesIO()
         with Image.new("P", (3200, 2)) as image:
             image.putpalette([255, 30, 20, 10, 240, 50] + [0] * (256 * 3 - 6))
             image.frombytes(bytes([0, 1]) * 3200)
-            image.save(output, format="PNG", transparency=0)
-        job_id = self.create(height=2).json()["id"]
-        self.assertEqual(self.upload(job_id, output.getvalue()).status_code, 200)
-        response = self.client.get(self.finish(job_id).json()["url"])
-        with Image.open(io.BytesIO(response.content)) as image:
-            self.assertEqual(image.getpixel((0, 0)), (255, 30, 20, 0))
-            self.assertEqual(image.getpixel((1, 0)), (10, 240, 50, 255))
+            image.save(palette, format="PNG", transparency=0)
+        content = self.export(self.png((17, 45, 201), mode="RGB"), palette.getvalue())
+        with Image.open(io.BytesIO(content)) as image:
+            self.assertEqual(image.getpixel((1234, 2)), (17, 45, 201, 255))
+            self.assertEqual(image.getpixel((0, 3)), (255, 30, 20, 0))
+            self.assertEqual(image.getpixel((1, 3)), (10, 240, 50, 255))
 
-    def test_invalid_dimensions_filenames_and_identifiers(self):
-        for values in (
-            {"width": 1600},
-            {"height": 200001},
-            {"parts": 201},
-            {"height": 8193},
-            {"height": 1, "parts": 2},
-            {"name": "../escape.png"},
-            {"name": "a\r\n.png"},
-            {"name": "a.jpg"},
-        ):
-            with self.subTest(values=values):
-                self.assertEqual(self.create(**values).status_code, 422)
+    def test_invalid_parts_are_rejected_and_cleaned(self):
         self.assertEqual(self.finish("invalid").status_code, 404)
         self.assertEqual(self.finish("a" * 32).status_code, 404)
+        self.assertEqual(self.upload("a" * 32, self.png()).status_code, 404)
+        for content in (b"not a png", self.png(width=3199), self.png(height=4097)):
+            with self.subTest(size=len(content)):
+                job_id = self.create()
+                self.assertEqual(self.upload(job_id, content).status_code, 200)
+                self.assertEqual(self.finish(job_id).status_code, 422)
+                self.assertFalse((self.root / job_id).exists())
+        job_id = self.create()
+        self.assertEqual(self.upload(job_id, self.png(), index=module.MAX_PARTS).status_code, 404)
+        self.upload(job_id, self.png())
+        self.assertEqual(self.finish(job_id, parts=2).status_code, 422, "missing part")
+        for parts in (0, module.MAX_PARTS + 1):
+            self.assertEqual(self.finish(self.create(), parts=parts).status_code, 422)
 
-    def test_missing_wrong_height_and_invalid_segments_are_rejected(self):
-        job_id = self.create(height=5, parts=2).json()["id"]
-        self.assertEqual(self.finish(job_id).status_code, 409)
-        self.assertEqual(self.upload(job_id, b"not a png").status_code, 422)
-        self.assertEqual(self.upload(job_id, self.png(width=3199)).status_code, 422)
-        self.assertEqual(self.upload(job_id, self.png(height=6)).status_code, 422)
-        self.assertEqual(self.upload(job_id, self.png(), index=2).status_code, 404)
-        self.assertEqual(
-            self.upload(job_id, self.png(), **{"Content-Type": "image/jpeg"}).status_code, 415
-        )
-        self.assertEqual(self.upload(job_id, self.png(height=3)).status_code, 200)
-        self.assertEqual(self.upload(job_id, self.png(height=1), index=1).status_code, 422)
-        self.assertEqual(self.finish(job_id).status_code, 409)
-        self.assertEqual(self.upload(job_id, self.png(height=2), index=1).status_code, 200)
-        self.assertEqual(self.finish(job_id).status_code, 200)
-        self.assertEqual(self.upload(job_id, self.png()).status_code, 409)
+    def test_total_height_is_capped(self):
+        job_id = self.create()
+        self.upload(job_id, self.png(height=3))
+        with patch.object(module, "MAX_HEIGHT", 2):
+            self.assertEqual(self.finish(job_id).status_code, 422)
 
-    def test_body_limit_catches_declared_and_streamed_size_and_cleans_up(self):
-        job_id = self.create().json()["id"]
+    def test_part_size_limit_removes_partial_upload(self):
+        job_id = self.create()
         with patch.object(module, "MAX_PART_BYTES", 32):
-            self.assertEqual(self.upload(job_id, b"a" * 33).status_code, 413)
             response = self.client.put(
                 f"/api/completion-exports/{job_id}/parts/0",
                 content=iter([b"a" * 16, b"b" * 17]),
-                headers={"Content-Type": "image/png"},
             )
-            self.assertEqual(response.status_code, 413)
-        self.assertFalse((self.root / job_id / "0.upload").exists())
-        self.assertEqual(self.upload(job_id, self.png()).status_code, 200)
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(list((self.root / job_id).iterdir()), [])
 
-    def test_finalize_failure_retains_parts_and_can_be_retried(self):
-        job_id = self.create().json()["id"]
-        self.upload(job_id, self.png())
-        with patch.object(module, "assemble_png", side_effect=OSError("temporary disk failure")):
-            self.assertEqual(self.finish(job_id).status_code, 500)
-        self.assertTrue((self.root / job_id / "0.png").is_file())
-        self.assertFalse((self.root / job_id / "image.png").exists())
-        self.assertEqual(self.finish(job_id).status_code, 200)
-
-    def test_expired_and_excess_jobs_and_storage_are_bounded(self):
-        job_id = self.create().json()["id"]
-        with patch.object(module, "MAX_JOBS", 1):
-            self.assertEqual(self.create().status_code, 429)
-        with patch.object(module, "MAX_STORAGE_BYTES", 1):
-            self.assertEqual(self.upload(job_id, self.png()).status_code, 507)
-        manifest_path = self.root / job_id / "manifest.json"
-        manifest = json.loads(manifest_path.read_text())
-        manifest["touched"] = time.time() - module.TTL_SECONDS - 1
-        manifest_path.write_text(json.dumps(manifest))
-        self.assertEqual(self.finish(job_id).status_code, 404)
-        self.assertFalse(manifest_path.parent.exists())
-        self.assertEqual(self.create().status_code, 200)
-
-    def test_completed_jobs_do_not_exhaust_active_job_limit(self):
-        with patch.object(module, "MAX_JOBS", 1), patch.object(module, "MAX_COMPLETED_JOBS", 1):
-            completed = []
-            for _ in range(3):
-                response = self.create()
-                self.assertEqual(response.status_code, 200, response.text)
-                job_id = response.json()["id"]
-                self.upload(job_id, self.png())
-                self.assertEqual(self.finish(job_id).status_code, 200)
-                completed.append(job_id)
-            self.assertFalse((self.root / completed[0]).exists())
-
-    def test_cancel_is_idempotent_releases_slots_and_removes_completed_download(self):
-        with patch.object(module, "MAX_JOBS", 1):
-            job_id = self.create().json()["id"]
-            self.assertEqual(self.create().status_code, 429)
-            path = f"/api/completion-exports/{job_id}"
-            for _ in range(2):
-                self.assertEqual(self.client.delete(path).json(), {"ok": True})
-            self.assertFalse((self.root / job_id).exists())
-            self.assertEqual(self.finish(job_id).status_code, 404)
-            replacement = self.create().json()["id"]
-            self.upload(replacement, self.png())
-            url = self.finish(replacement).json()["url"]
-            self.assertEqual(self.client.get(url).status_code, 200)
-            self.assertEqual(
-                self.client.delete(f"/api/completion-exports/{replacement}").status_code, 200
-            )
-            self.assertEqual(self.client.get(url).status_code, 404)
-            self.assertEqual(self.client.delete("/api/completion-exports/invalid").status_code, 404)
-
-    def test_cancel_during_upload_cleans_reserved_files_after_worker_exits(self):
-        job_id = self.create().json()["id"]
-        entered, release = threading.Event(), threading.Event()
-        original = module.CompletionExports.accept_upload
-
-        def held_upload(manager, *args):
-            entered.set()
-            if not release.wait(timeout=5):
-                raise AssertionError("test did not release upload")
-            return original(manager, *args)
-
-        with (
-            patch.object(module.CompletionExports, "accept_upload", held_upload),
-            ThreadPoolExecutor(max_workers=1) as pool,
-        ):
-            request = pool.submit(self.upload, job_id, self.png())
-            try:
-                self.assertTrue(entered.wait(timeout=5))
-                self.assertEqual(
-                    self.client.delete(f"/api/completion-exports/{job_id}").status_code, 200
-                )
-            finally:
-                release.set()
-            response = request.result(timeout=5)
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"]["code"], "export_cancelled")
-        self.assertFalse((self.root / job_id).exists())
-        self.assertEqual(self.create().status_code, 200)
-
-    def test_cancel_during_finalization_stops_assembly_and_removes_job(self):
-        job_id = self.create().json()["id"]
-        self.upload(job_id, self.png())
-        entered, release = threading.Event(), threading.Event()
-        original = module.assemble_png
-
-        def held_assembly(*args, **kwargs):
-            entered.set()
-            if not release.wait(timeout=5):
-                raise AssertionError("test did not release assembly")
-            return original(*args, **kwargs)
-
-        with (
-            patch.object(module, "assemble_png", side_effect=held_assembly),
-            ThreadPoolExecutor(max_workers=1) as pool,
-        ):
-            request = pool.submit(self.finish, job_id)
-            try:
-                self.assertTrue(entered.wait(timeout=5))
-                self.assertEqual(
-                    self.client.delete(f"/api/completion-exports/{job_id}").status_code, 200
-                )
-            finally:
-                release.set()
-            response = request.result(timeout=5)
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"]["code"], "export_cancelled")
-        self.assertFalse((self.root / job_id).exists())
-
-    def test_idle_cleanup_survives_restart_but_retains_completed_images_and_busy_jobs(self):
-        abandoned = self.create().json()["id"]
-        complete = self.create().json()["id"]
-        self.upload(complete, self.png())
-        self.finish(complete)
-        busy = self.create().json()["id"]
-        manager = module.CompletionExports(self.root)
-        temporary = manager.begin_upload(busy, 0)
-        for job_id in (abandoned, complete, busy):
-            path = self.root / job_id / "manifest.json"
-            manifest = json.loads(path.read_text())
-            manifest["touched"] = time.time() - module.IDLE_TTL_SECONDS - 1
-            path.write_text(json.dumps(manifest))
-        manager.cleanup()
-        self.assertFalse((self.root / abandoned).exists())
-        self.assertTrue((self.root / complete / "image.png").exists())
-        self.assertTrue((self.root / busy).exists())
-        manager.end_upload(busy, temporary)
-        manager.cleanup()
-        self.assertFalse((self.root / busy).exists())
-
-    def test_lifespan_collects_idle_jobs_without_another_export_request(self):
-        job_id = self.create().json()["id"]
-        path = self.root / job_id / "manifest.json"
-        collected = threading.Event()
-        original = module.CompletionExports.cleanup
-
-        def observe(manager):
-            original(manager)
-            if not path.exists():
-                collected.set()
-
-        app = FastAPI()
-        app.include_router(module.completion_export_router(self.root))
-        with (
-            patch.object(module, "CLEANUP_INTERVAL_SECONDS", 0.01),
-            patch.object(module.CompletionExports, "cleanup", observe),
-            TestClient(app),
-        ):
-            self.assertTrue(path.exists())
-            manifest = json.loads(path.read_text())
-            manifest["touched"] = time.time() - module.IDLE_TTL_SECONDS - 1
-            path.write_text(json.dumps(manifest))
-            self.assertTrue(collected.wait(timeout=5))
-        self.assertFalse(path.parent.exists())
+    def test_only_one_export_is_kept(self):
+        stale = self.create()
+        self.upload(stale, self.png())
+        current = self.create()
+        self.assertFalse((self.root / stale).exists(), "a new export discards the old one")
+        self.assertEqual(self.upload(stale, self.png()).status_code, 404)
+        self.assertEqual(self.upload(current, self.png()).status_code, 200)
+        self.assertEqual(self.finish(current).status_code, 200)
+        self.assertEqual(list(self.root.iterdir()), [])
+        (self.root / current).mkdir()
+        module.completion_export_router(self.root)
+        self.assertFalse(self.root.exists(), "startup removes leftovers")
 
 
 if __name__ == "__main__":

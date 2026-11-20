@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CompletionChart, CompletionTableData } from './types';
-import { apiFetch, messageOf } from './api';
+import { messageOf } from './api';
 import { COMPLETION_BADGES, completionBadgeKey } from './completionBadges';
-import { discardCompletionExport, exportCompletionTable } from './completionExport';
+import { exportCompletionTable } from './completionExport';
 import { ImageSaveActions } from './ImageSaveActions';
 import { downloadImage, needsSaveGesture, prepareImage } from './imageSave';
 import type { PreparedImage } from './imageSave';
@@ -123,13 +123,13 @@ export function CompletionTable({
   notify: (message: string) => void;
 }) {
   const [visibleCount, setVisibleCount] = useState(batchSize);
-  const [exporting, setExporting] = useState(false);
+  // Non-empty while an export runs; doubles as the button label.
   const [exportProgress, setExportProgress] = useState('');
   const [readyImage, setReadyImage] = useState<PreparedImage | null>(null);
   const exportController = useRef<AbortController | null>(null);
   useEffect(() => {
     setReadyImage(null);
-    setExporting(false);
+    setExportProgress('');
     return () => {
       exportController.current?.abort();
       exportController.current = null;
@@ -179,20 +179,17 @@ export function CompletionTable({
   );
   function cancelExport() {
     exportController.current?.abort();
-    setExporting(false);
+    exportController.current = null;
     setExportProgress('');
   }
   async function download() {
-    if (exporting) return;
+    if (exportProgress) return;
     const controller = new AbortController();
-    exportController.current?.abort();
     exportController.current = controller;
     setReadyImage(null);
-    setExporting(true);
     setExportProgress('准备图片…');
-    let artifactId: string | undefined;
     try {
-      const { url, name, id } = await exportCompletionTable(data.items, {
+      const { blob, name } = await exportCompletionTable(data.items, {
         grouped,
         description,
         signal: controller.signal,
@@ -200,11 +197,6 @@ export function CompletionTable({
           if (!controller.signal.aborted) setExportProgress(value);
         },
       });
-      artifactId = id;
-      setExportProgress('准备下载…');
-      const response = await apiFetch(url, { signal: controller.signal, cache: 'no-store' });
-      if (!response.ok) throw new Error('下载图片失败，请重试');
-      const blob = await response.blob();
       if (controller.signal.aborted) return;
       const image = prepareImage(blob, name);
       setReadyImage(image);
@@ -218,13 +210,8 @@ export function CompletionTable({
     } finally {
       if (exportController.current === controller) {
         exportController.current = null;
-        setExporting(false);
         setExportProgress('');
       }
-      if (artifactId)
-        await discardCompletionExport(artifactId).catch(() => {
-          // Successful PNG bytes are already local; the server also expires abandoned jobs.
-        });
     }
   }
 
@@ -247,12 +234,12 @@ export function CompletionTable({
           <button
             type="button"
             className="btn"
-            disabled={exporting || !data.items.length}
+            disabled={!!exportProgress || !data.items.length}
             onClick={() => void download()}
           >
-            {exporting ? exportProgress : '导出图片'}
+            {exportProgress || '导出图片'}
           </button>
-          {exporting && (
+          {exportProgress && (
             <button type="button" className="btn quiet" onClick={cancelExport}>
               取消导出
             </button>

@@ -11,13 +11,14 @@ npm run test:ci
 npm run verify:webkit
 ```
 
-`test:ci` runs the single-stylesheet check, TypeScript check, production build, UI regression, venue summary, venue map, completion matrix, preference persistence UI, catalog review, completion image export, detail concurrency, score sync, AP buffer, completion loading, mobile saving, Master Key authentication, and Bilibili publishing tests. All gate suites create their own local server or intercept every request. They use generated catalogs, original synthetic SVG/PNG artwork, and system fonts. They do not read `data/`, call personal services, or write the user's database. Preferences/catalog writes and temporary image jobs are in-memory fixtures.
+`test:ci` runs the single-stylesheet check, TypeScript check and production build, then two browser suites against `dist/`:
 
-The cover UI check substitutes the proprietary cover font with a system font inside the test browser. It verifies rendering readiness, controls, and output dimensions, not the appearance of unpublished game assets. The completion export suite retains the exact per-pixel comparison between a 400-chart reference image and its concatenated strips, plus bounded-canvas checks through 5,600 charts. The PNG badge fixture is generated from RGBA pixels with Node’s built-in zlib so SVG rasterization caches cannot affect strip/reference comparisons. Browser scripts use `scripts/browser.mjs`, which defaults to Chromium with software rendering (`--disable-gpu`) for repeatable pixel comparisons. `verify:webkit` selects the actual Playwright WebKit engine for the mobile workflows listed below. Neither engine substitutes for physical iPhone acceptance.
+- `verify:app` (`scripts/verify-app.mjs`) covers the core flows in named sections: `auth`, `list` (AP list browse, filters, search, paging), `detail` (pending record save/cancel and the 409 conflict reload), `completion`, `matrix` (default remaining display, drilldown), `preferences`, `score-sync`, `venues` (map focus, album, location editor, summary), `catalog` (update, review adjudication and revoke, Bilibili stale videos), `publishing` (QR login, order check, prepare, apply and retry) and `mobile` (390px layout and touch). Pass section names to run a subset: `node scripts/verify-app.mjs detail venues`.
+- `verify:completion-export` checks the completion image export pixels and strip upload.
 
-`PLAYWRIGHT_CHROMIUM_EXECUTABLE` (or the older `CHROME_EXECUTABLE`) can override the browser for local diagnosis. Leave both unset in CI so the pinned Playwright browser is used. No Codex runtime or macOS Chrome installation is required. Ubuntu's Playwright dependencies include the Liberation Sans system font used by the cover fixture; macOS uses Arial.
+`verify:webkit` runs the `auth`, `detail`, `venues`, `publishing` and `mobile` sections in Playwright WebKit (`--webkit`). It does not certify physical iPhone Safari, the native share sheet or installed-app behaviour.
 
-Reports and screenshots are written under `../output/ui-audit`, `../output/completion-matrix-audit`, `../output/preferences-audit`, and `../output/catalog-review-batch` by default. The export suite prints its canvas/strip results. Use the output environment variables at the top of each script to isolate concurrent runs.
+All browser sections share `scripts/mock-api.mjs`: one static server for `dist/`, one in-memory API with a small synthetic dataset (charts, venues, catalog review, Bilibili) and per-section route overrides via `app.api.on(...)`. Every external request is blocked (map tiles get a blank SVG), so tests never read `data/`, call personal services or write the user's database. `scripts/fixtures.mjs` provides the synthetic jackets and cover assets and substitutes the proprietary cover font with a system font. `scripts/browser.mjs` defaults to Chromium with software rendering; `PLAYWRIGHT_CHROMIUM_EXECUTABLE` can override the browser for local diagnosis.
 
 ## Formatting and lint
 
@@ -29,29 +30,4 @@ The manifest declares a standalone application with generated 192/512px icons an
 
 This first deployment deliberately uses no Service Worker, offline cache, or queued writes. Opening the installed app requires a network connection and a Master Key login when its 30-day session has expired. Private API responses and generated images are not copied into Cache Storage or browser persistence. This avoids stale authenticated content surviving a session access change; server/cache headers remain a deployment responsibility.
 
-On iPhone/iPad, image generation and saving are separate actions. The app keeps one complete PNG in memory, then offers a fresh-tap share button, a PNG download link, and a link to open the complete image for long-press saving. A dismissed share sheet leaves the image ready; other share errors retain the fallback links. Desktop browsers also keep these actions after starting the usual download. Leaving the view releases its Blob URL. Completion export cancellation, generation failures, and finished-image fetch failures delete the temporary server job; a successfully fetched PNG also releases its server job. These changes preserve the full image, export dimensions, tile sizes, and cover composition.
-
-`verify:detail-concurrency` checks out-of-order detail responses and revision conflicts using isolated in-memory records. `verify:mobile-export` checks touch viewports, gesture-bound single-file sharing, cancellation/fallback, manifest/icons, and asset recovery with injected browser APIs. Chromium emulation does not establish real iPhone Safari, iOS share-sheet, or installed-app session behavior; device acceptance remains a separate deployment check.
-
-`verify:webkit` runs the authentication, AP buffer, venue map, mobile export, and Bilibili publishing suites in WebKit. It checks cookie session restoration after refresh, venue selection and record locking, touch input on the map, and downloading the complete PNG with an exact content hash. The cover checks include prefilled achievements and AP/AP+ status, no inferred AP from a high score, missing-score handling, and editable historical values. The share API remains an injected test double, so these tests do not certify the native iOS share sheet, Photos saving, multi-finger gestures, or installed-app lifecycle. Those physical-device checks are deferred by the user. The engine version, limitations, suite results, and screenshots are recorded under `../output/webkit-audit`.
-
-## Master Key entry
-
-`verify:auth` runs against an isolated cookie-backed fixture server. It verifies that the application never mounts or requests personal data before authentication, invalid and rate-limited key messages, show/hide and keyboard submission, loading states, cookie persistence through refresh, logout, expired-session 401 handling, and failed-session-request recovery. The key is kept only in form memory and never written to localStorage, sessionStorage, or a JavaScript-readable cookie. Desktop, 320px, and 390px screenshots and a report are written under `../output/auth-ui-audit`. These UI fixtures do not establish backend cookie security, which is verified by the backend authentication suite.
-
-## Venue atlas
-
-`verify:venue-map` covers SVG jacket clicks, paginated AP details, cancel without
-writes, explicit place search, failed-save recovery, persistence through reload,
-search-result creation with a separate display name, minimal location payloads, and map selection at a 390px viewport. Every external map
-tile is replaced by a synthetic SVG during tests; no map-provider prefetching is
-performed. The AP buffer regression verifies empty initial venue selection, choosing only existing venues, and locking confirmed venue records. Reports are saved under
-`../output/venue-map-audit`.
-
-## Game score sync
-
-`verify:score-sync` checks that Diving-Fish sync stays disabled until a token is
-saved, and that a manual sync polls to
-completion, refreshes data and shows its receipt. It also covers failed jobs, refused
-starts and status-load retries. The fixture makes no requests to Diving-Fish. Reports and a 390px screenshot are saved under
-`../output/score-sync-audit`.
+On iPhone/iPad, image generation and saving are separate actions. The app keeps one complete PNG in memory, then offers a fresh-tap share button, a PNG download link, and a link to open the complete image for long-press saving. A dismissed share sheet leaves the image ready; other share errors retain the fallback links. Desktop browsers also keep these actions after starting the usual download. Leaving the view releases its Blob URL. Completion export cancellation aborts the in-flight requests; a later export discards any unfinished server job, and finishing returns the stitched PNG and deletes its parts. These changes preserve the full image, export dimensions, tile sizes, and cover composition.

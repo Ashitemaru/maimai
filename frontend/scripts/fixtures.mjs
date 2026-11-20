@@ -1,7 +1,7 @@
 import { deflateSync } from 'node:zlib';
 
 // Original synthetic artwork: CI must not read private catalogs or game assets.
-export const jacketSVG =
+const jacketSVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="#48abd5"/><path d="M0 80 80 0v80Z" fill="#d74783"/></svg>';
 const badgeSVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><circle cx="39.5" cy="39.5" r="35" fill="#ffd965"/><circle cx="39.5" cy="39.5" r="24" fill="#ec569e"/><path d="m20 39 12 12 26-28" fill="none" stroke="white" stroke-width="7"/></svg>';
@@ -46,34 +46,48 @@ function makeBadgePNG() {
 
 export const badgePNG = makeBadgePNG();
 
+// Cover assets are complete enough for the strict publishing renderer: badges, version logo and
+// an achievement sprite font all resolve to synthetic images.
+const gameUiManifest = {
+  assets: Object.fromEntries(
+    ['dx', 'standard', 'ap', 'app'].map((key) => [key, { file: 'badge.png' }]),
+  ),
+  number_sets: {
+    achievement: {
+      file: 'badge.png',
+      line_height: 80,
+      glyphs: Object.fromEntries(
+        [...'0123456789.%'].map((glyph) => [
+          glyph,
+          { x: 0, y: 0, width: 80, height: 80, advance: 80 },
+        ]),
+      ),
+    },
+  },
+};
+const versionManifest = {
+  version_map: Object.fromEntries(
+    ['UNiVERSE', 'FESTiVAL'].map((version) => [
+      version,
+      {
+        family_key: version,
+        version_name: version,
+        logo_file: 'logo.svg',
+        background_png: 'background.svg',
+        status: 'ready',
+      },
+    ]),
+  ),
+};
+
 export function fixtureAsset(pathname) {
   if (pathname.startsWith('/jackets/')) return { contentType: 'image/svg+xml', body: jacketSVG };
-  if (pathname === '/cover-assets/version-backgrounds/manifest.json') {
-    const version_map = Object.fromEntries(
-      ['UNiVERSE', 'FESTiVAL'].map((version) => [
-        version,
-        {
-          family_key: version,
-          version_name: version,
-          logo_file: 'logo.svg',
-          background_png: 'background.svg',
-          status: 'ready',
-        },
-      ]),
-    );
-    return { contentType: 'application/json', body: JSON.stringify({ version_map }) };
-  }
-  if (pathname === '/cover-assets/game-ui/manifest.json') {
-    return {
-      contentType: 'application/json',
-      body: JSON.stringify({
-        assets: Object.fromEntries(
-          ['dx', 'standard', 'ap', 'app'].map((key) => [key, { file: 'badge.svg' }]),
-        ),
-        number_sets: {},
-      }),
-    };
-  }
+  if (pathname === '/cover-assets/version-backgrounds/manifest.json')
+    return { contentType: 'application/json', body: JSON.stringify(versionManifest) };
+  if (pathname === '/cover-assets/game-ui/manifest.json')
+    return { contentType: 'application/json', body: JSON.stringify(gameUiManifest) };
+  if (pathname.startsWith('/cover-assets/') && pathname.endsWith('.png'))
+    return { contentType: 'image/png', body: badgePNG };
   if (pathname.startsWith('/cover-assets/'))
     return {
       contentType: 'image/svg+xml',

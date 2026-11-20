@@ -99,9 +99,6 @@ This incident's browser downloaded the empty, untyped proxy error as a zero-byte
 file; a typed HTML response removes that ambiguous navigation result. Application
 responses, including API validation/conflict errors and intentional image downloads,
 still pass through.
-Run `python scripts/verify_proxy.py` on a host with Caddy to exercise the template
-on isolated loopback ports, with a disconnected upstream and after recovery. It
-does not stop or reconfigure the production proxy or application.
 
 ## Activation and recovery
 

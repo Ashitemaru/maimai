@@ -475,8 +475,8 @@ try {
         let canvases = 0,
           jacketDraws = 0,
           encodes = 0,
-          created = null,
-          finished = 0;
+          created = false,
+          finished = null;
         const originalCreate = document.createElement,
           originalFetch = window.fetch;
         const json = (data, status = 200) =>
@@ -488,7 +488,7 @@ try {
           const pathname = String(input);
           if (pathname === '/api/completion-exports' && init.method === 'POST') {
             if (created) throw new Error('Duplicate export job');
-            created = JSON.parse(init.body);
+            created = true;
             return json({ id: 'fixture' });
           }
           if (pathname.startsWith('/api/completion-exports/fixture/parts/')) {
@@ -516,14 +516,11 @@ try {
             return json({ ok: true });
           }
           if (pathname === '/api/completion-exports/fixture/finish') {
-            if (
-              init.method !== 'POST' ||
-              uploads.length !== created.parts ||
-              uploads.reduce((sum, part) => sum + part.height, 0) !== created.height
-            )
-              throw new Error('Incomplete assembly request');
-            finished++;
-            return json({ url: '/api/completion-exports/fixture/image', name: created.name });
+            if (init.method !== 'POST' || finished) throw new Error('Invalid assembly request');
+            finished = JSON.parse(init.body);
+            return new Response(new Uint8Array([137, 80, 78, 71]), {
+              headers: { 'Content-Type': 'image/png' },
+            });
           }
           return originalFetch.call(window, input, init);
         };
@@ -631,8 +628,10 @@ try {
           }
           return {
             count,
-            artifact,
-            created,
+            name: artifact.name,
+            blobType: artifact.blob.type,
+            blobSize: artifact.blob.size,
+            height: layout.height,
             finished,
             uploads,
             transforms,
@@ -652,14 +651,14 @@ try {
       },
       { moduleUrl, count },
     );
-    assert.match(result.artifact.name, /^AP完成表-\d{12}\.png$/, 'final download is one named PNG');
-    assert.equal(result.artifact.url, '/api/completion-exports/fixture/image');
-    assert.equal(result.created.width, 3200);
+    assert.match(result.name, /^AP完成表-\d{12}\.png$/, 'final download is one named PNG');
+    assert.equal(result.blobType, 'image/png', 'the stitched PNG is returned to the caller');
+    assert.equal(result.blobSize, 4);
     assert.equal(result.columns, 16);
     assert.equal(result.tileSize, 87);
-    assert.equal(result.canvases, result.created.parts);
-    assert.equal(result.encodes, result.created.parts);
-    assert.equal(result.finished, 1);
+    assert.deepEqual(result.finished, { parts: result.uploads.length }, 'finish names part count');
+    assert.equal(result.canvases, result.uploads.length);
+    assert.equal(result.encodes, result.uploads.length);
     let startY = 0;
     for (const [index, part] of result.uploads.entries()) {
       assert.deepEqual(part.signature, [137, 80, 78, 71, 13, 10, 26, 10]);
@@ -671,7 +670,7 @@ try {
       assert.deepEqual(result.transforms[index * 2 + 1], ['translate', 0, -startY / 2]);
       startY += part.height;
     }
-    assert.equal(startY, result.created.height, 'strip heights cover the complete output');
+    assert.equal(startY, result.height, 'strip heights cover the complete output');
     assert.equal(result.jacketDraws, count, 'every jacket is drawn once');
     assert.deepEqual(
       result.ids,
@@ -693,9 +692,9 @@ try {
       assert.equal(result.pixelMatched, true, 'all strip pixels match unsegmented reference');
     pngChecks.push({
       count,
-      width: result.created.width,
-      height: result.created.height,
-      parts: result.created.parts,
+      width: result.uploads[0].width,
+      height: result.height,
+      parts: result.uploads.length,
       tilePixels: result.tileSize * 2,
       bytes: result.uploads.reduce((sum, part) => sum + part.bytes, 0),
     });
@@ -762,7 +761,6 @@ try {
             if (mode === 'cancel-create') controller.abort();
             return json({ id: 'cancel-fixture' });
           }
-          if (init.method === 'DELETE') return json({ ok: true });
           if (pathname.includes('/parts/')) {
             if (mode === 'cancel-upload') {
               controller.abort();
@@ -809,12 +807,16 @@ try {
       { moduleUrl, mode },
     );
     assert(result.error, `${mode}: the failed/cancelled export must reject`);
-    const deleted = result.calls.filter((call) => call.method === 'DELETE');
-    assert.equal(deleted.length, 1, `${mode}: abandoned job must be deleted exactly once`);
-    assert.equal(deleted[0].aborted, false, `${mode}: cleanup uses a fresh non-aborted signal`);
-    assert.equal(deleted[0].path, '/api/completion-exports/cancel-fixture');
+    if (mode.startsWith('cancel'))
+      assert.equal(result.error.name, 'AbortError', `${mode}: cancellation rejects as abort`);
+    if (mode.startsWith('fail'))
+      assert.match(result.error.message, /failed$/, `${mode}: server errors propagate`);
+    assert(
+      result.calls.every((call) => !call.aborted),
+      `${mode}: no request is sent after cancellation`,
+    );
     if (mode === 'cancel-create')
-      assert.equal(result.calls.length, 2, 'Cancellation after creation never uploads a strip');
+      assert.equal(result.calls.length, 1, 'Cancellation after creation never uploads a strip');
     if (mode.includes('upload'))
       assert(
         !result.calls.some((call) => call.path.endsWith('/finish')),
@@ -823,11 +825,11 @@ try {
   }
 
   assert.deepEqual(errors, []);
-  assert.deepEqual(downloads, [], 'caller owns browser delivery of the returned attachment URL');
+  assert.deepEqual(downloads, [], 'caller owns browser delivery of the returned PNG');
 } finally {
   await browser.close();
 }
 console.log(
-  '完成表导出验证通过：固定16列/3200px/174px曲绘、连续条带与逐像素参考比对、全量顺序和分组、分批绘制上传、标准附件URL、API错误、ID/AP/蒙版、字体参数和上海日期。',
+  '完成表导出验证通过：固定16列/3200px/174px曲绘、连续条带与逐像素参考比对、全量顺序和分组、分批绘制上传、取回拼接PNG、API错误与取消、ID/AP/蒙版、字体参数和上海日期。',
 );
 console.log(JSON.stringify(pngChecks));

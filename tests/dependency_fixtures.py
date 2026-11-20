@@ -1,9 +1,17 @@
-"""Synthetic wheel files for archive validation; these are never installed."""
+"""Synthetic release and wheel files for archive validation; these are never installed."""
 
 import hashlib
 import json
 
 from deploy.deploy_release import PIP_VERSION, normalize_pin
+
+TARGET = {
+    "implementation": "cpython",
+    "python": "3.14",
+    "system": "Linux",
+    "machine": "x86_64",
+    "glibc_min": "2.39",
+}
 
 
 def dependency_files(requirements="example==1.0.0\n"):
@@ -24,13 +32,7 @@ def dependency_files(requirements="example==1.0.0\n"):
     files["dependencies/manifest.json"] = json.dumps(
         {
             "schema": 1,
-            "target": {
-                "implementation": "cpython",
-                "python": "3.14",
-                "system": "Linux",
-                "machine": "x86_64",
-                "glibc_min": "2.39",
-            },
+            "target": TARGET,
             "requirements_sha256": hashlib.sha256(requirements.encode()).hexdigest(),
             "wheels": entries,
         }
@@ -38,9 +40,17 @@ def dependency_files(requirements="example==1.0.0\n"):
     return files
 
 
-def write_bundle(root):
-    (root / "requirements.lock").write_text("example==1.0.0\n")
-    for name, payload in dependency_files().items():
+def write_files(root, files):
+    for name, payload in files.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(payload)
+
+
+def write_bundle(root, folder="dependencies"):
+    """Write requirements.lock plus its dependency bundle under `root/folder`."""
+    files = {
+        name.replace("dependencies/", f"{folder}/", 1): body
+        for name, body in dependency_files().items()
+    }
+    write_files(root, {"requirements.lock": "example==1.0.0\n", **files})

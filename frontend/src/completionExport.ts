@@ -1,7 +1,7 @@
 import type { CompletionChart } from './types';
 import { formatTimestamp } from './dateTime';
 import { COMPLETION_BADGES, completionBadgeKey } from './completionBadges';
-import { api } from './api';
+import { api, apiFetch, ApiError } from './api';
 import { releaseCanvas } from './canvasRelease';
 
 interface ExportOptions {
@@ -484,35 +484,31 @@ async function renderStrip(
         batch.flatMap((row) => row.items),
         options.signal,
       );
-      try {
-        for (const row of batch) {
-          let y = row.y;
-          if (row.heading) {
-            ctx.fillStyle = palette.text;
-            ctx.font = `700 23px ${palette.font}`;
-            ctx.fillText(row.heading.label, PADDING, y + 17);
-            ctx.font = `500 18px ${palette.font}`;
-            ctx.textAlign = 'right';
-            ctx.fillStyle = palette.muted;
-            ctx.fillText(`${row.heading.complete} / ${row.heading.total}`, WIDTH - PADDING, y + 17);
-            ctx.textAlign = 'left';
-            y += HEADING_HEIGHT;
-          }
-          row.items.forEach((item, index) =>
-            drawTile(
-              ctx,
-              item,
-              PADDING + index * (layout.tileSize + GAP),
-              y,
-              images.get(item.jacket_url),
-              palette,
-              badgeImages,
-              layout.tileSize,
-            ),
-          );
+      for (const row of batch) {
+        let y = row.y;
+        if (row.heading) {
+          ctx.fillStyle = palette.text;
+          ctx.font = `700 23px ${palette.font}`;
+          ctx.fillText(row.heading.label, PADDING, y + 17);
+          ctx.font = `500 18px ${palette.font}`;
+          ctx.textAlign = 'right';
+          ctx.fillStyle = palette.muted;
+          ctx.fillText(`${row.heading.complete} / ${row.heading.total}`, WIDTH - PADDING, y + 17);
+          ctx.textAlign = 'left';
+          y += HEADING_HEIGHT;
         }
-      } finally {
-        images.clear();
+        row.items.forEach((item, index) =>
+          drawTile(
+            ctx,
+            item,
+            PADDING + index * (layout.tileSize + GAP),
+            y,
+            images.get(item.jacket_url),
+            palette,
+            badgeImages,
+            layout.tileSize,
+          ),
+        );
       }
       drawn += batchItems;
       options.onProgress?.(`已绘制 ${drawn} / ${items.length}`);
@@ -529,82 +525,54 @@ async function renderStrip(
   }
 }
 
-export async function discardCompletionExport(id: string) {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 10000);
-  try {
-    await api<{ ok: boolean }>(`/completion-exports/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      keepalive: true,
-      signal: controller.signal,
-    });
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
+/**
+ * Render the table as ≤4096px strips (iPhone Safari cannot allocate one tall canvas),
+ * upload them one at a time, and receive the server-stitched PNG.
+ */
 export async function exportCompletionTable(
   items: CompletionChart[],
   options: ExportOptions,
-): Promise<{ url: string; name: string; id: string }> {
-  checkCancelled(options.signal);
+): Promise<{ blob: Blob; name: string }> {
+  const { signal, onProgress } = options;
   if (!items.length) throw new Error('没有可导出的谱面');
   const timestamp = formatTimestamp(new Date().toISOString());
   const name = `AP完成表-${timestamp.replaceAll(/[-: ]/g, '')}.png`;
   const palette = readPalette();
   const layout = layoutImage(items, options.grouped);
   const strips = layoutStrips(layout);
-  options.onProgress?.('准备图片…');
+  onProgress?.('准备图片…');
   await document.fonts.ready;
-  checkCancelled(options.signal);
-  const badgeImages = await loadBadgeImages(items, options.signal);
-  let jobId: string | undefined;
-  try {
-    // Receive the creation ID even when cancelled so the server job can be deleted.
-    const job = await api<{ id: string }>('/completion-exports', {
-      method: 'POST',
-      body: JSON.stringify({
-        name,
-        width: layout.width,
-        height: layout.height,
-        parts: strips.length,
-      }),
+  const badgeImages = await loadBadgeImages(items, signal);
+  const { id } = await api<{ id: string }>('/completion-exports', { method: 'POST', signal });
+  const job = `/completion-exports/${encodeURIComponent(id)}`;
+  let drawn = 0;
+  for (const [index, strip] of strips.entries()) {
+    const blob = await renderStrip(strip, layout, items, options, palette, badgeImages, drawn);
+    onProgress?.(`上传图片 ${index + 1} / ${strips.length}`);
+    await api(`${job}/parts/${index}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/png' },
+      body: blob,
+      signal,
     });
-    jobId = job.id;
-    checkCancelled(options.signal);
-    const path = `/completion-exports/${encodeURIComponent(job.id)}`;
-    let drawn = 0;
-    for (let index = 0; index < strips.length; index++) {
-      checkCancelled(options.signal);
-      const strip = strips[index];
-      const blob = await renderStrip(strip, layout, items, options, palette, badgeImages, drawn);
-      checkCancelled(options.signal);
-      options.onProgress?.(`上传图片 ${index + 1} / ${strips.length}`);
-      await api<{ ok: boolean }>(`${path}/parts/${index}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'image/png' },
-        body: blob,
-        signal: options.signal,
-      });
-      drawn += strip.rows.reduce((total, row) => total + row.items.length, 0);
-    }
-    checkCancelled(options.signal);
-    options.onProgress?.('合成完整 PNG…');
-    const artifact = await api<{ url: string; name: string }>(`${path}/finish`, {
-      method: 'POST',
-      signal: options.signal,
-    });
-    checkCancelled(options.signal);
-    return { ...artifact, id: job.id };
-  } catch (error) {
-    if (jobId) {
-      // Cleanup must use a fresh request, not the signal that just aborted the export.
-      await discardCompletionExport(jobId).catch(() => {
-        // The server's idle-job expiry is the fallback when the network is unavailable.
-      });
-    }
-    throw error;
-  } finally {
-    badgeImages.clear();
+    drawn += strip.rows.reduce((total, row) => total + row.items.length, 0);
   }
+  onProgress?.('合成完整 PNG…');
+  const response = await apiFetch(`/api${job}/finish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parts: strips.length }),
+    signal,
+  });
+  if (!response.ok) {
+    const detail = await response.json().then(
+      (data) => data?.detail,
+      () => null,
+    );
+    throw new ApiError(
+      typeof detail === 'string' ? detail : 'PNG 合成失败，请重试',
+      response.status,
+    );
+  }
+  return { blob: await response.blob(), name };
 }

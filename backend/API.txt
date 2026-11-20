@@ -27,9 +27,9 @@ GET /api/completion-matrix?difficulty&constant_min&constant_max&cn_version_min&c
   Charts without a CN version group appear under "__unknown__" (国服版本待核实).
 GET/PUT /api/settings/preferences -> {default_constant_min, default_constant_max}
   Default constant range for the AP list and the matrix; both multiples of 0.1 in 0-20.
-/api/completion-exports: POST creates a PNG export job, PUT /{id}/parts/{index} uploads
-  image/png parts, POST /{id}/finish assembles, GET /{id}/image downloads, DELETE /{id}
-  cancels. Jobs expire and are cleaned up by the backend.
+/api/completion-exports: POST -> {id} starts an export (discarding any earlier one);
+  PUT /{id}/parts/{index} uploads one 3200px-wide PNG strip (<=4096px tall, <=64 MiB);
+  POST /{id}/finish {parts} returns the stitched image/png and deletes the parts.
 GET /api/venues/summary -> {levels,items,totals,total,pending_count}
   Rows contain exact venue name, city, counts by current catalog level and total AP.
   Columns are 12+, 13, 13+, 14 and combined 14+/15; other levels add an explicit
