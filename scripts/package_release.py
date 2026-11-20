@@ -30,7 +30,6 @@ CORE_SCRIPTS = {
     "remy_html.py",
     "remy_release.py",
     "validate_catalog.py",
-    "__init__.py",
 }
 REQUIRED_FILES = (
     "frontend/dist/index.html",

@@ -1,6 +1,5 @@
 [Unit]
-Description=Encrypted consistent mai journal backup
-After=network-online.target
+Description=Encrypted daily mai journal backup
 StartLimitIntervalSec=2h
 StartLimitBurst=3
 
@@ -8,9 +7,7 @@ StartLimitBurst=3
 Type=oneshot
 User=root
 ExecStart=/usr/bin/python3 /opt/mai-journal/backup.py backup
-ExecStopPost=/usr/bin/python3 /opt/mai-journal/backup.py resume
-TimeoutStartSec=90min
-TimeoutStopSec=6min
+TimeoutStartSec=60min
 Restart=on-failure
 RestartSec=15min
 UMask=0077
@@ -19,6 +16,5 @@ IOSchedulingClass=idle
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/var/backups/mai-journal /srv/mai-journal/deploy.lock /srv/mai-journal/shared/catalog/updates/publish.lock
+ReadWritePaths=/var/backups/mai-journal /srv/mai-journal/shared/catalog/updates/publish.lock
 NoNewPrivileges=yes
-

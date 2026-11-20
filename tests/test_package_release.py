@@ -157,7 +157,6 @@ class PackageReleaseTest(unittest.TestCase):
             "scripts/package_release.py",
             "scripts/nested/catalog_pipeline.py",
             "deploy/deploy_release.py",
-            "deploy/wahlap-runtime.lock.json",
             "deploy/runtime.json",
             "deploy/core.dat",
             "requirements.lock",

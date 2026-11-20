@@ -9,11 +9,18 @@ wheels)
 	exec $receive list
 	;;
 deploy)
-	$receive upload || exit 1
+	sha=$($receive upload) || exit 1
 	status=0
 	sudo -n /usr/bin/systemctl start mai-journal-deploy.service || status=$?
 	sudo -n /usr/bin/journalctl -u mai-journal-deploy.service -n 60 -o cat --no-pager || true
-	exit "$status"
+	[ "$status" -eq 0 ] || exit "$status"
+	# systemctl start joins a deployment that is already running; confirm ours is live.
+	current=$($receive current)
+	if [ "$current" != "$sha" ]; then
+		echo "Active release is $current, not the uploaded $sha; rerun this deploy job" >&2
+		exit 1
+	fi
+	echo "Active release is $sha"
 	;;
 *)
 	echo "Unsupported command; use wheels or deploy" >&2

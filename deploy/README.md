@@ -129,7 +129,7 @@ A filesystem flock serializes the complete deployment. Uploading the current SHA
 a no-op. A consumed or failed upload is deleted; a rerun of the CI job uploads again.
 
 The deployer writes a recovery journal, stops the single application service
-(210-second systemd budget, allowing an active game sync to finish session cleanup), makes SQLite online-backup copies of personal and
+(60-second systemd budget; a running Diving-Fish sync gives up after at most 40 seconds), makes SQLite online-backup copies of personal and
 adjudications databases (plus the session database when present), changes
 `current` atomically and starts the new code.
 It accepts `/api/ready` only when `ok` is true and `release_sha` matches. A failed
@@ -140,12 +140,10 @@ After fixing an environment problem, rerun the CI deploy job.
 Keep the previous release directory: recovery intentionally fails closed if it is
 missing. A failed initial deployment has no previous release and remains stopped.
 
-Backups live in `backups/<UTC timestamp>-<random>/` with a receipt and SQLite
-integrity checks. An absent adjudications database is recorded as absent; an
-absent personal database prevents activation. These are local recovery backups,
-not an off-host backup policy. The separate [encrypted backup service](backup.md)
-adds daily consistent snapshots, retention and a Mac offsite copy. Do not delete current, the previous release referenced
-by `deployment-pending.json`, or backups needed for recovery. Code rollback assumes
+Each activation also makes SQLite online-backup copies in `backups/<UTC timestamp>-<random>/`
+(the newest 10 are kept) and deletes every release except the active and previous one.
+An absent personal database prevents activation. Daily encrypted off-host backups are
+described in [backup.md](backup.md). Code rollback assumes
 schema-compatible releases; destructive migrations need a separate reviewed plan.
 
 Tests use synthetic archives, fake service management and temporary SQLite

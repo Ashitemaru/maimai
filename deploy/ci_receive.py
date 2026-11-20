@@ -3,7 +3,8 @@
 
 `list` prints the digests of cached dependency wheels, so CI can leave them out of
 the upload. `upload` reads one line with the 40-hex commit SHA, then the release
-archive, and stores it as the single pending archive for deploy_release.py.
+archive, stores it as the single pending archive for deploy_release.py and prints the
+SHA. `current` prints the SHA of the active release.
 """
 
 import os
@@ -33,6 +34,8 @@ def receive(source, root):
         raise DeployError("Expected a commit SHA line before the archive") from exc
     incoming = root / "incoming"
     incoming.mkdir(mode=0o700, exist_ok=True)
+    for partial in incoming.glob(".upload-*"):  # left by a killed earlier upload
+        partial.unlink()
     size = 0
     with tempfile.NamedTemporaryFile(dir=incoming, prefix=".upload-", delete=False) as out:
         try:
@@ -50,7 +53,12 @@ def receive(source, root):
         stale.unlink()
     target = incoming / f"mai-journal-{sha}.tar.gz"
     os.replace(out.name, target)
-    return target, size
+    return sha, size
+
+
+def current_sha(root):
+    current = root / "current"
+    return current.resolve().name if current.is_symlink() else ""
 
 
 def main(argv=None):
@@ -59,15 +67,19 @@ def main(argv=None):
     if args == ["list"]:
         print("\n".join(cached_digests(ROOT)))
         return 0
+    if args == ["current"]:
+        print(current_sha(ROOT))
+        return 0
     if args != ["upload"]:
-        print("Usage: ci_receive.py list|upload", file=sys.stderr)
+        print("Usage: ci_receive.py list|upload|current", file=sys.stderr)
         return 2
     try:
-        target, size = receive(sys.stdin.buffer, ROOT)
+        sha, size = receive(sys.stdin.buffer, ROOT)
     except (DeployError, OSError) as exc:
         print(f"Upload rejected: {exc}", file=sys.stderr)
         return 1
-    print(f"Received {size} bytes as {target.name}")
+    print(f"Received {size} bytes for {sha}", file=sys.stderr)
+    print(sha)
     return 0
 
 

@@ -46,6 +46,7 @@ def initialize_records(conn):
     """)
     if "chart_json" not in {row[1] for row in conn.execute("PRAGMA table_info(ap_pending)")}:
         conn.execute("ALTER TABLE ap_pending ADD COLUMN chart_json TEXT NOT NULL DEFAULT '{}'")
+    conn.execute("UPDATE ap_pending SET reason='等待水鱼核准' WHERE reason='等待华立核准'")
     conn.execute(
         "INSERT OR IGNORE INTO score_sync_sources(sync_id,source) "
         "SELECT id,'divingfish' FROM provider_syncs"
@@ -224,7 +225,7 @@ class APRecords:
                     "INSERT INTO ap_pending VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(chart_key) "
                     "DO UPDATE SET venue=excluded.venue,updated_at=excluded.updated_at,"
                     "revision=excluded.revision,reason=excluded.reason,chart_json=excluded.chart_json",
-                    (key, claim_id, venue, created_at, at, revision, "等待华立核准", chart_json),
+                    (key, claim_id, venue, created_at, at, revision, "等待水鱼核准", chart_json),
                 )
                 conn.execute(
                     "INSERT INTO ap_record_requests VALUES(?,?,?)",

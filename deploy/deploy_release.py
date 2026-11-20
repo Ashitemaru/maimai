@@ -26,6 +26,7 @@ from pathlib import Path, PurePosixPath
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SERVICE = "mai-journal.service"
+KEEP_BACKUPS = 10
 READY_URL = "http://127.0.0.1:8766/api/ready"
 MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_EXTRACTED = 256 * 1024 * 1024
@@ -43,7 +44,6 @@ CORE_SCRIPTS = {
     "remy_html.py",
     "remy_release.py",
     "validate_catalog.py",
-    "__init__.py",
 }
 
 
@@ -66,8 +66,6 @@ def allowed_file(parts):
         return len(parts) == 2 and (
             parts[1] == "manifest.json" or WHEEL_NAME.fullmatch(parts[1]) is not None
         )
-    if parts == ("deploy", "wahlap-runtime.lock.json"):
-        return True
     if len(parts) == 1:
         return parts[0] in {"RELEASE_SHA", "requirements.lock"}
     if parts[0] == "backend":
@@ -506,10 +504,21 @@ class Deployer:
                 raise DeployError("New release did not become ready")
             self.clear_journal()
             log(f"Activated {sha}")
-            return "deployed"
         except Exception:
             self.rollback(previous, sha)
             raise
+        self.prune(keep={sha, previous})
+        return "deployed"
+
+    def prune(self, keep):
+        """Keep the active and rollback releases and the newest deployment backups."""
+        for release in self.releases.iterdir():
+            if release.name not in keep and SHA.fullmatch(release.name) and release.is_dir():
+                shutil.rmtree(release)
+        backups = self.root / "backups"
+        labels = sorted(p for p in backups.iterdir() if p.is_dir()) if backups.is_dir() else []
+        for old in labels[:-KEEP_BACKUPS]:
+            shutil.rmtree(old)
 
     def run(self):
         self.releases.mkdir(parents=True, exist_ok=True)

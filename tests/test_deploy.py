@@ -253,6 +253,17 @@ class DeploymentTests(unittest.TestCase):
             self.deployer.run()
         self.assertEqual(self.deployer.installed(), OTHER)
 
+    def test_success_prunes_old_releases_and_backups(self):
+        for name in (OTHER, "d" * 40):
+            (self.root / "releases" / name).mkdir()
+        for index in range(12):
+            (self.root / "backups" / f"20260101T0000{index:02d}-x").mkdir(parents=True)
+        self.assertEqual(self.deployer.run(), "deployed")
+        self.assertEqual(sorted(p.name for p in (self.root / "releases").iterdir()), [OLD, NEW])
+        backups = sorted(p.name for p in (self.root / "backups").iterdir())
+        self.assertEqual(len(backups), 10)
+        self.assertNotIn("20260101T000000-x", backups)
+
     def test_multiple_uploads_are_not_deployed(self):
         (self.root / "incoming" / f"mai-journal-{OTHER}.tar.gz").write_bytes(b"x")
         self.assertEqual(self.deployer.run(), "pending")
@@ -338,7 +349,7 @@ class DeploymentTests(unittest.TestCase):
         unit = (deploy / "mai-journal.service").read_text()
         self.assertIn("--workers 1", unit)
         self.assertIn("--host 127.0.0.1", unit)
-        self.assertIn("TimeoutStopSec=210", unit)
+        self.assertIn("TimeoutStopSec=60", unit)
         self.assertIn("NoNewPrivileges=yes", unit)
         self.assertIn("ProtectSystem=strict", unit)
         writes = [line for line in unit.splitlines() if line.startswith("ReadWritePaths=")]

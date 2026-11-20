@@ -1,5 +1,5 @@
 [Unit]
-Description=Back up mai journal daily during game maintenance
+Description=Back up mai journal daily
 
 [Timer]
 OnCalendar=*-*-* 04:15:00 Asia/Shanghai

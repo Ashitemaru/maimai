@@ -1,247 +1,205 @@
 #!/usr/bin/env python3
-"""Encrypted, consistent backups and isolated restore verification for mai journal."""
+"""Daily encrypted backup of mai journal data with restic; the app keeps running.
+
+SQLite files are copied with the online backup API, so each database is consistent
+on its own. Catalog snapshots are immutable directories; the current and previous
+ones are copied while holding the catalog publish lock. Code is not backed up: every
+deployed commit has a GitHub release. The Mac offsite job copies snapshots of this
+repository (host mai-journal, tag daily), so keep those names and the repository path.
+"""
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import fcntl
 import json
 import os
 import re
 import shutil
-import signal
+import sqlite3
 import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-if __package__:
-    from .backup_data import capture_frozen, finalize_capture, verify
-else:
-    from backup_data import capture_frozen, finalize_capture, verify
+DATABASES = (
+    ("shared/runtime/personal.sqlite3", True),
+    ("shared/catalog/updates/adjudications.sqlite3", True),
+    ("shared/runtime/auth.sqlite3", False),
+)
+RUNTIME_FILES = ("shared/runtime/secrets.json", "shared/runtime/bilibili-session.json")
+CATALOG_EXCLUDED = {"current", "updates", "remy-cache"}
+SYSTEM_FILES = ("etc/mai-journal/app.env", "etc/caddy/Caddyfile", "etc/sudoers.d/mai-journal")
+UNIT = re.compile(r"mai-journal(?:-[a-z0-9-]+)?\.(?:service|timer)\Z")
+SNAPSHOT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+RESTIC_SCOPE = ("--host", "mai-journal", "--tag", "daily")
 
-SERVICE = "mai-journal.service"
-READY_URL = "http://127.0.0.1:8766/api/ready"
 
-
-class BackupError(RuntimeError):
-    """Safe operational message, never subprocess output or credential contents."""
+class BackupError(Exception):
+    pass
 
 
 def atomic_json(path, value):
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        os.chmod(temporary, 0o600)
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.flush()
-        os.fsync(stream.fileno())
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
     temporary.replace(path)
 
 
-@contextlib.contextmanager
+@contextmanager
 def lock(path):
-    # Never unlink lock files: deployment and catalog writers share their inodes.
-    with path.open("a") as stream:
-        try:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise BackupError("Another deployment, publication or backup is running") from None
+    with path.open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         yield
 
 
-class Host:
-    def command(self, argv, *, cwd=None, timeout=3600):
-        try:
-            result = subprocess.run(
-                argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
-            )
-        except subprocess.TimeoutExpired:
-            raise BackupError(f"{Path(argv[0]).name} timed out") from None
-        if result.returncode:
-            raise BackupError(f"{Path(argv[0]).name} failed (exit {result.returncode})")
-        return result.stdout
+def copy_database(source, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src:
+        with closing(sqlite3.connect(destination)) as dest:
+            src.backup(dest)
+            if dest.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise BackupError(f"Integrity check failed for {source.name}")
 
-    def state(self):
-        return self.command(
-            ["systemctl", "show", SERVICE, "--property=ActiveState", "--value"], timeout=30
-        ).strip()
 
-    def service(self, action):
-        self.command(["systemctl", action, SERVICE], timeout=270)
+def copy_file(source, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
 
-    def quiescent(self):
-        return (
-            self.command(
-                ["systemctl", "show", SERVICE, "--property=MainPID", "--value"], timeout=30
-            ).strip()
-            == "0"
-        )
 
-    def ready(self, sha, timeout=60):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                with urllib.request.urlopen(READY_URL, timeout=3) as response:
-                    value = json.load(response)
-                if value.get("ok") is True and value.get("release_sha") == sha:
-                    return
-            except (OSError, ValueError, urllib.error.URLError):
-                pass
-            time.sleep(1)
-        raise BackupError("Application did not become ready after backup capture")
+def catalog_snapshots(root):
+    """Return (current link text, snapshot names) for the current and previous catalog."""
+    catalog = root / "shared/catalog"
+    link = os.readlink(catalog / "current")
+    parts = Path(link).parts
+    if len(parts) != 3 or parts[:2] != ("updates", "snapshots") or not SNAPSHOT.fullmatch(parts[2]):
+        raise BackupError("Unexpected catalog current pointer")
+    names = [parts[2]]
+    status = catalog / "updates/status.json"
+    previous = json.loads(status.read_text()).get("previous_snapshot") if status.exists() else None
+    if isinstance(previous, str) and SNAPSHOT.fullmatch(previous) and previous != names[0]:
+        if (catalog / "updates/snapshots" / previous).is_dir():
+            names.append(previous)
+    return link, names
+
+
+def capture(root, payload, *, system_root=Path("/")):
+    """Copy everything worth restoring into payload; return a small manifest."""
+    for relative, required in DATABASES:
+        source = root / relative
+        if source.is_file():
+            copy_database(source, payload / relative)
+        elif required:
+            raise BackupError(f"Missing required database {relative}")
+    for relative in RUNTIME_FILES:
+        if (root / relative).is_file():
+            copy_file(root / relative, payload / relative)
+    catalog = root / "shared/catalog"
+    with lock(catalog / "updates/publish.lock"):
+        link, snapshots = catalog_snapshots(root)
+        for item in catalog.iterdir():
+            if item.name in CATALOG_EXCLUDED or item.is_symlink():
+                continue
+            target = payload / "shared/catalog" / item.name
+            if item.is_dir():
+                shutil.copytree(item, target, symlinks=True)
+            else:
+                copy_file(item, target)
+        status = catalog / "updates/status.json"
+        if status.is_file():
+            copy_file(status, payload / "shared/catalog/updates/status.json")
+        for name in snapshots:
+            relative = f"shared/catalog/updates/snapshots/{name}"
+            shutil.copytree(root / relative, payload / relative, symlinks=True)
+        (payload / "shared/catalog/current").symlink_to(link)
+    shutil.copytree(root / "shared/assets", payload / "shared/assets", symlinks=True)
+    for relative in SYSTEM_FILES:
+        if (system_root / relative).is_file():
+            copy_file(system_root / relative, payload / "system" / relative)
+    units = system_root / "etc/systemd/system"
+    for unit in sorted(units.iterdir()) if units.is_dir() else ():
+        if UNIT.fullmatch(unit.name) and unit.is_file():
+            copy_file(unit, payload / "system/etc/systemd/system" / unit.name)
+    current = root / "current"
+    manifest = {
+        "schema_version": 4,
+        "created_at": datetime.now(UTC).isoformat(),
+        "release_sha": current.resolve().name if current.is_symlink() else None,
+        "catalog_snapshots": snapshots,
+    }
+    atomic_json(payload / "manifest.json", manifest)
+    return manifest
+
+
+def verify(payload):
+    """Check a restored payload: manifest present and every database intact."""
+    manifest = json.loads((payload / "manifest.json").read_text())
+    for relative, required in DATABASES:
+        path = payload / relative
+        if not path.is_file():
+            if required:
+                raise BackupError(f"Restored payload lacks {relative}")
+            continue
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
+            if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise BackupError(f"Restored {relative} failed its integrity check")
+    for name in manifest.get("catalog_snapshots", []):
+        if not (payload / "shared/catalog/updates/snapshots" / name / "catalog.sqlite").is_file():
+            raise BackupError(f"Restored payload lacks catalog snapshot {name}")
+    return manifest
 
 
 class Backups:
-    def __init__(self, root, directory, password, *, config=None, host=None, restic="restic"):
+    def __init__(self, root, directory, password, *, restic="restic", runner=subprocess.run):
         self.root = Path(root)
         self.directory = Path(directory)
-        self.password = Path(password)
-        self.config = Path(config or "/etc/mai-journal")
-        self.host = host or Host()
-        self.restic_binary = restic
         self.repository = self.directory / "repository"
         self.staging = self.directory / "staging"
-        self.marker = self.directory / "resume-needed.json"
-        self.receipt = self.directory / "status.json"
-        self.service_pause_seconds = None
+        self.status_path = self.directory / "status.json"
+        self.password = Path(password)
+        self.restic_binary = restic
+        self.runner = runner
 
     def restic(self, *arguments, cwd=None):
-        return self.host.command(
-            [
-                self.restic_binary,
-                "--repo",
-                str(self.repository),
-                "--password-file",
-                str(self.password),
-                "--cache-dir",
-                str(self.directory / "cache"),
-                *arguments,
-            ],
-            cwd=cwd,
-        )
-
-    def prepare(self):
-        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if self.directory.is_symlink() or self.directory.stat().st_mode & 0o077:
-            raise BackupError("Backup directory must be private and not a symbolic link")
-        if (
-            not self.password.is_file()
-            or self.password.is_symlink()
-            or self.password.stat().st_mode & 0o077
-        ):
-            raise BackupError("A private backup password file is required")
-
-    def current_sha(self):
-        sha = (self.root / "current/RELEASE_SHA").read_text().strip()
-        if not re.fullmatch(r"[0-9a-f]{40}", sha):
-            raise BackupError("Current release has an invalid identity")
-        return sha
-
-    def restore_service(self):
-        if not self.marker.exists():
-            return
-        # Called with deploy.lock held. A completed deployment can have changed SHA.
-        if (self.root / "deployment-pending.json").exists():
-            raise BackupError("Deployment recovery must finish before resuming backups")
-        self.host.service("start")
-        self.host.ready(self.current_sha())
-        self.marker.unlink()
-
-    def resume(self):
-        # Restarting the app must not depend on a healthy restic key or repository.
-        if self.directory.is_symlink():
-            raise BackupError("Invalid backup directory")
-        if self.marker.exists():
-            with lock(self.root / "deploy.lock"):
-                self.restore_service()
-
-    def snapshot(self):
-        self.service_pause_seconds = None
-        with lock(self.root / "deploy.lock"):
-            self.restore_service()
-            if (self.root / "deployment-pending.json").exists():
-                raise BackupError("Deployment recovery is pending; backup capture postponed")
-            state = self.host.state()
-            if state not in {"active", "inactive", "failed"}:
-                raise BackupError("Application is changing state; backup capture postponed")
-            self.staging.mkdir(exist_ok=True, mode=0o700)
-            payload = self.staging / "payload"
-            if payload.exists():
-                shutil.rmtree(payload)
-            paused_at = None
-            try:
-                if state == "active":
-                    atomic_json(self.marker, {"release_sha": self.current_sha()})
-                    paused_at = time.monotonic()
-                    self.host.service("stop")
-                if self.host.state() not in {"inactive", "failed"} or not self.host.quiescent():
-                    raise BackupError("Application is still running; no snapshot captured")
-                with lock(self.root / "shared/catalog/updates/publish.lock"):
-                    metadata = capture_frozen(self.root, self.config, payload)
-            finally:
-                self.restore_service()
-                self.service_pause_seconds = (
-                    round(time.monotonic() - paused_at, 2) if paused_at is not None else 0.0
-                )
-        # The payload is now independent of live data. Resume before file fsyncs,
-        # SQLite checks and two checksum passes; failures prevent restic/retention.
-        return finalize_capture(payload, metadata)
+        command = [
+            self.restic_binary,
+            "--repo",
+            str(self.repository),
+            "--password-file",
+            str(self.password),
+            "--cache-dir",
+            str(self.directory / "cache"),
+            *arguments,
+        ]
+        result = self.runner(command, cwd=cwd, capture_output=True, text=True, timeout=3600)
+        if result.returncode:
+            raise BackupError(f"restic {arguments[0]} failed: {result.stderr.strip()[-300:]}")
+        return result.stdout
 
     def backup(self, *, full_check=False):
-        self.prepare()
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         with lock(self.directory / "backup.lock"):
             if not (self.repository / "config").exists():
-                raise BackupError("Initialize the encrypted repository before scheduling backups")
-            previous = json.loads(self.receipt.read_text()) if self.receipt.exists() else {}
+                raise BackupError("Run `backup.py init` before scheduling backups")
+            previous = json.loads(self.status_path.read_text()) if self.status_path.exists() else {}
             status = {
                 "state": "running",
-                "phase": "capture",
                 "started_at": datetime.now(UTC).isoformat(),
                 "last_success": previous.get("last_success"),
             }
-            atomic_json(self.receipt, status)
+            atomic_json(self.status_path, status)
             try:
-                captured_at = time.monotonic()
-                manifest = self.snapshot()
-                status.update(
-                    phase="encrypt",
-                    capture_seconds=round(time.monotonic() - captured_at, 2),
-                    service_pause_seconds=self.service_pause_seconds,
-                )
-                atomic_json(self.receipt, status)
-                result = self.restic(
-                    "backup",
-                    "--json",
-                    "--host",
-                    "mai-journal",
-                    "--tag",
-                    "daily",
-                    "payload",
-                    cwd=self.staging,
-                )
-                summaries = [json.loads(line) for line in result.splitlines() if line.strip()]
-                snapshot = next(
-                    (v.get("snapshot_id") for v in summaries if v.get("message_type") == "summary"),
-                    None,
-                )
-                if not snapshot:
-                    raise BackupError("Backup completed without a snapshot receipt")
-                status.update(phase="check", snapshot_id=snapshot)
-                atomic_json(self.receipt, status)
+                shutil.rmtree(self.staging, ignore_errors=True)
+                self.staging.mkdir(mode=0o700)
+                manifest = capture(self.root, self.staging / "payload")
+                output = self.restic("backup", "--json", *RESTIC_SCOPE, "payload", cwd=self.staging)
+                lines = [json.loads(line) for line in output.splitlines() if line.strip()]
+                summary = next((v for v in lines if v.get("message_type") == "summary"), {})
                 self.restic("check", "--read-data" if full_check else "--read-data-subset=1/12")
-                status["phase"] = "retention"
-                atomic_json(self.receipt, status)
                 self.restic(
                     "forget",
-                    "--host",
-                    "mai-journal",
-                    "--tag",
-                    "daily",
+                    *RESTIC_SCOPE,
                     "--group-by",
                     "host,tags",
                     "--keep-daily",
@@ -252,99 +210,62 @@ class Backups:
                     "6",
                     "--prune",
                 )
-                status.update(
-                    state="complete",
-                    phase="complete",
-                    last_success=datetime.now(UTC).isoformat(),
-                    snapshot_id=snapshot,
-                    release_sha=manifest.get("release_sha"),
-                )
-                return status
+                status = {
+                    "state": "complete",
+                    "last_success": datetime.now(UTC).isoformat(),
+                    "snapshot_id": summary.get("snapshot_id"),
+                    "release_sha": manifest["release_sha"],
+                }
             except Exception as error:
-                status.update(
-                    state="failed", error=f"{type(error).__name__}: backup did not finish"
-                )
+                status.update(state="failed", error=str(error)[:500])
                 raise
             finally:
-                status["service_pause_seconds"] = self.service_pause_seconds
                 status["finished_at"] = datetime.now(UTC).isoformat()
-                atomic_json(self.receipt, status)
-                # Plaintext staging is disposable; encrypted snapshots remain untouched.
-                if self.staging.exists():
-                    shutil.rmtree(self.staging)
+                atomic_json(self.status_path, status)
+                # Plaintext staging is disposable; encrypted snapshots remain.
+                shutil.rmtree(self.staging, ignore_errors=True)
 
     def restore(self, snapshot, destination):
-        self.prepare()
         destination = Path(destination).absolute()
-        if destination.exists() or destination.is_symlink():
-            raise BackupError("Restore requires a new, empty destination path")
-        if not re.fullmatch(r"[0-9a-f]{8,64}|latest", snapshot):
-            raise BackupError("Invalid snapshot identity")
-        # Never restore within production or into the backup repository itself.
-        for forbidden in (self.root.resolve(), self.directory.resolve()):
-            if destination.resolve().is_relative_to(forbidden):
-                raise BackupError(
-                    "Restore destination must be outside application and backup paths"
-                )
+        if destination.exists():
+            raise BackupError("Restore requires a new destination path")
+        for forbidden in (self.root, self.directory):
+            if destination.resolve().is_relative_to(forbidden.resolve()):
+                raise BackupError("Restore destination must be outside app and backup paths")
         destination.mkdir(mode=0o700, parents=True)
-        self.restic(
-            "restore",
-            snapshot,
-            "--host",
-            "mai-journal",
-            "--tag",
-            "daily",
-            "--target",
-            str(destination),
-            "--verify",
-        )
-        manifest = verify(destination / "payload")
-        return {"state": "verified", "release_sha": manifest.get("release_sha")}
+        self.restic("restore", snapshot, *RESTIC_SCOPE, "--target", str(destination), "--verify")
+        return verify(destination / "payload")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["init", "backup", "resume", "restore", "check"])
+    parser.add_argument("action", choices=["init", "backup", "restore", "check"])
     parser.add_argument("--root", type=Path, default=Path("/srv/mai-journal"))
     parser.add_argument("--directory", type=Path, default=Path("/var/backups/mai-journal"))
     parser.add_argument("--password", type=Path, default=Path("/etc/mai-journal/backup-password"))
-    parser.add_argument("--config", type=Path, default=Path("/etc/mai-journal"))
     parser.add_argument("--restic", default="restic")
     parser.add_argument("--full-check", action="store_true")
     parser.add_argument("--snapshot", default="latest")
     parser.add_argument("--destination", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
-
-    def terminate(signum, frame):
-        raise BackupError("Backup interrupted")
-
-    signal.signal(signal.SIGTERM, terminate)
-    backup = Backups(
-        args.root, args.directory, args.password, config=args.config, restic=args.restic
-    )
+    backups = Backups(args.root, args.directory, args.password, restic=args.restic)
     try:
-        if args.action != "resume":
-            backup.prepare()
         if args.action == "init":
-            with lock(backup.directory / "backup.lock"):
-                if not (backup.repository / "config").exists():
-                    backup.restic("init")
+            if not (backups.repository / "config").exists():
+                backups.restic("init")
         elif args.action == "backup":
-            backup.backup(
-                full_check=args.full_check or datetime.now(ZoneInfo("Asia/Shanghai")).day == 1
-            )
-        elif args.action == "resume":
-            backup.resume()
+            first_of_month = datetime.now(ZoneInfo("Asia/Shanghai")).day == 1
+            backups.backup(full_check=args.full_check or first_of_month)
         elif args.action == "check":
-            backup.restic("check", "--read-data")
-        elif args.action == "restore":
+            backups.restic("check", "--read-data")
+        else:
             if not args.destination:
                 parser.error("restore requires --destination")
-            backup.restore(args.snapshot, args.destination)
-    except Exception as error:
-        # Do not log credentials, filenames inside personal data, or CLI output.
-        print(f"Backup action {args.action} failed ({type(error).__name__})", file=sys.stderr)
+            manifest = backups.restore(args.snapshot, args.destination)
+            print(f"Restored and verified backup of release {manifest.get('release_sha')}")
+    except (BackupError, OSError, sqlite3.Error, ValueError) as error:
+        print(f"Backup action {args.action} failed: {error}", file=sys.stderr)
         return 1
     print(f"Backup action {args.action} completed")
     return 0

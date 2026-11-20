@@ -70,8 +70,7 @@ Store 事务迁移个人表旧 chart_key 为新两段键，保留所有记录内
 旧快照和升级备份保留作审计；新曲库不是直接沿用旧库中的已接受值。
 
 验证
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
-.venv/bin/python -m unittest backend.test_app
+.venv/bin/python scripts/test_python.py   # 断网隔离运行全部 Python 测试
 npm --prefix frontend run build
 测试用隔离目录与模拟请求；不代替用户给真实冲突选择答案。
 字段与来源详见 docs/catalog-schema-and-sources.txt。

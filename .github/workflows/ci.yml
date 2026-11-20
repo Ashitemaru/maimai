@@ -199,8 +199,8 @@ jobs:
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           if [ -z "$DEPLOY_HOST" ]; then
-            echo "::warning::DEPLOY_HOST is not set; the release was published but not deployed"
-            exit 0
+            echo "::error::DEPLOY_HOST is not set; the release was published but not deployed"
+            exit 1
           fi
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key

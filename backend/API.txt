@@ -4,7 +4,19 @@ Production uses HTTPS and one Master Key. POST /api/auth/login {master_key} crea
 a Secure, HttpOnly session cookie; GET /api/auth/session reports authentication;
 POST /api/auth/logout revokes the session. Personal APIs require authentication.
 
-GET /api/health -> {ok, catalog_charts, imported_charts}
+GET /api/health -> {ok, release_sha}
+GET /api/ready -> {ok, release_sha, checks:{catalog,personal}}; HTTP 503 unless every check
+  passes. The deployer waits for ok with the expected release_sha before finishing.
+GET /api/completion-table?<chart filters>&sort -> {items,total,summary,generated_at}
+  Every matching chart with completion fields, unpaginated, for the completion table view.
+GET /api/completion-matrix?difficulty&constant_min&constant_max&cn_version_min&cn_version_max
+  -> constant x CN version grid of {complete,total,remaining} with row/column totals.
+  Charts without a CN version group appear under "__unknown__" (国服版本待核实).
+GET/PUT /api/settings/preferences -> {default_constant_min, default_constant_max}
+  Default constant range for the AP list and the matrix; both multiples of 0.1 in 0-20.
+/api/completion-exports: POST creates a PNG export job, PUT /{id}/parts/{index} uploads
+  image/png parts, POST /{id}/finish assembles, GET /{id}/image downloads, DELETE /{id}
+  cancels. Jobs expire and are cleaned up by the backend.
 GET /api/venues/summary -> {levels,items,totals,total,pending_count}
   Rows contain exact venue name, city, counts by current catalog level and total AP.
   Columns are 12+, 13, 13+, 14 and combined 14+/15; other levels add an explicit
@@ -118,7 +130,7 @@ jp_release_version, jp_release_version_candidate, release_status,
 group(low/high/catalog), in_original_table, requires_venue, legacy_complete, legacy_venue,
 manual_ap(null/true/false), manual_venue, venue, note, manual_date,
 achievement(null or number, explicit manual score preferred),
-provider_achievement, provider_fc, provider_synced_at, provider_source(divingfish/null; older rows may show wahlap),
+provider_achievement, provider_fc, provider_synced_at, provider_source(divingfish/null),
 provider_fs, provider_dx_score, provider_rate, provider_ra,
 pending_record(null or {id,venue,created_at,updated_at,revision,reason}),
 record_revision, venue_pending, ap_confirmed_at, venue_confirmed_at,

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deploy.ci_receive import cached_digests, receive
+from deploy.ci_receive import cached_digests, current_sha, receive
 from deploy.deploy_release import DeployError
 
 SHA = "a" * 40
@@ -20,8 +20,10 @@ class ReceiveTests(unittest.TestCase):
         incoming = self.root / "incoming"
         incoming.mkdir()
         (incoming / f"mai-journal-{'b' * 40}.tar.gz").write_bytes(b"older")
-        target, size = receive(io.BytesIO(SHA.encode() + b"\narchive"), self.root)
-        self.assertEqual(target, incoming / f"mai-journal-{SHA}.tar.gz")
+        (incoming / ".upload-killed").write_bytes(b"partial")
+        sha, size = receive(io.BytesIO(SHA.encode() + b"\narchive"), self.root)
+        target = incoming / f"mai-journal-{SHA}.tar.gz"
+        self.assertEqual(sha, SHA)
         self.assertEqual((target.read_bytes(), size), (b"archive", 7))
         self.assertEqual(list(incoming.iterdir()), [target])
 
@@ -32,6 +34,12 @@ class ReceiveTests(unittest.TestCase):
         with patch("deploy.ci_receive.MAX_ARCHIVE", 4), self.assertRaises(DeployError):
             receive(io.BytesIO(SHA.encode() + b"\n12345"), self.root)
         self.assertEqual(list((self.root / "incoming").iterdir()), [])
+
+    def test_current_reports_active_release(self):
+        self.assertEqual(current_sha(self.root), "")
+        (self.root / "releases" / SHA).mkdir(parents=True)
+        (self.root / "current").symlink_to(f"releases/{SHA}")
+        self.assertEqual(current_sha(self.root), SHA)
 
     def test_lists_cached_wheel_digests(self):
         self.assertEqual(cached_digests(self.root), [])
