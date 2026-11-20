@@ -186,8 +186,7 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
                     {
                         k: v
                         for k, v in song.items()
-                        if k
-                        not in ("id", "charts", "api_version", "external_ids", "field_overrides")
+                        if k not in ("id", "charts", "api_version", "external_ids")
                     }
                 ),
                 **deepcopy(old),
@@ -209,7 +208,6 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
                 },
                 "field_decisions": deepcopy(decisions[key]),
             }
-            flat.pop("field_overrides", None)
             # Raw aliases stay in source snapshots; the published chart has one
             # value for each business field even after a permanent user choice.
             flat.pop("level_value", None)
@@ -621,7 +619,6 @@ def build(directory):
                 "retained_lxns_records.json",
                 "catalog_diff.json",
                 "pipeline_report.json",
-                "previous_catalog.json",
                 "catalog_adjudications.json",
                 "remy_release_overrides.json",
                 "remy_conflicts.json",
@@ -871,8 +868,6 @@ def validate(directory):
             if name.endswith("overrides.json")
             else [c for r in evidence.get("conflicts", []) for c in r.get("candidates", [])]
         )
-        if isinstance(rows, dict):
-            rows = rows.values()
         for row in rows:
             if row.get("evidence_file") and row.get("evidence_sha256"):
                 path = directory / row["evidence_file"]

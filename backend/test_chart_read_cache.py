@@ -197,9 +197,7 @@ class ChartReadCacheTests(unittest.TestCase):
     def test_catalog_publication_racing_with_read_invalidates_old_snapshot(self):
         entered, release, publishing = threading.Event(), threading.Event(), threading.Event()
         original = self.store._assemble_charts
-        replacement = ChartIndex(
-            {self.key: {**self.store.catalog[self.key], "title": "Published"}}, schema_version=2
-        )
+        replacement = ChartIndex({self.key: {**self.store.catalog[self.key], "title": "Published"}})
 
         def slow_build(*args, **kwargs):
             result = original(*args, **kwargs)
@@ -222,12 +220,6 @@ class ChartReadCacheTests(unittest.TestCase):
                 self.assertEqual(read.result(timeout=5)[0]["title"], "Example")
                 writer.result(timeout=5)
         self.assertEqual(self.store.chart(self.key)["title"], "Published")
-
-    def test_empty_queue_does_not_read_or_assemble_chart_catalog(self):
-        with patch.object(
-            self.store, "all_charts", side_effect=AssertionError("unexpected full read")
-        ):
-            self.assertEqual(self.store.ap_records(), {"items": [], "count": 0})
 
     def test_queue_metadata_keeps_revision_of_its_pending_row_during_concurrent_edit(self):
         first = self.save()

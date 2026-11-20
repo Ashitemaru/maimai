@@ -17,7 +17,6 @@ const checks = [],
   mutations = [],
   errors = [],
   injectedFailures = [];
-const navOnly = process.env.MATRIX_AUDIT_NAV_ONLY === '1';
 const mime = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -570,15 +569,10 @@ async function sticky(page, name) {
 }
 let activePage;
 try {
-  const viewports = navOnly
-    ? [
-        ['mobile-390', { width: 390, height: 844 }],
-        ['mobile-320', { width: 320, height: 844 }],
-      ]
-    : [
-        ['desktop', { width: 1440, height: 1000 }],
-        ['mobile', { width: 390, height: 844 }],
-      ];
+  const viewports = [
+    ['desktop', { width: 1440, height: 1000 }],
+    ['mobile', { width: 390, height: 844 }],
+  ];
   for (const [name, viewport] of viewports) {
     const context = await browser.newContext({ viewport });
     const control = await mock(context, name);
@@ -594,57 +588,6 @@ try {
     });
     await page.goto(origin + '/#statistics', { waitUntil: 'networkidle' });
     await settled(page);
-    if (navOnly) {
-      const navigation = await page.locator('.nav-item').evaluateAll((items) =>
-        items.map((element) => {
-          const text = [...element.querySelectorAll('span')].find(
-              (label) => label.getBoundingClientRect().width > 0,
-            ),
-            bounds = element.getBoundingClientRect(),
-            label = text.getBoundingClientRect(),
-            css = getComputedStyle(text);
-          return {
-            text: text.textContent,
-            left: bounds.left,
-            right: bounds.right,
-            width: bounds.width,
-            height: bounds.height,
-            labelLeft: label.left,
-            labelRight: label.right,
-            labelHeight: label.height,
-            lineHeight: parseFloat(css.lineHeight),
-            whiteSpace: css.whiteSpace,
-          };
-        }),
-      );
-      measurements.push({ name: `${name}-navigation`, navigation });
-      assert.equal(navigation.length, 4);
-      for (const [index, item] of navigation.entries()) {
-        assert(item.width >= 44 && item.height >= 44, `${name}: navigation touch target`);
-        assert(Math.abs(item.width - navigation[0].width) < 1, `${name}: equal navigation widths`);
-        assert.equal(item.whiteSpace, 'nowrap', `${name}: ${item.text} uses a single line`);
-        assert(item.labelHeight <= item.lineHeight + 1, `${name}: ${item.text} wraps`);
-        assert(
-          item.labelLeft >= item.left - 1 && item.labelRight <= item.right + 1,
-          `${name}: ${item.text} exceeds its navigation slot`,
-        );
-        assert(
-          item.labelLeft >= 0 && item.labelRight <= viewport.width,
-          `${name}: ${item.text} exceeds viewport`,
-        );
-        if (index)
-          assert(
-            navigation[index - 1].labelRight <= item.labelLeft,
-            `${name}: adjacent navigation labels overlap`,
-          );
-      }
-      await audit(page, `${name}-matrix`);
-      await page.screenshot({ path: path.join(output, `${name}-viewport.png`) });
-      checks.push(`${name}: four equal navigation targets remain single-line without overlap`);
-      await context.close();
-      activePage = null;
-      continue;
-    }
     assert.equal(await page.getByRole('heading', { name: '完成统计', exact: true }).count(), 1);
     assert.equal(await page.locator('a.nav-item.active').getAttribute('aria-label'), 'AP 图鉴');
     assert.equal(
@@ -912,7 +855,7 @@ try {
   );
   await fs.rm(path.join(output, 'failure.png'), { force: true });
   console.log(
-    `Completion matrix UI passed (${checks.length} checks, ${navOnly ? '390px + 320px navigation' : 'desktop + 390px mobile'}, ${mutations.length} personal-data writes)`,
+    `Completion matrix UI passed (${checks.length} checks, desktop + 390px mobile, ${mutations.length} personal-data writes)`,
   );
 } catch (error) {
   await activePage

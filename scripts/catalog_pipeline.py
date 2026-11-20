@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import math
 import os
@@ -14,27 +15,36 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-try:
-    from .download_jackets import BASE, RESOURCE_MAPPING_SOURCE, inspect
-except ImportError:
-    from download_jackets import BASE, RESOURCE_MAPPING_SOURCE, inspect
+from PIL import Image
 
+# (file name, URL, required); optional sources may fall back to the previous copy.
 SOURCES = (
-    (
-        "lxns_songs.json",
-        "https://maimai.lxns.net/api/v0/maimai/song/list?notes=true",
-        "songs",
-        True,
-    ),
-    ("lxns_aliases.json", "https://maimai.lxns.net/api/v0/maimai/alias/list", "aliases", True),
+    ("lxns_songs.json", "https://maimai.lxns.net/api/v0/maimai/song/list?notes=true", True),
+    ("lxns_aliases.json", "https://maimai.lxns.net/api/v0/maimai/alias/list", True),
     (
         "divingfish_music_data.json",
         "https://www.diving-fish.com/api/maimaidxprober/music_data",
-        None,
         False,
     ),
-    ("arcade_songs.json", "https://dp4p6x0xfi5o9.cloudfront.net/maimai/data.json", "songs", False),
+    ("arcade_songs.json", "https://dp4p6x0xfi5o9.cloudfront.net/maimai/data.json", False),
 )
+JACKET_BASE = "https://assets2.lxns.net/maimai/jacket/"
+# The official frontend's getSongResourceId: jacket asset = song ID % 10000.
+RESOURCE_MAPPING_SOURCE = "https://github.com/Lxns-Network/maimai-prober-frontend/blob/a581699b7bee3b642d9a7e54d678330891157049/src/utils/api/song/maimai.ts#L92-L94"
+
+
+def inspect(content):
+    with Image.open(io.BytesIO(content)) as image:
+        image.load()
+        if image.format != "PNG" or min(image.size) < 32:
+            raise ValueError("Unexpected jacket format or dimensions")
+        return {
+            "width": image.width,
+            "height": image.height,
+            "format": image.format,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
 
 
 def now():
@@ -341,7 +351,7 @@ def prepare_update(stage: Path, previous: Path, progress=None) -> dict:
     started = now()
     warnings, receipts, downloaded = [], [], []
     old_receipts = {r["file"]: r for r in read(previous / "raw/sources.json", [])}
-    for filename, url, _key, required in SOURCES:
+    for filename, url, required in SOURCES:
         emit("sources", {"file": filename, "completed": len(receipts), "total": len(SOURCES)})
         try:
             content, headers = fetch(url)
@@ -382,7 +392,6 @@ def prepare_update(stage: Path, previous: Path, progress=None) -> dict:
         receipt.update(sha256=hashlib.sha256(content).hexdigest(), bytes=len(content))
         receipts.append(receipt)
         downloaded.append((filename, content))
-    atomic_json(stage / "previous_catalog.json", read(previous / "catalog.json", {"songs": []}))
     for filename, content in downloaded:
         atomic_bytes(stage / "raw" / filename, content)
     atomic_json(stage / "raw/sources.json", receipts)
@@ -440,7 +449,7 @@ def prepare_update(stage: Path, previous: Path, progress=None) -> dict:
             "title": song["title"],
             "asset_id": asset_id,
             "file": f"jackets/{sid}.png",
-            "url": BASE + f"{asset_id}.png",
+            "url": JACKET_BASE + f"{asset_id}.png",
         }
         try:
             content = path.read_bytes() if path.is_file() else None
@@ -462,7 +471,8 @@ def prepare_update(stage: Path, previous: Path, progress=None) -> dict:
                     next_request = time.monotonic() + 0.35
                     content, headers = fetch(row["url"])
                     metadata = inspect(content)
-                    row.update(fetched_at=now(), etag=headers.get("ETag"))
+                    etag = next((v for k, v in headers.items() if k.lower() == "etag"), None)
+                    row.update(fetched_at=now(), etag=etag)
                 atomic_bytes(path, content)
             elif old_images.get(sid, {}).get("fetched_at"):
                 row["fetched_at"] = old_images[sid]["fetched_at"]

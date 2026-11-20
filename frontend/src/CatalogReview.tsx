@@ -37,9 +37,7 @@ interface ReviewData {
   decisions_pending?: boolean;
   initialized?: boolean;
   records: ChartRecord[];
-  counts?: { admitted: number; pending: number };
-  admitted_count?: number;
-  pending_count?: number;
+  counts: { admitted: number; pending: number };
 }
 interface SavedField {
   field_key: string;
@@ -639,8 +637,8 @@ export function CatalogReview({ control }: { control: CatalogUpdateControl }) {
     draftsRef.current = next;
     setDrafts(next);
   }
-  const admitted = data?.counts?.admitted ?? data?.admitted_count,
-    pendingCount = data?.counts?.pending ?? data?.pending_count ?? data?.records.length;
+  const admitted = data?.counts.admitted,
+    pendingCount = data?.counts.pending;
   return (
     <section className="settings-panel catalog-review" id="catalog-record-review">
       <div className="catalog-panel-title">

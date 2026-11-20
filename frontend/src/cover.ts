@@ -5,7 +5,7 @@ import {
   loadGameUIManifest,
   resolveVersion,
 } from './coverAssets';
-import type { ImageAsset, NumberSet, ResolvedVersion } from './coverAssets';
+import type { ImageAsset, NumberSet } from './coverAssets';
 const PALETTE: Record<number, string> = {
   0: '#65b04b',
   1: '#e3a137',
@@ -37,7 +37,7 @@ const COVER_LAYOUTS: Record<CoverAspect, typeof COVER_LAYOUT_4_3> = {
   '16:9': COVER_LAYOUT_16_9,
   '4:3': COVER_LAYOUT_4_3,
 };
-export function getCoverLayout(aspect: CoverAspect = '16:9') {
+function getCoverLayout(aspect: CoverAspect = '16:9') {
   return COVER_LAYOUTS[aspect];
 }
 export interface CoverChart {
@@ -53,18 +53,14 @@ export interface CoverChart {
   constant: number | null;
   level: string;
   jp_release_version?: string | null;
-  jp_release_version_candidate?: string | null;
-  jp_release_provider?: string | null;
   release_status?: string;
 }
 export type CoverCombo = 'none' | 'ap' | 'app';
 interface CoverOptions {
   achievement: string;
-  combo?: CoverCombo;
+  combo: CoverCombo;
   versionOverride?: string;
   aspect?: CoverAspect;
-  backgroundUrl?: string;
-  versionLogoUrl?: string;
 }
 interface Bounds {
   role: string;
@@ -81,20 +77,15 @@ interface TitleLayout {
   text: string;
 }
 export interface CoverReceipt {
-  width: number;
-  height: number;
-  version: ResolvedVersion;
-  title: TitleLayout;
   bounds: Bounds[];
   notices: string[];
   gameAssets: string[];
   achievementStyle: 'sprite' | 'system_font';
-  constantStyle: 'styled_text';
 }
 const SANS =
   '"CoverNewRodin", "Arial", "Helvetica Neue", "PingFang SC", "Hiragino Sans", sans-serif';
 let coverFont: Promise<void> | undefined;
-export function loadCoverFont() {
+function loadCoverFont() {
   return (coverFont ??= new FontFace(
     'CoverNewRodin',
     'url("/cover-assets/game-ui/numbers/candidates/yuri-cn1.55/FOT-NewRodin%20Pro%20EB.otf")',
@@ -166,9 +157,9 @@ function wrapMeasured(ctx: CanvasRenderingContext2D, text: string, width: number
 function fitTitle(
   ctx: CanvasRenderingContext2D,
   text: string,
-  width = COVER_LAYOUT_4_3.title.width,
-  height = COVER_LAYOUT_4_3.title.height,
-  maxFontSize = 76,
+  width: number,
+  height: number,
+  maxFontSize: number,
 ): TitleLayout {
   const normalized = text.replace(/\s+/gu, ' ').trim() || '　';
   for (let size = maxFontSize; size >= 8; size--) {
@@ -439,16 +430,13 @@ export async function renderCover(
   const version = resolveVersion(chart, manifest, options.versionOverride);
   const notices: string[] = version.notice ? [version.notice] : [];
   const bgURL =
-    options.backgroundUrl ||
-    (version.asset?.status === 'ready' && version.asset.background_png
+    version.asset?.status === 'ready' && version.asset.background_png
       ? assetURL(version.asset.background_png)
-      : '');
-  const logoURL =
-    options.versionLogoUrl || (version.asset?.logo_file ? assetURL(version.asset.logo_file) : '');
+      : '';
+  const logoURL = version.asset?.logo_file ? assetURL(version.asset.logo_file) : '';
   const isUtage = chart.type === 'utage' || chart.difficulty_name.toUpperCase() === 'UTAGE';
   const typeKey = isUtage ? '' : chart.type === 'dx' ? 'dx' : 'standard';
-  const combo = options.combo ?? (Number(raw) === 101 ? 'app' : 'ap');
-  const apKey = combo === 'none' ? '' : combo;
+  const apKey = options.combo === 'none' ? '' : options.combo;
   const badgeKeys = [typeKey, apKey];
   const resources = new Map<string, HTMLImageElement>();
   const requests: Array<[string, string]> = [];
@@ -460,16 +448,15 @@ export async function renderCover(
   }
   const numberSet = ui?.number_sets?.achievement;
   const glyphImages = new Map<string, HTMLImageElement>();
-  for (const set of [numberSet])
-    if (set) {
-      const files = new Set(
-        [set.file, ...Object.values(set.glyphs).map((glyph) => glyph.file)].filter(
-          (file): file is string => !!file,
-        ),
-      );
-      for (const file of files)
-        requests.push(['numberFile:' + file, assetURL(file, GAME_UI_MANIFEST_URL)]);
-    }
+  if (numberSet) {
+    const files = new Set(
+      [numberSet.file, ...Object.values(numberSet.glyphs).map((glyph) => glyph.file)].filter(
+        (file): file is string => !!file,
+      ),
+    );
+    for (const file of files)
+      requests.push(['numberFile:' + file, assetURL(file, GAME_UI_MANIFEST_URL)]);
+  }
   await Promise.all(
     requests.map(async ([key, url]) => {
       try {
@@ -732,14 +719,9 @@ export async function renderCover(
   if (!output) throw new Error('浏览器不支持封面绘制');
   output.drawImage(surface, cropped ? 240 : 0, 0, canvas.width, 1080, 0, 0, canvas.width, 1080);
   return {
-    width: canvas.width,
-    height: canvas.height,
-    version,
-    title,
     bounds,
     notices: [...new Set(notices)],
     gameAssets,
     achievementStyle,
-    constantStyle: 'styled_text',
   };
 }

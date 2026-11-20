@@ -134,7 +134,9 @@ export function CompletionTable({
       exportController.current?.abort();
       exportController.current = null;
     };
-  }, [data, description, sort]);
+    // Filter changes remount this table (App clears the data first); a focus refresh only
+    // replaces `data`, which must not cancel an export or collapse the loaded rows.
+  }, [description, sort]);
   useEffect(
     () => () => {
       if (readyImage) URL.revokeObjectURL(readyImage.url);
@@ -143,7 +145,6 @@ export function CompletionTable({
   );
   const sentinel = useRef<HTMLDivElement>(null);
   const grouped = sort === 'constant_desc' || sort === 'constant_asc';
-  useEffect(() => setVisibleCount(batchSize), [data]);
   useEffect(() => {
     if (
       visibleCount >= data.items.length ||

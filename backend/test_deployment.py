@@ -76,7 +76,7 @@ class DeploymentTests(unittest.TestCase):
     def test_stale_claim_put_and_delete_cannot_overwrite_newer_record(self):
         with self.store.db() as conn:
             conn.execute("INSERT INTO venues VALUES(?,?,?)", ("newer", "fixture", ""))
-        key = "131:standard:3"
+        key = "131:3"
         path = f"/api/charts/{key}/ap-record"
         first = self.client.put(
             path, json={"expected_revision": 0, "request_id": "first", "venue": "newer"}
@@ -110,7 +110,7 @@ class DeploymentTests(unittest.TestCase):
                 "INSERT INTO venues VALUES(?,?,?)",
                 [(name, "fixture", "") for name in ("first", "second")],
             )
-        key = "131:standard:3"
+        key = "131:3"
         path = f"/api/charts/{key}/ap-record"
         barrier = threading.Barrier(2)
 
@@ -135,7 +135,7 @@ class DeploymentTests(unittest.TestCase):
             )
 
     def test_claim_revision_precondition_is_required_and_strict(self):
-        path = "/api/charts/30:standard:0/ap-record"
+        path = "/api/charts/30:0/ap-record"
         for payload in (
             {},
             {"expected_revision": -1},
@@ -147,14 +147,11 @@ class DeploymentTests(unittest.TestCase):
             )
         self.assertEqual(self.client.delete(path).status_code, 422)
 
-    def test_readiness_detects_missing_databases_while_health_remains_live(self):
+    def test_readiness_detects_missing_databases(self):
         with patch.dict(os.environ, {"MAIMAI_RELEASE_SHA": "synthetic-release"}):
-            self.assertEqual(
-                self.client.get("/api/health").json(),
-                {"ok": True, "release_sha": "synthetic-release"},
-            )
             response = self.client.get("/api/ready")
             self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["release_sha"], "synthetic-release")
             self.assertEqual(response.json()["checks"], {"catalog": True, "personal": True})
             self.assertEqual(response.headers["cache-control"], "no-store")
             for name, path in (
@@ -167,7 +164,6 @@ class DeploymentTests(unittest.TestCase):
                     response = self.client.get("/api/ready")
                     self.assertEqual(response.status_code, 503)
                     self.assertFalse(response.json()["checks"][name])
-                    self.assertEqual(self.client.get("/api/health").status_code, 200)
                     self.assertFalse(path.exists())
                 finally:
                     hidden.replace(path)

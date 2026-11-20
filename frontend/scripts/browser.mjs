@@ -2,7 +2,7 @@ import { chromium, webkit } from 'playwright';
 
 // Use Playwright's pinned Chromium by default, including in CI. An explicit
 // executable is useful for local diagnosis but is not the reproducible gate.
-export function launchBrowser({ softwareRendering = true } = {}) {
+export function launchBrowser() {
   const engine = process.env.PLAYWRIGHT_BROWSER || 'chromium';
   if (engine === 'webkit') return webkit.launch({ headless: true });
   if (engine !== 'chromium') throw new Error(`Unsupported browser engine: ${engine}`);
@@ -12,6 +12,6 @@ export function launchBrowser({ softwareRendering = true } = {}) {
     headless: true,
     ...(executablePath ? { executablePath } : {}),
     // Canvas strip/reference comparisons must use the same software renderer.
-    args: softwareRendering ? ['--disable-gpu'] : [],
+    args: ['--disable-gpu'],
   });
 }

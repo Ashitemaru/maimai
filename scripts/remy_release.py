@@ -121,8 +121,6 @@ def verified_remy(record: dict) -> bool:
 
 def manual_records(records) -> dict[str, dict]:
     """Only explicit final manual values protect a chart; source hints do not."""
-    if isinstance(records, dict):
-        records = records.values()
     return {
         record["chart_key"]: record
         for record in records or []
@@ -496,15 +494,10 @@ def run(
     if protected_records is None:
         compiled = catalog_dir / "catalog.json"
         document = read_json(compiled) if compiled.exists() else {}
-        if document.get("schema_version") == 2:
-            protected_records = [
-                {**chart, "chart_key": chart["legacy_chart_key"]}
-                for chart in document.get("charts", [])
-            ]
-        else:
-            protected_records = [
-                chart for song in document.get("songs", []) for chart in song.get("charts", [])
-            ]
+        protected_records = [
+            {**chart, "chart_key": chart["legacy_chart_key"]}
+            for chart in document.get("charts", [])
+        ]
         # A permanently chosen white-chart version may belong to a chart still
         # awaiting other field decisions, so it need not be in the formal catalog.
         decisions_path = catalog_dir / "catalog_adjudications.json"

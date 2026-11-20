@@ -11,7 +11,7 @@ npm run test:ci
 npm run verify:webkit
 ```
 
-`test:ci` runs the single-stylesheet check, TypeScript check, production build, UI regression, completion matrix, preference persistence UI, catalog review, completion image export, detail concurrency, mobile saving, and Master Key authentication tests. All gate suites create their own local server or intercept every request. They use generated catalogs, original synthetic SVG/PNG artwork, and system fonts. They do not read `data/`, call personal services, or write the user's database. Preferences/catalog writes and temporary image jobs are in-memory fixtures.
+`test:ci` runs the single-stylesheet check, TypeScript check, production build, UI regression, venue summary, venue map, completion matrix, preference persistence UI, catalog review, completion image export, detail concurrency, score sync, AP buffer, completion loading, mobile saving, Master Key authentication, and Bilibili publishing tests. All gate suites create their own local server or intercept every request. They use generated catalogs, original synthetic SVG/PNG artwork, and system fonts. They do not read `data/`, call personal services, or write the user's database. Preferences/catalog writes and temporary image jobs are in-memory fixtures.
 
 The cover UI check substitutes the proprietary cover font with a system font inside the test browser. It verifies rendering readiness, controls, and output dimensions, not the appearance of unpublished game assets. The completion export suite retains the exact per-pixel comparison between a 400-chart reference image and its concatenated strips, plus bounded-canvas checks through 5,600 charts. The PNG badge fixture is generated from RGBA pixels with Node’s built-in zlib so SVG rasterization caches cannot affect strip/reference comparisons. Browser scripts use `scripts/browser.mjs`, which defaults to Chromium with software rendering (`--disable-gpu`) for repeatable pixel comparisons. `verify:webkit` selects the actual Playwright WebKit engine for the mobile workflows listed below. Neither engine substitutes for physical iPhone acceptance.
 
@@ -33,7 +33,7 @@ On iPhone/iPad, image generation and saving are separate actions. The app keeps 
 
 `verify:detail-concurrency` checks out-of-order detail responses and revision conflicts using isolated in-memory records. `verify:mobile-export` checks touch viewports, gesture-bound single-file sharing, cancellation/fallback, manifest/icons, and asset recovery with injected browser APIs. Chromium emulation does not establish real iPhone Safari, iOS share-sheet, or installed-app session behavior; device acceptance remains a separate deployment check.
 
-`verify:webkit` runs the authentication, score sync, AP buffer, venue map, and mobile export suites in WebKit. It checks cookie session restoration after refresh, actual `jsQR` screenshot decoding, resuming a server-side sync job after reload, venue selection and record locking, touch input on the map, and downloading the complete PNG with an exact content hash. The cover checks include prefilled achievements and AP/AP+ status, no inferred AP from a high score, missing-score handling, and editable historical values. The share API remains an injected test double, so these tests do not certify the native iOS share sheet, Photos saving, multi-finger gestures, or installed-app lifecycle. Those physical-device checks are deferred by the user. The engine version, limitations, suite results, and screenshots are recorded under `../output/webkit-audit`.
+`verify:webkit` runs the authentication, AP buffer, venue map, mobile export, and Bilibili publishing suites in WebKit. It checks cookie session restoration after refresh, venue selection and record locking, touch input on the map, and downloading the complete PNG with an exact content hash. The cover checks include prefilled achievements and AP/AP+ status, no inferred AP from a high score, missing-score handling, and editable historical values. The share API remains an injected test double, so these tests do not certify the native iOS share sheet, Photos saving, multi-finger gestures, or installed-app lifecycle. Those physical-device checks are deferred by the user. The engine version, limitations, suite results, and screenshots are recorded under `../output/webkit-audit`.
 
 ## Master Key entry
 
@@ -50,8 +50,8 @@ performed. The AP buffer regression verifies empty initial venue selection, choo
 
 ## Game score sync
 
-`verify:score-sync` checks that the settings page offers only the Diving-Fish panel,
-that sync stays disabled until a token is saved, and that a manual sync polls to
+`verify:score-sync` checks that Diving-Fish sync stays disabled until a token is
+saved, and that a manual sync polls to
 completion, refreshes data and shows its receipt. It also covers failed jobs, refused
-starts and status-load retries. The fixture makes no requests to Diving-Fish. Reports and 390px/desktop screenshots are saved under
+starts and status-load retries. The fixture makes no requests to Diving-Fish. Reports and a 390px screenshot are saved under
 `../output/score-sync-audit`.

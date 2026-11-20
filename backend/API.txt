@@ -4,7 +4,6 @@ Production uses HTTPS and one Master Key. POST /api/auth/login {master_key} crea
 a Secure, HttpOnly session cookie; GET /api/auth/session reports authentication;
 POST /api/auth/logout revokes the session. Personal APIs require authentication.
 
-GET /api/health -> {ok, release_sha}
 GET /api/ready -> {ok, release_sha, checks:{catalog,personal}}; HTTP 503 unless every check
   passes. The deployer waits for ok with the expected release_sha before finishing.
 GET /api/completion-table?<chart filters>&sort -> {items,total,summary,generated_at}
@@ -34,16 +33,15 @@ POST /api/catalog/remy/retry -> HTTP 202, retries Japanese chart-release researc
   No request body. A concurrent job returns HTTP 409; invalid operation -> HTTP 422.
   Jobs are owned by app.state.catalog_updates and closed on application shutdown.
   Public catalog updates do not replace the personal SQLite database.
-GET /api/catalog/data -> active catalog.json, Cache-Control: no-store
 GET /api/summary?group=all|low|high|catalog
-  -> {total,complete,ap,remaining,conflicts,legacy_complete,groups:{low,high,catalog},
+  -> {total,complete,ap,remaining,conflicts,legacy_complete,
       levels:[{level,total,complete,ap,remaining,conflicts}],
-      constants:[{constant,total,complete,ap,remaining,conflicts}],sync,import_info}
+      constants:[{constant,total,complete,ap,remaining,conflicts}],sync}
   Default summary totals include every current non-Utage catalog chart, including
-  newly added charts outside the original TSV. import_info remains the import receipt.
+  newly added charts outside the original TSV.
   Accepts the same q, difficulty, type, status, constant_min, constant_max, level,
   venue and version filters as /api/charts. Totals, levels and constants reflect all
-  active filters; groups remain the unfiltered global group counts.
+  active filters.
 GET /api/chart-filters?group=all|low|high|catalog
   -> {levels:[string],constants:[number],versions:[{value:string,label:string}]}
   Options cover the full group regardless of active chart filters. Levels/constants
@@ -147,9 +145,7 @@ Provider-confirmed AP counts even if a required venue is missing (venue_pending)
 Confirmed AP evidence survives later missing/reduced scores; an actual non-AP
 response is surfaced for review. A recorded venue cannot be replaced through a
 new pending claim. Venues come only from the user's records.
-score_sync_sources ties each immutable sync_id to its source; old sync history is
-migrated as divingfish. Account hashes are private. Personal chart fields remain
-separate from catalog metadata, and optional upload receipts never alter AP evidence.
+Personal chart fields remain separate from catalog metadata, and optional upload receipts never alter AP evidence.
 Provider exact achievement is not auto-confirmed for covers (account score masks may apply).
 
 GET /jackets/{song_id}.png -> active snapshot image, falling back to base catalog cache
@@ -177,7 +173,7 @@ Import source path defaults ~/Downloads; override MAIMAI_IMPORT_DIR before first
 The backend binds loopback behind the authenticated HTTPS deployment; see deploy/README.md.
 
 Catalog adjudication (independent of personal AP records):
-GET /api/catalog/data -> schema_version=2, charts[] (no songs[]), counts={total,admitted,pending,...}.
+Published catalog.json: schema_version=2, charts[] (no songs[]), counts={total,admitted,pending,...}.
   Canonical ID = LXNS ID for STD/UTAGE, LXNS ID + 10000 for DX.
   Primary key = (id,difficulty). Pending chart entries are not returned here.
 GET /api/catalog/records/review -> {revision,decision_revision,applied_decision_revision,
@@ -199,10 +195,6 @@ POST /api/catalog/records/decisions/batch -> CatalogUpdateState (202)
   Version/date stay paired. Server resolves values/evidence from submitted option IDs.
   Selected values persist through source changes/rebuilds until explicit revoke.
   Failed publication keeps prior snapshot and saved decisions; decisions_pending=true.
-POST /api/catalog/records/decisions -> CatalogUpdateState (202)
-  {base_catalog_revision,base_decision_revision,id,difficulty,
-   choices:[{field_key,option_id}],note?}
-  Compatibility endpoint; delegates to the same batch implementation with one record.
 GET /api/catalog/records/decisions -> {revision,decision_revision,decisions_pending,records}
   Independent saved manual choices, grouped by chart; includes missing-source records.
 POST /api/catalog/records/decisions/revoke -> CatalogUpdateState (202)
@@ -210,8 +202,8 @@ POST /api/catalog/records/decisions/revoke -> CatalogUpdateState (202)
   Omit field_keys to revoke all fields for this chart; otherwise revoke the selected fields.
   Revocation restores comparison and may withdraw the entire chart to pending admission.
 POST /api/catalog/decisions/reapply -> CatalogUpdateState (202), no network.
-GET /api/catalog/decisions/history?object_key=&limit=100 -> {items:[events]}
-  Events include original value, revision, timestamp and batch_id; revoke retains history.
+Every save/revoke appends an audit event (original value, revision, timestamp, batch_id)
+in adjudications.sqlite3; revoke retains history.
 State includes decision_revision,applied_decision_revision,decisions_pending.
 Personal records for pending charts remain stored and can reattach after admission.
 
@@ -222,14 +214,14 @@ GET /api/bilibili/login/{login_id} -> {state,account?}
 DELETE /api/bilibili/session -> removes the locally saved Bilibili session.
 GET /api/bilibili/videos?page=1
   -> {items,has_more,page,collections:[{id,title,sections:[{id,title}]}],unavailable_collections}
-  Only members of the signed-in account's handplay collections named
-  "maimai <level> AP" (for example maimai 13+ AP). Video titles are not filters.
-  Reads complete collection membership, deduplicates, sorts newest first and then
-  paginates 20 items. Incomplete upstream results fail instead of listing all uploads.
-  A collection the public listing refuses (draft/under review) is skipped and named in
+  Lists every upload of the signed-in account, including ones still in review. Each item
+  has organized=true when it is already a member of a handplay collection named
+  "maimai <level> AP" (for example maimai 13+ AP). Unorganized uploads come first, then
+  newest first; 20 items per page. Incomplete upstream results fail. A collection the
+  public listing refuses (draft/under review) is skipped and named in
   unavailable_collections. Page 1 re-reads B 站; later pages reuse that snapshot for
   up to 5 minutes. Applying a publishing job clears the snapshot.
-GET /api/bilibili/videos/{bvid} -> existing title, both covers and revision.
+GET /api/bilibili/videos/{bvid} -> existing title, both covers, revision and mirror_horizontal.
   Explicitly loading an owned BV remains available for new, uncollected handplays.
 GET /api/bilibili/collections/order -> {checked_at,sections:[OrderReport]}
   Explicit read-only inspection of all owned collection sections. Each OrderReport
@@ -243,7 +235,7 @@ GET /api/bilibili/collections/order -> {checked_at,sections:[OrderReport]}
   retain their relative order. Re:MASTER uses its own release and PLUS stays separate.
 POST /api/bilibili/prepare
   {bvid,chart_key,achievement,combo,constant,section_id,mirror_horizontal?,
-   title_override?,include_type?,version_override?} -> frozen plan with plan_id.
+   version_override?} -> frozen plan with plan_id.
   The score is supplied explicitly for this video; a current personal best is never
   substituted. Plans expire after one hour. Existing STD/DX suffixes, Utage notation
   and the historical mirrored-title exception are preserved by default.

@@ -43,7 +43,6 @@ class JacketPreviewTests(unittest.TestCase):
             os.environ,
             {
                 "MAIMAI_ENV": "test",
-                "MAIMAI_AUTH_DISABLED": "0",
                 "MAIMAI_MASTER_KEY_HASH": MASTER_KEY_HASH,
                 "MAIMAI_ASSETS_DIR": str(self.assets),
                 "MAIMAI_FRONTEND_DIR": str(frontend),
@@ -154,19 +153,15 @@ class JacketPreviewTests(unittest.TestCase):
         for path in paths:
             response = self.client.get(path)
             self.assertEqual(response.headers["cache-control"], "no-store")
-            item = next(
-                item for item in response.json()["items"] if item["chart_key"] == "22:standard:4"
-            )
+            item = next(item for item in response.json()["items"] if item["chart_key"] == "22:4")
             self.assertEqual((item["thumbnail_url"], item["jacket_url"]), (url, "/jackets/22.png"))
-        detail = self.client.get("/api/charts/22:standard:4").json()
+        detail = self.client.get("/api/charts/22:4").json()
         self.assertEqual(detail["thumbnail_url"], url)
         with self.store.db() as conn:
-            conn.execute("DELETE FROM legacy WHERE chart_key='22:standard:4'")
+            conn.execute("DELETE FROM legacy WHERE chart_key='22:4'")
             conn.execute("INSERT INTO venues VALUES(?,?,?)", ("Fixture venue", "fixture", ""))
         body = {"venue": "Fixture venue", "request_id": "thumbnail-test", "expected_revision": 0}
-        self.assertEqual(
-            self.client.put("/api/charts/22:standard:4/ap-record", json=body).status_code, 200
-        )
+        self.assertEqual(self.client.put("/api/charts/22:4/ap-record", json=body).status_code, 200)
         pending = self.client.get("/api/ap-records")
         self.assertEqual(pending.headers["cache-control"], "no-store")
         self.assertEqual(pending.json()["items"][0]["thumbnail_url"], url)

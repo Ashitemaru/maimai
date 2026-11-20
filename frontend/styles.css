@@ -858,10 +858,6 @@ textarea {
   color: var(--muted);
   background: #edf1f5;
 }
-.badge.warning {
-  color: var(--warning);
-  background: var(--warning-soft);
-}
 .badge svg {
   width: 14px;
   height: 14px;
@@ -886,7 +882,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-3) var(--panel-padding);
+  padding: var(--space-3) 0 0;
   color: var(--muted);
   font-size: var(--font-sm);
 }
@@ -2117,9 +2113,6 @@ textarea {
 }
 .record-saved-table th:last-child {
   width: 80px;
-}
-.review-pager {
-  padding: var(--space-3) 0 0;
 }
 .record-batch-actions {
   display: flex;
@@ -3516,9 +3509,6 @@ textarea {
   gap: var(--space-4);
   margin-bottom: var(--space-4);
 }
-.score-token-form {
-  margin-top: var(--space-4);
-}
 .score-sync-progress,
 .score-sync-counts {
   display: flex;
@@ -3542,6 +3532,7 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 .score-token-form {
+  margin-top: var(--space-4);
   padding-top: var(--space-4);
   border-top: 1px solid var(--line);
 }

@@ -17,11 +17,9 @@ interface Row {
 }
 interface ExportLayout {
   rows: Row[];
-  logicalHeight: number;
   width: number;
   height: number;
   tileSize: number;
-  columns: number;
 }
 interface ExportStrip {
   rows: Row[];
@@ -104,11 +102,9 @@ function layoutImage(items: CompletionChart[], grouped: boolean): ExportLayout {
   if (height > MAX_HEIGHT) throw new Error('完成表高度超过 200000 像素，请缩小筛选范围');
   return {
     rows,
-    logicalHeight,
     width: WIDTH * OUTPUT_SCALE,
     height,
     tileSize: TILE,
-    columns: COLUMNS,
   };
 }
 

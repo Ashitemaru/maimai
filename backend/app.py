@@ -240,11 +240,6 @@ class CatalogRecordChoicesInput(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
-class CatalogRecordDecisionInput(CatalogRecordChoicesInput):
-    base_catalog_revision: str = Field(min_length=1, max_length=150)
-    base_decision_revision: int = Field(ge=0)
-
-
 class CatalogRecordBatchInput(BaseModel):
     model_config = {"extra": "forbid"}
     base_catalog_revision: str = Field(min_length=1, max_length=150)
@@ -464,10 +459,6 @@ def create_app(store=None, updater=None):
 
         return [c for c in items if matches(c)]
 
-    @app.get("/api/health")
-    def health():
-        return {"ok": True, "release_sha": os.environ.get("MAIMAI_RELEASE_SHA", "development")}
-
     @app.get("/api/ready")
     def ready():
         checks = store.readiness()
@@ -521,10 +512,6 @@ def create_app(store=None, updater=None):
     def catalog_record_review():
         return updater.record_review()
 
-    @app.post("/api/catalog/records/decisions", status_code=202)
-    def catalog_record_decide(value: CatalogRecordDecisionInput):
-        return begin_catalog_operation(lambda: updater.decide_record(value.model_dump()))
-
     @app.post("/api/catalog/records/decisions/batch", status_code=202)
     def catalog_records_decide(value: CatalogRecordBatchInput):
         return begin_catalog_operation(lambda: updater.decide_records(value.model_dump()))
@@ -541,19 +528,6 @@ def create_app(store=None, updater=None):
     def reapply_catalog_decisions():
         return begin_catalog_operation(updater.reapply_decisions)
 
-    @app.get("/api/catalog/decisions/history")
-    def catalog_decision_history(
-        object_key: str | None = None, limit: int = Query(default=100, ge=1, le=500)
-    ):
-        return {"items": updater.decisions.history(object_key, limit)}
-
-    @app.get("/api/catalog/data")
-    def catalog_data():
-        path = store.catalog_directory() / "catalog.json"
-        if not path.is_file():
-            raise HTTPException(404, "曲库数据不存在")
-        return FileResponse(path, media_type="application/json")
-
     def selection_summary(items):
         result = summarize(items)
         result["levels"] = [
@@ -569,18 +543,7 @@ def create_app(store=None, updater=None):
 
     @app.get("/api/summary")
     def summary(filters: dict = Depends(chart_filters)):
-        all_items = store.all_charts()
-        items = filtered(all_items, **filters)
-        result = selection_summary(items)
-        result["groups"] = {
-            g: summarize([c for c in all_items if c["group"] == g])
-            for g in ("low", "high", "catalog")
-        }
-        imported = store.meta("import")
-        result["import_info"] = {
-            k: imported[k] for k in ("imported_at", "total", "legacy_complete", "groups", "note")
-        }
-        return result
+        return selection_summary(filtered(store.all_charts(), **filters))
 
     @app.get("/api/chart-filters")
     def filter_options(group: Literal["all", "low", "high", "catalog"] = "all"):

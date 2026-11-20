@@ -105,9 +105,7 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
     writing.current = true;
     setStarting(true);
     generation.current += 1;
-    let submitted = false;
     try {
-      submitted = true;
       const job = await api<ScoreSyncJob>('/sync/divingfish', { method: 'POST' });
       observedJobs.current.add(job.id);
       if (current.current) accept({ ...current.current, job });
@@ -116,7 +114,7 @@ export function useScoreSync(onChanged: () => Promise<void>, notify: (message: s
     } catch (error) {
       if (active.current) notify(messageOf(error));
       // A lost response does not imply that the server stopped the job.
-      if (submitted) await reload();
+      await reload();
       return false;
     } finally {
       writing.current = false;

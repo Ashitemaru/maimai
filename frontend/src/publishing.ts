@@ -9,9 +9,6 @@ export interface PublishingVideo {
   bvid: string;
   title: string;
   cover: string;
-  created_at?: string;
-  cover43?: string;
-  revision?: string;
   mirror_horizontal?: boolean;
   organized?: boolean;
 }
@@ -60,7 +57,6 @@ export interface PublishingPlan {
   version_override?: string;
   section_id: number;
   section_title?: string;
-  expires_at: string;
   order?: PublishingOrder;
 }
 export interface PublishingJob {

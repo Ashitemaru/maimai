@@ -39,15 +39,12 @@ interface GameUIManifest {
 interface VersionChart {
   difficulty_index: number;
   jp_release_version?: string | null;
-  jp_release_version_candidate?: string | null;
-  jp_release_provider?: string | null;
   release_status?: string;
 }
 export interface ResolvedVersion {
   key: string | null;
   asset: VersionAsset | null;
   notice: string;
-  source: 'verified' | 'arcade_songs' | 'manual' | 'unresolved';
   versionName?: string;
 }
 let backgrounds: Promise<BackgroundManifest> | undefined;
@@ -96,16 +93,7 @@ export function resolveVersion(
   override = '',
 ): ResolvedVersion {
   const value = override || chart.jp_release_version || '';
-  const source: ResolvedVersion['source'] =
-    override || chart.jp_release_provider === 'manual'
-      ? 'manual'
-      : !value
-        ? 'unresolved'
-        : chart.jp_release_provider === 'arcade_songs'
-          ? 'arcade_songs'
-          : 'verified';
-  if (!value)
-    return { key: null, asset: null, source: 'unresolved', notice: '谱面版本待核实，请选择版本' };
+  if (!value) return { key: null, asset: null, notice: '谱面版本待核实，请选择版本' };
   const normalized = normalizeVersion(value);
   const entry = Object.entries(manifest.version_map).find(
     ([key, asset]) =>
@@ -119,11 +107,10 @@ export function resolveVersion(
     return {
       key: null,
       asset: null,
-      source,
       versionName: value,
       notice: [...notices, `${value} 的版本素材尚未收录`].join(' · '),
     };
   const [key, asset] = entry;
   if (asset.status !== 'ready' || !asset.background_png) notices.push('这个版本的底图尚未就绪');
-  return { key, asset, source, versionName: value, notice: notices.join(' · ') };
+  return { key, asset, versionName: value, notice: notices.join(' · ') };
 }

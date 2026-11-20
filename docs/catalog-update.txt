@@ -24,17 +24,16 @@
 
 整张谱面裁决
 GET /api/catalog/records/review：返回待入库 chart、全部差异字段和入库计数。
-POST /api/catalog/records/decisions：
-  {id,difficulty,choices:[{field_key,option_id}],base_catalog_revision,base_decision_revision}
-请求必须包含这张谱面全部必选差异。任一值非法、缺字段、跨 chart 或陈旧时整批不写。
+POST /api/catalog/records/decisions/batch：
+  {base_catalog_revision,base_decision_revision,records:[{id,difficulty,choices:[{field_key,option_id}]}]}
+每张谱面必须包含全部必选差异。任一值非法、缺字段、跨 chart 或陈旧时整批不写。
 两份修订号用来拒绝陈旧页面提交（409）；不会让历史人工选择失效。
-后端核对选项真实值与出处，在一个 SQLite 事务保存整条选择，再重建一次。
+后端核对选项真实值与出处，在一个 SQLite 事务保存整批选择，再重建一次。
 正式库只在构建校验成功后切换。构建失败时选择仍保留，并显示已保存待应用；可以重试。
 GET /api/catalog/records/decisions：独立查看人工记录。
 POST /api/catalog/records/decisions/revoke：同样传 id/difficulty 与两个修订号；
 可传 field_keys 撤销部分字段，省略则撤销整张。
 POST /api/catalog/decisions/reapply：将已保存决定重新构建发布。
-旧单对象/身份/逐字段版本写接口已停用，不能绕过整条准入。
 无“当前值”“推荐值”列，无默认选择；同一字段的来源值使用单选，整条确认合并。
 封面临时版本选择仅影响图片，不写曲库裁决。
 
@@ -48,7 +47,7 @@ Remy
 固定规则解析明确的日服追加版本、日期和 Re:MASTER 列；歧义进入裁决，不调用 LLM。
 保存 URL/revision/原始行/HTML/SHA，优先缓存后联网。
 串行至少 60 秒间隔、默认 8 次预算、30 秒超时；403/验证冷却 24 小时，429 至少一小时。
-默认补缺，“重新核对”才请求全量复核；未知页面结构或新版本不猜测。
+只补缺失的白谱版本证据；未知页面结构或新版本不猜测。
 缺证据允许先发布国服库；矛盾必须裁决，人工已选的字段不会因复核重新报冲突。
 
 磁盘
@@ -60,14 +59,6 @@ Remy
 更新写入使用临时文件 replace，不原地截断共享硬链接。
 发布前检查任务代次和裁决修订号，防止旧异步任务覆盖新决定。
 服务器重启不自动联网。个人数据不随快照回退。
-
-schema 1 升级
-先备份原始快照、个人数据库和裁决数据库；停止旧服务。
-显式执行 CatalogUpdates.migrate_legacy_decisions()：旧选择展开到对应 chart 字段，
-旧完整决定保存在迁移审计事件；不能恢复明确选值时中止，不丢弃或猜测。
-调用 reapply_decisions() 重建正式库，仅准入无未决差异的 chart，再部署新前端并启动服务。
-Store 事务迁移个人表旧 chart_key 为新两段键，保留所有记录内容（包括待入库谱面）。
-旧快照和升级备份保留作审计；新曲库不是直接沿用旧库中的已接受值。
 
 验证
 .venv/bin/python scripts/test_python.py   # 断网隔离运行全部 Python 测试

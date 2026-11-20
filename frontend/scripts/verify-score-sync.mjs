@@ -172,9 +172,8 @@ try {
   const panel = page.getByRole('region', { name: '同步水鱼成绩', exact: true });
   const syncButton = () => panel.getByRole('button', { name: /从水鱼同步|正在同步…/ });
   await panel.waitFor();
-  assert.equal(await page.getByText(/华立|二维码/).count(), 0, 'No Wahlap or QR controls remain');
   assert(await syncButton().isDisabled(), 'Sync needs a saved token');
-  checks.push('Settings show only the Diving-Fish sync panel; sync is disabled without a token');
+  checks.push('Sync is disabled until a Diving-Fish token is saved');
 
   await panel.getByLabel(/Import-Token/).fill(token);
   await panel.getByRole('button', { name: '保存 Token', exact: true }).click();

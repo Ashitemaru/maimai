@@ -49,10 +49,6 @@ class FakeUpdater:
     def record_review(self):
         return {"records": [], "revision": "r1", "decision_revision": 0}
 
-    def decide_record(self, value):
-        self.last_record = value
-        return self.operation("record-decision")
-
     def decide_records(self, value):
         self.last_records = value
         return self.operation("record-batch")
@@ -87,7 +83,7 @@ class AppTests(unittest.TestCase):
 
     def test_venue_summary_is_a_personal_no_store_read(self):
         self.add_venue("【测试】新机厅")
-        saved = self.put_record("131:standard:3", json={"venue": "【测试】新机厅"})
+        saved = self.put_record("131:3", json={"venue": "【测试】新机厅"})
         self.assertEqual(saved.status_code, 200)
         charts = [
             {"venue": "【测试】机厅", "is_ap": True, "level": "13+"},
@@ -105,7 +101,7 @@ class AppTests(unittest.TestCase):
 
     def test_venue_summary_keeps_pending_when_chart_leaves_catalog(self):
         self.add_venue("【测试】待核准机厅")
-        saved = self.put_record("131:standard:3", json={"venue": "【测试】待核准机厅"})
+        saved = self.put_record("131:3", json={"venue": "【测试】待核准机厅"})
         self.assertEqual(saved.status_code, 200)
         with patch.object(self.store, "all_charts", return_value=[]):
             result = self.client.get("/api/venues/summary").json()
@@ -132,7 +128,7 @@ class AppTests(unittest.TestCase):
 
     def fixture_chart(self, song_id, **changes):
         chart = {
-            **self.store.chart("22:standard:4"),
+            **self.store.chart("22:4"),
             "song_id": song_id,
             "divingfish_id": song_id,
             "title": f"Test {song_id}",
@@ -303,8 +299,6 @@ class AppTests(unittest.TestCase):
             self.assertEqual(listing["total"], summary["total"])
             for key, value in summarize(listing["items"]).items():
                 self.assertEqual(summary[key], value)
-            self.assertEqual(summary["groups"]["high"]["total"], 10)
-            self.assertEqual(summary["groups"]["low"]["total"], 1)
             self.assertEqual([(v["level"], v["total"]) for v in summary["levels"]], [("13", 1)])
             self.assertEqual(
                 [(v["constant"], v["total"]) for v in summary["constants"]], [(13.3, 1)]
@@ -557,7 +551,7 @@ class AppTests(unittest.TestCase):
             {"version": 25500, "title": "舞萌DX 2026"},
         ]
         catalog = ChartIndex(versions_cn=versions)
-        base = self.store.catalog["22:standard:4"]
+        base = self.store.catalog["22:4"]
         raw_versions = [
             19999,
             20000,
@@ -576,23 +570,23 @@ class AppTests(unittest.TestCase):
         ]
         for offset, raw in enumerate(raw_versions):
             ident = 90001 + offset
-            key = f"{ident}:standard:3"
+            key = f"{ident}:3"
             catalog[key] = dict(
                 base,
                 chart_key=key,
                 song_id=ident,
                 difficulty_index=3,
                 title=f"CN fixture {ident}",
-                api_version=raw,
+                cn_version=raw,
                 jp_release_version="PiNK",
                 _search=f"cn fixture {ident}",
             )
         # The same song's Re:MASTER has its own CN release, independent of JP.
-        catalog["90002:standard:4"] = dict(
-            catalog["90002:standard:3"],
-            chart_key="90002:standard:4",
+        catalog["90002:4"] = dict(
+            catalog["90002:3"],
+            chart_key="90002:4",
             difficulty_index=4,
-            api_version=25504,
+            cn_version=25504,
             jp_release_version="PRiSM",
         )
         self.store.install_catalog((catalog, {}))
@@ -610,14 +604,14 @@ class AppTests(unittest.TestCase):
             ],
         )
         for version, keys in [
-            (19900, ["90001:standard:3"]),
-            (20000, ["90002:standard:3", "90003:standard:3", "90004:standard:3"]),
-            (21000, ["90005:standard:3"]),
-            (24000, ["90006:standard:3", "90007:standard:3"]),
-            (25000, ["90008:standard:3", "90009:standard:3"]),
+            (19900, ["90001:3"]),
+            (20000, ["90002:3", "90003:3", "90004:3"]),
+            (21000, ["90005:3"]),
+            (24000, ["90006:3", "90007:3"]),
+            (25000, ["90008:3", "90009:3"]),
             (
                 25500,
-                ["90002:standard:4", "90010:standard:3", "90011:standard:3", "90012:standard:3"],
+                ["90002:4", "90010:3", "90011:3", "90012:3"],
             ),
             (20100, []),
             (26000, []),
@@ -649,7 +643,7 @@ class AppTests(unittest.TestCase):
             ],
             0,
         )
-        chart = self.client.get("/api/charts/90002:standard:4").json()
+        chart = self.client.get("/api/charts/90002:4").json()
         self.assertEqual(chart["cn_version"], 25504)
         self.assertEqual(chart["jp_release_version"], "PRiSM")
         self.assertNotIn("_cn_version_group", chart)
@@ -671,32 +665,36 @@ class AppTests(unittest.TestCase):
             conn.execute(
                 "UPDATE metadata SET value_json=? WHERE key='versions_cn'", (json.dumps(metadata),)
             )
-            conn.execute("UPDATE charts SET api_version=25504 WHERE chart_key='22:standard:4'")
+            conn.execute(
+                "UPDATE charts SET data_json=json_set(data_json,'$.cn_version',25504) "
+                "WHERE id=22 AND difficulty=4"
+            )
         loaded = self.store.load_catalog(snapshot)
         expected = [{"value": "20000", "label": "DX"}, {"value": "25500", "label": "DX2026"}]
         self.assertIs(self.store._catalog_snapshot, old)
         self.store.install_catalog(loaded)
         captured = self.store.all_charts()
         self.assertEqual(self.client.get("/api/chart-filters").json()["cn_versions"], expected)
-        self.assertEqual(self.client.get("/api/charts/22:standard:4").json()["cn_version"], 25504)
+        self.assertEqual(self.client.get("/api/charts/22:4").json()["cn_version"], 25504)
         # Changing files without publishing cannot change request-time metadata.
         with closing(sqlite3.connect(snapshot / "catalog.sqlite")) as conn, conn:
             conn.execute("DELETE FROM metadata WHERE key='versions_cn'")
-            conn.execute("UPDATE charts SET api_version=20000 WHERE chart_key='22:standard:4'")
+            conn.execute(
+                "UPDATE charts SET data_json=json_set(data_json,'$.cn_version',20000) "
+                "WHERE id=22 AND difficulty=4"
+            )
         self.assertEqual(self.client.get("/api/chart-filters").json()["cn_versions"], expected)
-        self.assertEqual(self.client.get("/api/charts/22:standard:4").json()["cn_version"], 25504)
+        self.assertEqual(self.client.get("/api/charts/22:4").json()["cn_version"], 25504)
         self.store.install_catalog(self.store.load_catalog(snapshot))
         self.assertEqual(self.client.get("/api/chart-filters").json()["cn_versions"], [])
         self.assertEqual(
             self.client.get("/api/charts", params={"cn_version": 20000}).json()["total"], 0
         )
-        self.assertEqual(self.client.get("/api/charts/22:standard:4").json()["cn_version"], 20000)
+        self.assertEqual(self.client.get("/api/charts/22:4").json()["cn_version"], 20000)
         # A reader already holding rows also retains that snapshot's version menu.
         with patch.object(self.store, "all_charts", return_value=captured):
             self.assertEqual(self.client.get("/api/chart-filters").json()["cn_versions"], expected)
-            self.assertEqual(
-                self.client.get("/api/charts/22:standard:4").json()["cn_version"], 25504
-            )
+            self.assertEqual(self.client.get("/api/charts/22:4").json()["cn_version"], 25504)
 
     def test_chart_schema_reads_chart_cn_version_from_same_sqlite_metadata(self):
         directory = Path(self.tmp.name) / "chart-schema"
@@ -720,7 +718,7 @@ class AppTests(unittest.TestCase):
             )
             for difficulty, version in ((3, 25004), (4, 25504)):
                 chart = dict(
-                    self.store.catalog["22:standard:4"],
+                    self.store.catalog["22:4"],
                     id=90001,
                     difficulty=difficulty,
                     cn_version=version,
@@ -740,62 +738,28 @@ class AppTests(unittest.TestCase):
             self.assertEqual([c["chart_key"] for c in listing["items"]], [f"90001:{difficulty}"])
             self.assertEqual(listing["items"][0]["cn_version"], version + 4)
 
-    def test_decision_reapply_route_rejects_cross_origin(self):
-        self.assertEqual(
-            self.client.post(
-                "/api/catalog/decisions/reapply",
-                headers={"Origin": "https://external.example"},
-            ).status_code,
-            403,
-        )
-        self.assertEqual(self.client.post("/api/catalog/decisions/reapply").status_code, 202)
-
-    def test_chart_decision_api_validates_primary_key_complete_payload_and_origin(self):
+    def test_chart_decision_reads_and_revoke_api_validate_payload_and_origin(self):
         self.assertEqual(self.client.get("/api/catalog/records/review").json()["records"], [])
         self.assertEqual(self.client.get("/api/catalog/records/decisions").json()["records"], [])
-        payload = {
+        revoke = {
             "base_catalog_revision": "r1",
             "base_decision_revision": 0,
             "id": 10001,
             "difficulty": 3,
-            "choices": [
-                {"field_key": "artist", "option_id": "artist-a"},
-                {"field_key": "constant", "option_id": "constant-b"},
-            ],
         }
-        response = self.client.post("/api/catalog/records/decisions", json=payload)
-        self.assertEqual(response.status_code, 202, response.text)
-        self.assertEqual(len(self.updater.last_record["choices"]), 2)
-        self.assertEqual(self.updater.last_record["id"], 10001)
-        for wrong in [
-            payload | {"id": 0},
-            payload | {"difficulty": 5},
-            payload | {"unexpected": True},
-            payload | {"song_id": 1},
-            payload | {"identity_choices": []},
-            payload | {"choices": []},
-            payload
-            | {"choices": [{"field_key": "artist", "action": "select", "option_id": "artist-a"}]},
-            payload | {"choices": [{"field_key": "artist", "value": "forged"}]},
-        ]:
+        for wrong in (revoke | {"id": 0}, revoke | {"difficulty": 5}, revoke | {"extra": True}):
             self.assertEqual(
-                self.client.post("/api/catalog/records/decisions", json=wrong).status_code, 422
+                self.client.post("/api/catalog/records/decisions/revoke", json=wrong).status_code,
+                422,
             )
-        self.assertEqual(self.updater.calls.count("record-decision"), 1)
-        self.updater.error = StaleDecisionError("stale")
-        self.assertEqual(
-            self.client.post("/api/catalog/records/decisions", json=payload).status_code, 409
-        )
-        self.updater.error = None
         self.assertEqual(
             self.client.post(
-                "/api/catalog/records/decisions",
-                json=payload,
+                "/api/catalog/records/decisions/revoke",
+                json=revoke,
                 headers={"Origin": "https://external.example"},
             ).status_code,
             403,
         )
-        revoke = {key: value for key, value in payload.items() if key != "choices"}
         self.assertEqual(
             self.client.post("/api/catalog/records/decisions/revoke", json=revoke).status_code, 202
         )
@@ -879,20 +843,21 @@ class AppTests(unittest.TestCase):
         self.assertEqual(
             (data["total"], data["complete"], data["ap"]), (CHART_COUNT, LEGACY_COMPLETE, 0)
         )
-        self.assertEqual(data["groups"]["low"]["total"], LOW_COUNT)
-        self.assertEqual(data["groups"]["high"]["complete"], HIGH_COMPLETE)
-        self.assertEqual(self.store.chart("1422:dx:0")["display_title"], "（空白曲名）")
+        imported = self.store.meta("import")
+        self.assertEqual(imported["total"], IMPORTED_COUNT)
+        self.assertEqual(imported["groups"]["low"]["total"], LOW_COUNT)
+        self.assertEqual(imported["groups"]["high"]["complete"], HIGH_COMPLETE)
+        self.assertEqual(self.store.chart("11422:0")["display_title"], "（空白曲名）")
         with self.store.db() as conn:
             labels = dict(
                 conn.execute(
-                    "SELECT chart_key,label FROM legacy WHERE chart_key IN ('131:standard:3','383:standard:3')"
+                    "SELECT chart_key,label FROM legacy WHERE chart_key IN ('131:3','383:3')"
                 )
             )
-        self.assertEqual(labels["131:standard:3"], "[MAS, SD] Link")
-        self.assertEqual(labels["383:standard:3"], "[MAS, SD] Link(CoF)")
+        self.assertEqual(labels["131:3"], "[MAS, SD] Link")
+        self.assertEqual(labels["383:3"], "[MAS, SD] Link(CoF)")
         self.assertEqual(sum(x["total"] for x in data["levels"]), CHART_COUNT)
         self.assertEqual(sum(x["complete"] for x in data["constants"]), LEGACY_COMPLETE)
-        self.assertEqual(data["import_info"]["total"], IMPORTED_COUNT)
 
     def test_catalog_operations_route_errors_and_lifespan(self):
         app = create_app(self.store, updater=self.updater)
@@ -930,7 +895,7 @@ class AppTests(unittest.TestCase):
         with self.store.db() as conn:
             conn.execute(
                 "INSERT INTO manual VALUES(?,?,?,?,?,?,?)",
-                ("30:standard:0", 1, "", None, "keep", None, "fixture"),
+                ("30:0", 1, "", None, "keep", None, "fixture"),
             )
         self.store.import_provider(
             {"records": [{"song_id": 10030, "level_index": 0, "fc": "ap", "achievements": 100.5}]}
@@ -942,42 +907,47 @@ class AppTests(unittest.TestCase):
         shutil.copy2(base / "catalog.sqlite", snapshot / "catalog.sqlite")
         with sqlite3.connect(snapshot / "catalog.sqlite") as conn:
             conn.row_factory = sqlite3.Row
-            song = dict(conn.execute("SELECT * FROM songs WHERE id=30").fetchone())
-            song.update(id=90001, title="New chart after update")
-            conn.execute(
-                f"INSERT INTO songs VALUES ({','.join('?' for _ in song)})", tuple(song.values())
-            )
-            chart = dict(
-                conn.execute("SELECT * FROM charts WHERE chart_key='30:standard:0'").fetchone()
+            chart = json.loads(
+                conn.execute(
+                    "SELECT data_json FROM charts WHERE id=30 AND difficulty=0"
+                ).fetchone()[0]
             )
             chart.update(
-                chart_key="90001:standard:0",
-                song_id=90001,
+                id=90001,
+                lxns_song_id=90001,
+                title="New chart after update",
                 constant=12.7,
                 level="12+",
                 divingfish_id="90001",
+                external_ids=[
+                    {
+                        "namespace": "divingfish",
+                        "id": "90001",
+                        "source_title": "New chart after update",
+                    }
+                ],
             )
             conn.execute(
-                f"INSERT INTO charts VALUES ({','.join('?' for _ in chart)})", tuple(chart.values())
+                "INSERT INTO charts VALUES (?,?,?,?)", (90001, 0, "standard", json.dumps(chart))
             )
             conn.execute(
-                "INSERT INTO external_ids VALUES('divingfish','90001',90001,'standard','same_id_standard','New chart after update')"
+                "UPDATE charts SET data_json=json_set(data_json,'$.constant',14.8) "
+                "WHERE id=30 AND difficulty=0"
             )
-            conn.execute("UPDATE charts SET constant=14.8 WHERE chart_key='30:standard:0'")
         loaded = self.store.load_catalog(snapshot)
         self.assertIs(self.store._catalog_snapshot, original)
-        self.assertNotIn("90001:standard:0", self.store.catalog)
+        self.assertNotIn("90001:0", self.store.catalog)
         (base / "current").symlink_to(snapshot, target_is_directory=True)
         self.assertEqual(self.store.catalog_directory(), snapshot.resolve())
         self.store.reload_catalog()
-        self.assertIn("90001:standard:0", self.store.catalog)
+        self.assertIn("90001:0", self.store.catalog)
         self.assertEqual(self.store.waterfish_map["90001"]["song_id"], 90001)
-        self.assertEqual(self.store.catalog["30:standard:0"]["constant"], 14.8)
+        self.assertEqual(self.store.catalog["30:0"]["constant"], 14.8)
         self.assertEqual(self.store.db_path.read_bytes(), personal_before)
-        self.assertTrue(self.store.chart("30:standard:0")["is_ap"])
-        self.assertFalse(self.store.chart("30:standard:0")["requires_venue"])
-        self.assertEqual(self.store.chart("30:standard:0")["note"], "keep")
-        self.assertTrue(self.store.chart("30:dx:0")["is_ap"])
+        self.assertTrue(self.store.chart("30:0")["is_ap"])
+        self.assertFalse(self.store.chart("30:0")["requires_venue"])
+        self.assertEqual(self.store.chart("30:0")["note"], "keep")
+        self.assertTrue(self.store.chart("10030:0")["is_ap"])
         listing = self.client.get("/api/charts", params={"q": "90001"}).json()
         summary = self.client.get("/api/summary", params={"q": "90001"}).json()
         self.assertEqual(listing["total"], 1)
@@ -988,10 +958,10 @@ class AppTests(unittest.TestCase):
         # A restart resolves the same pointer without reimporting the user's TSV.
         restarted = Store(runtime=self.tmp.name, catalog_dir=base)
         self.assertEqual(len(restarted.catalog), CHART_COUNT + 1)
-        self.assertEqual(restarted.chart("30:standard:0")["note"], "keep")
+        self.assertEqual(restarted.chart("30:0")["note"], "keep")
         self.store.install_catalog(original)
-        self.assertNotIn("90001:standard:0", self.store.catalog)
-        self.assertTrue(self.store.chart("30:standard:0")["is_ap"])
+        self.assertNotIn("90001:0", self.store.catalog)
+        self.assertTrue(self.store.chart("30:0")["is_ap"])
         self.store.install_catalog(loaded)
 
     def test_bad_catalog_reload_keeps_loaded_snapshot(self):
@@ -1012,16 +982,11 @@ class AppTests(unittest.TestCase):
         (base / "jackets/30.png").write_bytes(b"base jacket")
         (base / "jackets/31.png").write_bytes(b"fallback jacket")
         (snapshot / "jackets/30.png").write_bytes(b"new jacket")
-        (base / "catalog.json").write_text(json.dumps({"snapshot_at": "base"}))
-        (snapshot / "catalog.json").write_text(json.dumps({"snapshot_at": "new"}))
         self.store.catalog_root = base
         self.assertEqual(self.client.get("/jackets/30.png").content, b"base jacket")
-        self.assertEqual(self.client.get("/api/catalog/data").json()["snapshot_at"], "base")
         (base / "current").symlink_to(snapshot, target_is_directory=True)
         self.assertEqual(self.client.get("/jackets/30.png").content, b"new jacket")
         self.assertEqual(self.client.get("/jackets/31.png").content, b"fallback jacket")
-        self.assertEqual(self.client.get("/api/catalog/data").json()["snapshot_at"], "new")
-        self.assertEqual(self.client.get("/api/catalog/data").headers["cache-control"], "no-store")
         for filename in ("secret.json", "missing.png", "30.svg"):
             self.assertEqual(self.client.get(f"/jackets/{filename}").status_code, 404)
 
@@ -1063,7 +1028,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
 
     def test_legacy_manual_records_remain_readable(self):
-        key = "22:standard:4"
+        key = "22:4"
         with self.store.db() as conn:
             conn.execute(
                 "INSERT INTO manual VALUES(?,?,?,?,?,?,?)",
@@ -1077,7 +1042,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual((chart["venue"], chart["achievement"]), ("测试机厅", 100.9876))
 
     def test_venue_policy_is_exposed_and_low_claim_needs_no_venue(self):
-        high, low = "131:standard:3", "30:standard:0"
+        high, low = "131:3", "30:0"
         self.add_venue("测试机厅")
         saved = self.put_record(high, json={"venue": "  测试机厅  "}).json()["chart"]
         self.assertTrue(saved["requires_venue"])
@@ -1099,9 +1064,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.put_record("missing").status_code, 404)
 
     def test_catalog_only_venue_policy_uses_constant_threshold(self):
-        template = self.store.catalog["30:standard:0"]
+        template = self.store.catalog["30:0"]
         for song_id, constant, required in ((90001, 12.5, False), (90002, 12.6, True)):
-            key = f"{song_id}:standard:0"
+            key = f"{song_id}:0"
             self.store.catalog[key] = template | {
                 "song_id": song_id,
                 "chart_key": key,
@@ -1122,15 +1087,15 @@ class AppTests(unittest.TestCase):
                 ]
             }
         )
-        self.assertFalse(self.store.chart("30:dx:0")["is_ap"])
-        self.assertTrue(self.store.chart("30:standard:0")["is_ap"])
-        self.assertEqual(self.store.chart("30:standard:0")["status"], "app")
+        self.assertFalse(self.store.chart("10030:0")["is_ap"])
+        self.assertTrue(self.store.chart("30:0")["is_ap"])
+        self.assertEqual(self.store.chart("30:0")["status"], "app")
         # Remote values are distinct from user-confirmed cover score.
-        self.assertIsNone(self.store.chart("30:standard:0")["achievement"])
+        self.assertIsNone(self.store.chart("30:0")["achievement"])
         charts = self.client.get("/api/charts", params={"q": "10030", "group": "catalog"}).json()[
             "items"
         ]
-        self.assertTrue(all(c["type"] == "dx" and c["song_id"] == 30 for c in charts))
+        self.assertTrue(all(c["type"] == "dx" and c["song_id"] == 10030 for c in charts))
 
     def test_token_settings_never_echo_secret(self):
         with patch.dict(os.environ, {"DIVINGFISH_IMPORT_TOKEN": ""}):
@@ -1156,15 +1121,15 @@ class AppTests(unittest.TestCase):
                     ]
                 }
             )
-        self.assertTrue(self.store.chart("30:standard:0")["is_ap"])
+        self.assertTrue(self.store.chart("30:0")["is_ap"])
         self.assertEqual(
-            self.put_record("30:standard:0", json={"achievement": 101.5}).status_code,
+            self.put_record("30:0", json={"achievement": 101.5}).status_code,
             422,
         )
 
     def test_foreign_origin_cannot_mutate_and_data_is_uncached(self):
         result = self.put_record(
-            "30:standard:0",
+            "30:0",
             headers={"Origin": "https://external.example"},
         )
         self.assertEqual(result.status_code, 403)

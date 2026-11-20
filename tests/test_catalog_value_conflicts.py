@@ -229,8 +229,7 @@ class CatalogValueConflictTests(unittest.TestCase):
         self.prepare_arcade(first, second)
         self.compile()
         self.decide("jp_release_version", "MURASAKi PLUS")
-        chosen = self.compile()
-        atomic_json(self.stage / "previous_catalog.json", chosen)
+        self.compile()
         changed = arcade(title="Song 1", version="FiNALE", external_id="new")["songs"][0]
         self.replace_arcade(changed)
         catalog = self.compile()
@@ -242,8 +241,7 @@ class CatalogValueConflictTests(unittest.TestCase):
     def test_single_source_changed_version_does_not_conflict_with_previous_snapshot(self):
         record = arcade(title="Song 1", version="MURASAKi PLUS")["songs"][0]
         self.prepare_arcade(record)
-        previous = self.compile()
-        atomic_json(self.stage / "previous_catalog.json", previous)
+        self.compile()
         changed = copy.deepcopy(record)
         for sheet in changed["sheets"]:
             sheet["version"] = "MiLK"

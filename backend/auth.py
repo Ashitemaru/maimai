@@ -71,11 +71,10 @@ class AuthConfig:
     @classmethod
     def from_environment(cls) -> AuthConfig:
         production = os.environ.get("MAIMAI_ENV") == "production"
-        disabled = os.environ.get("MAIMAI_AUTH_DISABLED") == "1"
         encoded_hash = os.environ.get("MAIMAI_MASTER_KEY_HASH", "")
-        if production and (disabled or not encoded_hash):
+        if production and not encoded_hash:
             raise RuntimeError("Production requires MAIMAI_MASTER_KEY_HASH and authentication.")
-        if disabled or not encoded_hash:
+        if not encoded_hash:
             return cls()
         try:
             algorithm, n, r, p, salt, digest = encoded_hash.split("$")
@@ -267,7 +266,7 @@ def public_paths(frontend: Path) -> frozenset[str]:
 def local_probe(request: Request) -> bool:
     return (
         request.method in ("GET", "HEAD")
-        and request.url.path in ("/api/health", "/api/ready")
+        and request.url.path == "/api/ready"
         and request.client is not None
         and request.client.host in ("127.0.0.1", "::1")
         and request.url.hostname in ("127.0.0.1", "localhost", "::1")

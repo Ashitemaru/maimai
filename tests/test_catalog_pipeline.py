@@ -471,19 +471,14 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source policy"):
             validate(self.stage)
 
-    def test_arcade_receipt_previous_snapshot_and_resolved_review_are_built(self):
+    def test_arcade_receipt_and_resolved_review_are_built(self):
         from tests.test_catalog_versions import arcade
 
         source = arcade(title="Song 1", version="maimaiでらっくす")
         self.responses["arcade_songs.json"] = source
-        atomic_json(self.previous / "catalog.json", {"songs": [], "marker": "unchanged prior"})
         prep = self.prepare()
         self.assertEqual(prep["sources"][-1]["file"], "arcade_songs.json")
         self.assertEqual(prep["sources"][-1]["fetch_status"], "fresh")
-        self.assertEqual(
-            json.loads((self.stage / "previous_catalog.json").read_text()),
-            {"songs": [], "marker": "unchanged prior"},
-        )
         report = build(self.stage)
         self.assertEqual(self.catalog()["charts"][0]["jp_release_version"], "DX")
         self.assertEqual(self.catalog()["charts"][0]["jp_release_provider"], "arcade_songs")

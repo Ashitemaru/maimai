@@ -83,7 +83,7 @@ class VenueLocationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_location_edit_is_persistent_and_does_not_rename_or_reassign_ap(self):
-        chart = self.store.chart("2000:standard:3")
+        chart = self.store.chart("2000:3")
         save_location(self.store, {"name": "【测试】原机厅", "latitude": 39.9, "longitude": 116.4})
         self.store.save_ap_record(
             chart["chart_key"],
@@ -147,87 +147,6 @@ class VenueLocationTests(unittest.TestCase):
         self.assertEqual(row["city"], "测试")
         self.assertEqual(response.headers["cache-control"], "no-store")
 
-    def test_old_schema_migration_preserves_names_coordinates_and_ap_data(self):
-        with self.store.db() as conn:
-            conn.execute("DROP TABLE venue_locations")
-            conn.execute(
-                "CREATE TABLE venue_locations(name TEXT PRIMARY KEY, place_name TEXT, address TEXT, "
-                "latitude REAL, longitude REAL, coordinate_system TEXT, accuracy TEXT, "
-                "closed_status TEXT, source TEXT, updated_at TEXT)"
-            )
-            conn.executemany(
-                "INSERT INTO venue_locations VALUES(?,?,?,?,?,?,?,?,?,?)",
-                [
-                    (
-                        "【测试】历史机厅",
-                        "旧门店",
-                        "旧地址",
-                        39.9,
-                        116.4,
-                        "WGS84",
-                        "exact",
-                        "closed",
-                        "old",
-                        "then",
-                    ),
-                    (
-                        "【测试】未定位",
-                        "未知门店",
-                        "旧地址",
-                        None,
-                        None,
-                        "WGS84",
-                        "unknown",
-                        "unknown",
-                        "old",
-                        "before",
-                    ),
-                ],
-            )
-            conn.execute(
-                "INSERT INTO legacy VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    "2000:standard:3",
-                    "high",
-                    13.3,
-                    1,
-                    "【测试】历史机厅",
-                    "Example",
-                    "fixture",
-                    1,
-                    1,
-                ),
-            )
-            before = {
-                table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")]
-                for table in (
-                    "legacy",
-                    "manual",
-                    "ap_pending",
-                    "ap_confirmations",
-                    "venues",
-                    "events",
-                )
-            }
-        initialize_locations(self.store)
-        initialize_locations(self.store)
-        with self.store.db() as conn:
-            self.assertEqual(
-                {row[1] for row in conn.execute("PRAGMA table_info(venue_locations)")},
-                {"name", "latitude", "longitude", "updated_at"},
-            )
-            self.assertEqual(
-                [tuple(row) for row in conn.execute("SELECT * FROM venue_locations ORDER BY name")],
-                [
-                    ("【测试】历史机厅", 39.9, 116.4, "then"),
-                    ("【测试】未定位", None, None, "before"),
-                ],
-            )
-            for table, rows in before.items():
-                self.assertEqual(
-                    [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")], rows
-                )
-
     def test_invalid_coordinates_and_names_do_not_write_partial_venues(self):
         cases = [
             {"latitude": 90.1, "longitude": 0},
@@ -266,7 +185,7 @@ class VenueLocationTests(unittest.TestCase):
             )
 
     def test_map_limits_jackets_and_counts_pending_separately_from_confirmed(self):
-        chart = self.store.chart("2000:standard:3")
+        chart = self.store.chart("2000:3")
         save_location(self.store, {"name": "【测试】待核准", "latitude": 39.9, "longitude": 116.4})
         self.store.save_ap_record(
             chart["chart_key"],

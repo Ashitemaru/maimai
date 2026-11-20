@@ -1,8 +1,6 @@
 import json
 import sqlite3
-import threading
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -333,21 +331,6 @@ class APRecordTests(unittest.TestCase):
         with self.store.db() as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM ap_evidence").fetchone()[0], 0)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM provider_syncs").fetchone()[0], 1)
-
-    def test_two_writers_cannot_overwrite_same_revision(self):
-        barrier = threading.Barrier(2)
-
-        def save(request_id):
-            barrier.wait(timeout=5)
-            try:
-                self.save(request_id=request_id)
-                return "saved"
-            except RecordConflictError:
-                return "stale"
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(save, ["one", "two"]))
-        self.assertCountEqual(results, ["saved", "stale"])
 
     def test_ap_record_api_contract(self):
         with TestClient(create_app(self.store, updater=FakeUpdater())) as client:

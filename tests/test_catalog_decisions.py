@@ -17,13 +17,13 @@ class DecisionsTests(unittest.TestCase):
                 "version": "DX",
                 "object_fingerprint": "identity",
             }
-            self.assertEqual(db.save(value, 0), 1)
+            self.assertEqual(db.save_many([value], 0), 1)
             with self.assertRaises(StaleDecisionError):
-                db.save(value | {"version": "ORANGE"}, 0)
+                db.save_many([value | {"version": "ORANGE"}], 0)
             self.assertEqual(db.snapshot()["decisions"][0]["version"], "DX")
             restarted = CatalogDecisions(path)
             self.assertEqual(restarted.snapshot()["revision"], 1)
-            self.assertEqual(restarted.save(value | {"action": "revoke"}, 1), 2)
+            self.assertEqual(restarted.save_many([value | {"action": "revoke"}], 1), 2)
             self.assertEqual(restarted.snapshot(), {"revision": 2, "decisions": []})
             history = restarted.history(value["object_key"])
             self.assertEqual(len(history), 2)
@@ -35,9 +35,9 @@ class DecisionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             db = CatalogDecisions(Path(temp) / "decisions.sqlite3")
             key = {"object_key": "1:dx:ordinary", "action": "select", "candidate_id": "a"}
-            db.save(key | {"kind": "identity"}, 0)
-            db.save(key | {"kind": "version"}, 1)
-            db.save(key | {"kind": "version", "action": "revoke"}, 2)
+            db.save_many([key | {"kind": "identity"}], 0)
+            db.save_many([key | {"kind": "version"}], 1)
+            db.save_many([key | {"kind": "version", "action": "revoke"}], 2)
             self.assertEqual([d["kind"] for d in db.snapshot()["decisions"]], ["identity"])
 
     def test_many_choices_are_one_transaction_with_linked_history(self):

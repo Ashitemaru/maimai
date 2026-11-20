@@ -147,7 +147,6 @@ class ScoreSync:
                 ScoreSyncError(500, "sync_failed", "同步未完成，请稍后重试。本地记录已保留。")
             )
         finally:
-            token = None
             lease.__exit__(None, None, None)
 
     def _fail(self, error):

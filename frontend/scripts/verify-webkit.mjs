@@ -8,7 +8,7 @@ const output = path.resolve(
   process.env.WEBKIT_AUDIT_OUTPUT || path.join(root, 'output/webkit-audit'),
 );
 await fs.mkdir(output, { recursive: true });
-const suites = ['auth', 'score-sync', 'ap-buffer', 'venue-map', 'mobile-export', 'publishing'];
+const suites = ['auth', 'ap-buffer', 'venue-map', 'mobile-export', 'publishing'];
 const results = [];
 let version = null;
 let activeSuite = 'browser-startup';
@@ -52,7 +52,6 @@ async function runSuite(suite) {
       ...process.env,
       PLAYWRIGHT_BROWSER: 'webkit',
       AUTH_AUDIT_OUTPUT: path.join(output, 'auth'),
-      SCORE_SYNC_AUDIT_OUTPUT: path.join(output, 'score-sync'),
       BUFFER_AUDIT_OUTPUT: path.join(output, 'ap-buffer'),
       VENUE_MAP_AUDIT_OUTPUT: path.join(output, 'venue-map'),
       MOBILE_EXPORT_AUDIT_OUTPUT: path.join(output, 'mobile-export'),

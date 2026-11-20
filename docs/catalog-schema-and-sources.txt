@@ -8,7 +8,7 @@ difficulty 是来源难度索引；chart_key 为 "id:difficulty"。
 构建必须检查整个有效曲库的复合键唯一性，出现冲突就中止，不能静默覆盖。
 原始来源可以仍有 songs/difficulties 嵌套，进入正式库后必须拆平。
 每张谱面拥有自己的曲名、作者、定数、版本等字段；没有 songs 主表。
-legacy_chart_key、lxns_song_id 和 source_ids 仅用于来源追溯、迁移，不是主键。
+legacy_chart_key、lxns_song_id 和 source_ids 仅用于来源追溯，不是主键。
 同曲的不同难度独立裁决，不将一个难度的决定自动套用到其他难度。
 
 二、来源与字段
@@ -106,5 +106,4 @@ object_key=chart:{id}:{difficulty}:{field_key}，action=select。
 校验主键、来源职责、待入库/正式库隔离、JSON/SQL 各列一致、外键、图片、Remy 证据。
 发布使用隔离暂存、不可变快照、原子 current 指针、单任务锁与修订号检查。
 个人 AP、机厅、成绩、原表在 backend/runtime/personal.sqlite3，曲库重建不删除它们。
-升级只迁移个人表中的 chart_key，事务内检查重复，并记录 schema marker 防止重复迁移。
 待入库 chart 的个人记录继续保留，水鱼同步也可附着到来源索引；准入后自动重新显示。

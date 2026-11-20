@@ -115,11 +115,8 @@ def public_diff(value):
 
 
 def public_warnings(prepared, built):
-    messages = [
-        w if isinstance(w, str) else w.get("message", str(w)) for w in prepared.get("warnings", [])
-    ]
-    counts = built.get("counts", {})
-    pending = counts.get("pending", counts.get("pending_charts", 0))
+    messages = [w["message"] for w in prepared.get("warnings", [])]
+    pending = built.get("counts", {}).get("pending", 0)
     if pending:
         messages.append(f"{pending} 张谱面待裁决，尚未入库")
     missing = prepared.get("diff", {}).get("counts", {}).get("missing_charts", 0)
@@ -209,29 +206,6 @@ class CatalogUpdates:
         if review.get("schema_version") == 2 and "remy_counts" in review:
             counts = review["remy_counts"]
             total, pending = counts["total"], counts["pending"]
-        elif review.get("schema_version") == 2:
-            # Older schema-2 reports may lack the summary; include unknown formal white charts.
-            formal = {
-                chart.get("chart_key"): chart
-                for chart in self.store.catalog.values()
-                if chart.get("difficulty", chart.get("difficulty_index")) == 4
-            }
-            records = [
-                record for record in review.get("records", []) if record.get("difficulty") == 4
-            ]
-            total, pending = len(records), 0
-            for record in records:
-                chart = formal.get(record.get("chart_key"))
-                required = any(
-                    field.get("field_key") == "jp_release_version" and field.get("required", True)
-                    for field in record.get("fields", [])
-                )
-                if (
-                    required
-                    or chart
-                    and (not chart.get("jp_release_version") or chart.get("version_pending"))
-                ):
-                    pending += 1
         else:
             charts = [
                 c
@@ -284,13 +258,6 @@ class CatalogUpdates:
             decisions = self.decisions.snapshot()
             report = load_record_review(self.store.catalog_directory(), adjudications=decisions)
             records = report.get("records", [])
-            if "counts" not in report:
-                pending = sum(record.get("status") == "pending" for record in records)
-                report["counts"] = {
-                    "total": len(records),
-                    "pending": pending,
-                    "admitted": len(records) - pending,
-                }
             if pending_only:
                 report["records"] = [
                     record for record in records if record.get("status") == "pending"
@@ -353,21 +320,6 @@ class CatalogUpdates:
             self._failed(epoch, error)
             raise
         return self.status()
-
-    def decide_record(self, request):
-        return self.decide_records(
-            {
-                "base_catalog_revision": request["base_catalog_revision"],
-                "base_decision_revision": request["base_decision_revision"],
-                "records": [
-                    {
-                        key: value
-                        for key, value in request.items()
-                        if key not in {"base_catalog_revision", "base_decision_revision"}
-                    }
-                ],
-            }
-        )
 
     def decide_records(self, request):
         from scripts.catalog_chart_compiler import validate_chart_decisions
@@ -561,7 +513,6 @@ class CatalogUpdates:
         target = self.workspace / "staging" / ident
         target.parent.mkdir(parents=True, exist_ok=True)
         clone(previous, target)
-        write(target / "previous_catalog.json", read(previous / "catalog.json"))
         write(target / "catalog_adjudications.json", self.decisions.snapshot())
         return target
 
@@ -786,7 +737,6 @@ class CatalogUpdates:
                 if epoch != self._epoch:
                     return
                 record_report = self.store.catalog_directory() / "catalog_record_review.json"
-                version_report = self.store.catalog_directory() / "catalog_review.json"
                 compiled_review = read(record_report) if record_report.exists() else {}
                 remaining_conflicts = len(report["conflicts"])
                 if compiled_review.get("schema_version") == 2:
@@ -808,12 +758,7 @@ class CatalogUpdates:
                         )
                         for record in compiled_review.get("records", [])
                     )
-                elif version_report.exists():
-                    remaining_conflicts = sum(
-                        item.get("scope") == "chart" and item.get("status") == "conflict"
-                        for item in read(version_report).get("items", [])
-                    )
-                if compiled_review or version_report.exists():
+                if compiled_review:
                     summary = self._remy_summary()
                     pending = summary["pending_count"]
                     self._state["remy"].update(

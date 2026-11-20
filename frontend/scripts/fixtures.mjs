@@ -3,7 +3,7 @@ import { deflateSync } from 'node:zlib';
 // Original synthetic artwork: CI must not read private catalogs or game assets.
 export const jacketSVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="#48abd5"/><path d="M0 80 80 0v80Z" fill="#d74783"/></svg>';
-export const badgeSVG =
+const badgeSVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><circle cx="39.5" cy="39.5" r="35" fill="#ffd965"/><circle cx="39.5" cy="39.5" r="24" fill="#ec569e"/><path d="m20 39 12 12 26-28" fill="none" stroke="white" stroke-width="7"/></svg>';
 
 function pngChunk(type, body) {

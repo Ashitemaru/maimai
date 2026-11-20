@@ -34,8 +34,6 @@ def initialize_records(conn):
         CREATE TABLE IF NOT EXISTS provider_syncs(
           id TEXT PRIMARY KEY, synced_at TEXT NOT NULL, receipt_json TEXT NOT NULL,
           records_json TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS score_sync_sources(
-          sync_id TEXT PRIMARY KEY, source TEXT NOT NULL, account_hash TEXT);
         CREATE TABLE IF NOT EXISTS provider_details(
           chart_key TEXT PRIMARY KEY, sync_id TEXT NOT NULL, fs TEXT,
           dx_score INTEGER, rate TEXT, ra REAL);
@@ -44,13 +42,7 @@ def initialize_records(conn):
         CREATE TABLE IF NOT EXISTS venues(
           name TEXT PRIMARY KEY, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL);
     """)
-    if "chart_json" not in {row[1] for row in conn.execute("PRAGMA table_info(ap_pending)")}:
-        conn.execute("ALTER TABLE ap_pending ADD COLUMN chart_json TEXT NOT NULL DEFAULT '{}'")
     conn.execute("UPDATE ap_pending SET reason='等待水鱼核准' WHERE reason='等待华立核准'")
-    conn.execute(
-        "INSERT OR IGNORE INTO score_sync_sources(sync_id,source) "
-        "SELECT id,'divingfish' FROM provider_syncs"
-    )
 
 
 def pending_record(row):
@@ -133,19 +125,15 @@ class APRecords:
 
     @staticmethod
     def _recorded_venue(conn, key):
-        from .store import canonical_chart_key
-
-        keys = (key, canonical_chart_key(key), key)
-        # Match is_complete + venue in the chart projection, including old keys.
+        # Match is_complete + venue in the chart projection.
         for table, completed in (
             ("ap_confirmations", "1"),
             ("manual", "ap"),
             ("legacy", "complete"),
         ):
             row = conn.execute(
-                f"SELECT venue,{completed} AS completed FROM {table} WHERE chart_key IN (?,?) "
-                "ORDER BY CASE WHEN chart_key=? THEN 0 ELSE 1 END LIMIT 1",
-                keys,
+                f"SELECT venue,{completed} AS completed FROM {table} WHERE chart_key=?",
+                (key,),
             ).fetchone()
             if row is None:
                 continue
@@ -153,10 +141,10 @@ class APRecords:
                 return row["venue"]
             if table == "legacy":
                 ap = conn.execute(
-                    "SELECT 1 FROM ap_evidence WHERE chart_key IN (?,?) "
-                    "UNION ALL SELECT 1 FROM provider WHERE chart_key IN (?,?) "
+                    "SELECT 1 FROM ap_evidence WHERE chart_key=? "
+                    "UNION ALL SELECT 1 FROM provider WHERE chart_key=? "
                     "AND fc IN ('ap','app') LIMIT 1",
-                    (*keys[:2], *keys[:2]),
+                    (key, key),
                 ).fetchone()
                 return row["venue"] if ap else ""
             return ""
@@ -252,10 +240,6 @@ class APRecords:
         return self.chart(key)
 
     def cancel_ap_record(self, key, expected_revision):
-        from .store import canonical_chart_key
-
-        if getattr(self.catalog, "schema_version", 1) >= 2:
-            key = canonical_chart_key(key)
         chart = self.chart(key)
         key = chart["chart_key"] if chart else key
         with self.db() as conn:
@@ -337,9 +321,8 @@ class APRecords:
         }
 
     def import_provider(self, payload, eligible_records=None):
-        source, label = "divingfish", "水鱼"
         if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
-            raise ValueError(f"{label}返回的数据不含完整 records 列表。")
+            raise ValueError("水鱼返回的数据不含完整 records 列表。")
         if eligible_records is None:
             eligible_records = self.pending_snapshot()
         catalog, waterfish_map = self._catalog_snapshot
@@ -349,13 +332,7 @@ class APRecords:
         try:
             for record in payload["records"]:
                 ext = waterfish_map.get(str(record["song_id"]))
-                key = None
-                if ext:
-                    key = (
-                        f"{ext['song_id']}:{record['level_index']}"
-                        if getattr(catalog, "schema_version", 1) >= 2
-                        else f"{ext['song_id']}:{ext['type']}:{record['level_index']}"
-                    )
+                key = f"{ext['song_id']}:{record['level_index']}" if ext else None
                 ordinary = key in known
                 achievement, fc, raw = validate_score(record, ordinary=ordinary)
                 source_key = f"{int(record['song_id'])}:{record['level_index']}"
@@ -384,7 +361,7 @@ class APRecords:
                 raise ValueError("duplicate mapped chart")
             raw_records = json.dumps(payload["records"], ensure_ascii=False, allow_nan=False)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
-            raise ValueError(f"{label}成绩格式异常，未修改本地记录。") from exc
+            raise ValueError("水鱼成绩格式异常，未修改本地记录。") from exc
         receipt = {
             "ok": True,
             "records": len(payload["records"]),
@@ -393,14 +370,11 @@ class APRecords:
             "synced_at": at,
             "sync_id": sync_id,
             "confirmed": 0,
-            "source": source,
+            "source": "divingfish",
         }
         scores = {row[0]: row for row in incoming}
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "INSERT INTO score_sync_sources(sync_id,source) VALUES(?,?)", (sync_id, source)
-            )
             conn.execute("DELETE FROM provider")
             conn.executemany("INSERT INTO provider VALUES(?,?,?,?,?)", incoming)
             conn.execute("DELETE FROM provider_details")
@@ -449,7 +423,7 @@ class APRecords:
                                     "venue": row["venue"],
                                     "sync_id": sync_id,
                                     "revision": revision,
-                                    "source": source,
+                                    "source": "divingfish",
                                 },
                                 ensure_ascii=False,
                             ),
@@ -460,9 +434,9 @@ class APRecords:
                     reason = (
                         "谱面尚未匹配"
                         if key not in catalog
-                        else f"{label}暂未显示 AP"
+                        else "水鱼暂未显示 AP"
                         if score
-                        else f"{label}暂无这张成绩"
+                        else "水鱼暂无这张成绩"
                     )
                     conn.execute("UPDATE ap_pending SET reason=? WHERE chart_key=?", (reason, key))
             receipt["pending"] = conn.execute("SELECT COUNT(*) FROM ap_pending").fetchone()[0]
@@ -484,7 +458,7 @@ class APRecords:
             )
             conn.execute(
                 "INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (f"last_{source}_sync", receipt_json),
+                ("last_divingfish_sync", receipt_json),
             )
             conn.execute(
                 "INSERT INTO events(kind,created_at,data_json) VALUES(?,?,?)",

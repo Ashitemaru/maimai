@@ -8,15 +8,7 @@ import { DifficultyBadge } from './ChartBadges';
 import type { Chart, ChartList } from './types';
 import { useToastMessage } from './Toast';
 
-function VenueAlbum({
-  venue,
-  revision,
-  onSelect,
-}: {
-  venue: VenuePlace;
-  revision: number;
-  onSelect: (chart: Chart) => void;
-}) {
+function VenueAlbum({ name, onSelect }: { name: string; onSelect: (chart: Chart) => void }) {
   const [charts, setCharts] = useState<Chart[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -30,8 +22,7 @@ function VenueAlbum({
     setError('');
     setCharts([]);
     api<ChartList>(
-      '/venues/charts?' +
-        new URLSearchParams({ name: venue.name, offset: String(offset), limit: '48' }),
+      '/venues/charts?' + new URLSearchParams({ name, offset: String(offset), limit: '48' }),
       { signal: controller.signal },
     )
       .then((data) => {
@@ -46,7 +37,7 @@ function VenueAlbum({
         if (!controller.signal.aborted) setBusy(false);
       });
     return () => controller.abort();
-  }, [venue.name, revision, offset, retry]);
+  }, [name, offset, retry]);
   return (
     <div className="venue-album" aria-busy={busy}>
       {busy ? (
@@ -161,12 +152,14 @@ export function VenuesPage({
   const [focus, setFocus] = useState<
     { latitude: number; longitude: number; zoom?: number } | undefined
   >();
-  function select(name: string) {
+  function select(name: string, saved?: { latitude: number; longitude: number }) {
     setSelection(name);
     const url = new URL(window.location.href);
     url.searchParams.set('venue', name);
     history.replaceState(null, '', url);
-    const location = venuePoint(venues.find((venue) => venue.name === name)?.location || null);
+    // A just-saved location is newer than the venue list until it reloads.
+    const location =
+      saved ?? venuePoint(venues.find((venue) => venue.name === name)?.location || null);
     if (location) setFocus({ ...location, zoom: 15 });
   }
   return (
@@ -283,8 +276,7 @@ export function VenuesPage({
                   </header>
                   <VenueAlbum
                     key={`${selected.name}:${revision}`}
-                    venue={selected}
-                    revision={revision}
+                    name={selected.name}
                     onSelect={onSelect}
                   />
                 </section>
@@ -296,11 +288,10 @@ export function VenuesPage({
       {editing && (
         <VenueLocationEditor
           venue={editing}
-          venues={venues}
           onClose={() => setEditing(null)}
-          onSaved={(name) => {
+          onSaved={(name, point) => {
             setEditing(null);
-            select(name);
+            select(name, point);
             setReload((value) => value + 1);
             notify('机厅位置已保存');
             void onChanged().catch((error) => notify(messageOf(error)));

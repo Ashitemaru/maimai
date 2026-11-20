@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
-from .store import now
+from .clock import now
 from .venue_summary import summarize_venues
 
 SEARCH_CACHE_SECONDS = 7 * 24 * 60 * 60
@@ -42,7 +42,7 @@ class VenueLocationInput(BaseModel):
     @field_validator("latitude", "longitude", mode="before")
     @classmethod
     def numeric_coordinate(cls, value):
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("坐标须为数值")
         return value
 
@@ -55,7 +55,7 @@ class VenueLocationInput(BaseModel):
 
 
 LOCATION_TABLE_SQL = """
-    CREATE TABLE venue_locations(
+    CREATE TABLE IF NOT EXISTS venue_locations(
         name TEXT PRIMARY KEY REFERENCES venues(name),
         latitude REAL, longitude REAL, updated_at TEXT NOT NULL,
         CHECK((latitude IS NULL AND longitude IS NULL) OR
@@ -67,20 +67,7 @@ LOCATION_TABLE_SQL = """
 
 def initialize_locations(store):
     with store.db() as conn:
-        # Table replacement and row copying form one transaction. Startup either
-        # keeps the old schema intact or preserves every name and map coordinate.
-        conn.execute("BEGIN IMMEDIATE")
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(venue_locations)")}
-        if not columns:
-            conn.execute(LOCATION_TABLE_SQL)
-        elif columns != {"name", "latitude", "longitude", "updated_at"}:
-            conn.execute("ALTER TABLE venue_locations RENAME TO venue_locations_previous")
-            conn.execute(LOCATION_TABLE_SQL)
-            conn.execute(
-                "INSERT INTO venue_locations(name,latitude,longitude,updated_at) "
-                "SELECT name,latitude,longitude,updated_at FROM venue_locations_previous"
-            )
-            conn.execute("DROP TABLE venue_locations_previous")
+        conn.execute(LOCATION_TABLE_SQL)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS venue_geocoder_cache("
             "cache_key TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at REAL NOT NULL)"
@@ -131,7 +118,7 @@ def confirmed_venue_charts(charts, name):
         items,
         key=lambda chart: (
             -(chart.get("constant") or 0),
-            int(chart.get("id") or chart.get("song_id") or 0),
+            int(chart.get("id") or 0),
             chart.get("difficulty") or 0,
             chart["chart_key"],
         ),

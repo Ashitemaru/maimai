@@ -21,8 +21,6 @@ interface UpdateReport {
     added_charts?: ChartChange[];
     changed_charts?: ChartChange[];
   } | null;
-  issues: Record<string, unknown>[];
-  sources: unknown;
 }
 const LIMIT = 50;
 const valueText = (value: unknown) =>

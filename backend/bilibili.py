@@ -34,6 +34,8 @@ from .bilibili_client import (
     validate_bvid,
 )
 from .bilibili_order import (
+    DIFFICULTIES,
+    MIRROR_BVID,
     ChartResolver,
     chart_identity,
     order_report,
@@ -44,8 +46,6 @@ from .clock import now
 
 MAX_BODY = 16 * 1024 * 1024
 LISTING_TTL = 300
-MIRROR_BVID = "BV1bJouBSEiH"
-DIFFICULTIES = ("Basic", "Advanced", "Expert", "Master", "Re:Master")
 HANDPLAY_COLLECTION = re.compile(r"maimai\s+\d{1,2}\+?\s+ap", re.IGNORECASE)
 
 
@@ -58,8 +58,6 @@ class PrepareInput(BaseModel):
     constant: str = Field(pattern=r"^(?:[0-9]{1,2}\.[0-9]|[0-9]{1,2}\+?\?)$")
     section_id: int = Field(gt=0, strict=True)
     mirror_horizontal: bool | None = None
-    title_override: str | None = Field(default=None, min_length=1, max_length=80)
-    include_type: bool | None = None
     version_override: str | None = Field(default=None, max_length=80)
 
 
@@ -71,9 +69,7 @@ class ApplyInput(BaseModel):
 
 
 def title_for(chart, body, original):
-    if body.title_override is not None:
-        title = body.title_override.strip()
-    elif body.bvid == MIRROR_BVID:
+    if body.bvid == MIRROR_BVID:
         token = re.match(r"^(?:\+PA|PA)(?=\s)", original)
         if token is None:
             raise BilibiliError("镜像稿件标题需以 PA 或 +PA 开头，请手动确认标题", status=422)
@@ -85,15 +81,11 @@ def title_for(chart, body, original):
                 raise BilibiliError("宴谱面请填写 13? 或 13+? 形式的等级", status=422)
             difficulty = "Utage"
         else:
-            index = chart.get("difficulty_index", chart.get("difficulty"))
+            index = chart.get("difficulty_index")
             if index not in range(5) or not re.fullmatch(r"\d{1,2}\.\d", body.constant):
                 raise BilibiliError("请选择明确的难度和一位小数定数", status=422)
             difficulty = DIFFICULTIES[index]
-        marker = body.include_type
-        if marker is None:
-            marker = bool(
-                re.search(r"\[(?:STD|DX)\]\s+(?:Basic|Advanced|Expert|Master|Re:Master)", original)
-            )
+        marker = re.search(r"\[(?:STD|DX)\]\s+(?:Basic|Advanced|Expert|Master|Re:Master)", original)
         suffix = ""
         if marker and not is_utage:
             suffix = "[DX]" if chart.get("type") == "dx" else "[STD]"
@@ -367,30 +359,24 @@ class BilibiliService:
             "mirror_horizontal": bvid == MIRROR_BVID,
         }
 
-    def bind_chart(
-        self, account_mid, bvid, chart, observed_title, *, source="user", only_missing=False
-    ):
-        """Internal migration/user-selection hook; never imports an old candidate version."""
+    def bind_chart(self, account_mid, bvid, chart, observed_title):
+        """Save the user's chart selection; never imports an old candidate version."""
         binding = {
             "chart_key": chart["chart_key"],
             "chart_identity": chart_identity(chart),
             "title_identity": parsed_title(observed_title, bvid),
             "observed_title": observed_title,
-            "source": source,
+            "source": "user",
         }
-        self._save_bindings(account_mid, {validate_bvid(bvid): binding}, only_missing=only_missing)
+        self._save_bindings(account_mid, {validate_bvid(bvid): binding})
         return binding
 
-    def _save_bindings(self, account_mid, bindings, *, only_missing=False):
-        conflict = (
-            "DO NOTHING"
-            if only_missing
-            else "DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at"
-        )
+    def _save_bindings(self, account_mid, bindings):
         with self.store.db() as db:
             for bvid, binding in bindings.items():
                 db.execute(
-                    f"INSERT INTO bilibili_chart_bindings VALUES (?,?,?,?) ON CONFLICT(account_mid,bvid) {conflict}",
+                    "INSERT INTO bilibili_chart_bindings VALUES (?,?,?,?) ON CONFLICT(account_mid,bvid) "
+                    "DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
                     (account_mid, bvid, json.dumps(binding), now()),
                 )
 
@@ -577,7 +563,7 @@ class BilibiliService:
             }
             # The user explicitly selected this chart; retaining this one binding
             # lets multiple unrecognized titles be resolved without any Bilibili write.
-            self.bind_chart(account["mid"], body.bvid, chart, original, source="user")
+            self.bind_chart(account["mid"], body.bvid, chart, original)
             self._prepare_order(client, account, plan, collections)
             with self.store.db() as db:
                 db.execute(

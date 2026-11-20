@@ -48,7 +48,6 @@ class AuthenticationTests(unittest.TestCase):
             os.environ,
             {
                 "MAIMAI_ENV": "test",
-                "MAIMAI_AUTH_DISABLED": "0",
                 "MAIMAI_MASTER_KEY_HASH": MASTER_KEY_HASH,
                 "MAIMAI_ASSETS_DIR": str(self.assets),
                 "MAIMAI_FRONTEND_DIR": str(self.frontend),
@@ -90,8 +89,6 @@ class AuthenticationTests(unittest.TestCase):
             "/api/venues/map",
             "/api/venues/charts?name=synthetic",
             "/api/venues/search?q=synthetic",
-            "/api/catalog/data",
-            "/api/health",
             "/api/ready",
             "/cover-assets/private.png",
             "/jackets/30.png",
@@ -268,11 +265,10 @@ class AuthenticationTests(unittest.TestCase):
 
     def test_only_direct_loopback_with_local_host_can_read_deployment_probes(self):
         with self.client_for(host="127.0.0.1", client_ip="127.0.0.1") as local:
-            self.assertEqual(local.get("/api/health").status_code, 200)
             self.assertEqual(local.get("/api/ready").status_code, 200)
             for name in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"):
                 self.assertEqual(
-                    local.get("/api/health", headers={name: "synthetic"}).status_code, 401
+                    local.get("/api/ready", headers={name: "synthetic"}).status_code, 401
                 )
             self.assertEqual(local.get("/api/summary").status_code, 401)
         with self.client_for(client_ip="127.0.0.1") as wrong_host:
@@ -317,16 +313,15 @@ class AuthenticationTests(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_production_cannot_disable_auth_or_start_with_missing_or_invalid_hash(self):
+    def test_production_cannot_start_with_missing_or_invalid_hash(self):
         for config in (
             {"MAIMAI_MASTER_KEY_HASH": ""},
-            {"MAIMAI_AUTH_DISABLED": "1"},
             {"MAIMAI_MASTER_KEY_HASH": "scrypt$999999999$8$1$salt$hash"},
         ):
             with patch.dict(os.environ, {"MAIMAI_ENV": "production", **config}):
                 with self.assertRaises(RuntimeError):
                     create_app(self.store, updater=FakeUpdater())
-        with patch.dict(os.environ, {"MAIMAI_AUTH_DISABLED": "1"}):
+        with patch.dict(os.environ, {"MAIMAI_MASTER_KEY_HASH": ""}):
             disabled = create_app(self.store, updater=FakeUpdater())
             with self.client_for(disabled) as client:
                 self.assertEqual(client.get("/api/summary").status_code, 200)

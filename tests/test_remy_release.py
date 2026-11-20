@@ -203,7 +203,10 @@ class MatchingTests(unittest.TestCase):
                 "jp_release_date": None,
                 "release_status": "manual",
             }
-            write_json(root / "catalog.json", {"songs": [{"charts": [manual]}]})
+            write_json(
+                root / "catalog.json",
+                {"schema_version": 2, "charts": [manual | {"legacy_chart_key": "1:standard:4"}]},
+            )
             fetcher = Mock(requests=0)
             result = run(root, fetcher=fetcher)
             fetcher.fetch.assert_not_called()
@@ -213,7 +216,9 @@ class MatchingTests(unittest.TestCase):
             result = run(root, fetcher=fetcher, page_urls=[SOURCE], recheck=True)
             self.assertEqual(result["additions"], [])
             self.assertEqual(result["proposed_overrides"]["overrides"], [])
-            self.assertEqual(result["conflicts"][0]["current"], manual)
+            self.assertEqual(
+                result["conflicts"][0]["current"], manual | {"legacy_chart_key": "1:standard:4"}
+            )
 
     def test_manual_same_version_without_date_is_not_overwritten_or_reported_as_conflict(self):
         manual = {

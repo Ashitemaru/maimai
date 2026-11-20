@@ -530,7 +530,9 @@ function SettingsPage({
 
 export default function App({ onLogout }: { onLogout?: () => void }) {
   const initialPage = location.hash.slice(1) as Page;
-  const [page, setPage] = useState<Page>(initialPage in pageLabels ? initialPage : 'ap');
+  const [page, setPage] = useState<Page>(
+    Object.hasOwn(pageLabels, initialPage) ? initialPage : 'ap',
+  );
   const [q, setQ] = useState('');
   const query = useDebounce(q);
   const [difficulty, setDifficulty] = useState('');
@@ -594,7 +596,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   useEffect(() => {
     const change = () => {
       const p = location.hash.slice(1) as Page;
-      if (p in pageLabels) {
+      if (Object.hasOwn(pageLabels, p)) {
         setPage(p);
         closeModal();
       }
@@ -1445,7 +1447,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
           onReload={() => openDetail(detail, true)}
           notify={notify}
         />
-      )}{' '}
+      )}
       {picker && (
         <ChartPicker
           mode={picker}

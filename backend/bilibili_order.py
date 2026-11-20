@@ -14,9 +14,8 @@ VERSION_RANK = {version: i for i, (_, version) in enumerate(JP_VERSION_BOUNDARIE
 TITLE = re.compile(
     r"^【maimai】(?P<song>.+?) (?P<difficulty>Basic|Advanced|Expert|Master|Re:Master|Utage)(?P<constant>\d{1,2}(?:\.\d|\+?\?)) AP\+?$"
 )
-DIFFICULTY = {
-    name: index for index, name in enumerate(("Basic", "Advanced", "Expert", "Master", "Re:Master"))
-}
+DIFFICULTIES = ("Basic", "Advanced", "Expert", "Master", "Re:Master")
+DIFFICULTY = {name: index for index, name in enumerate(DIFFICULTIES)}
 MIRROR_BVID = "BV1bJouBSEiH"
 
 
@@ -138,8 +137,6 @@ class ChartResolver:
         bvid = episode["bvid"]
         observed = episode["title"]
         binding = self.bindings.get(bvid)
-        parsed = parsed_title(observed, bvid)
-        candidates = self.candidates(parsed)
         if explicit is not None:
             chart, source = explicit, "user"
         else:

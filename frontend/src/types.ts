@@ -38,29 +38,15 @@ export interface Chart {
   jacket_url: string;
   thumbnail_url?: string | null;
   jp_release_version: string | null;
-  jp_release_version_candidate: string | null;
   cn_version?: number | null;
-  jp_release_provider?: 'arcade_songs' | 'remywiki' | 'manual' | null;
   jp_release_date?: string | null;
   release_status: string;
   requires_venue: boolean;
-  in_original_table: boolean;
-  legacy_complete: boolean;
-  legacy_venue: string;
-  manual_ap: boolean | null;
-  manual_revision: number;
-  manual_venue: string;
   venue: string;
-  note: string;
-  manual_date: string | null;
   achievement: number | null;
   provider_achievement: number | null;
   provider_fc: string | null;
-  provider_synced_at: string | null;
   provider_fs?: string | null;
-  provider_dx_score?: number | null;
-  provider_rate?: string | null;
-  provider_ra?: number | null;
   pending_record?: PendingRecord | null;
   record_revision?: number;
   venue_pending?: boolean;
@@ -70,35 +56,23 @@ export interface Chart {
   conflict: boolean;
   warnings: string[];
 }
-export interface Counts {
+interface Counts {
   total: number;
   complete: number;
-  ap: number;
   remaining: number;
   conflicts: number;
-  legacy_complete: number;
 }
 export interface SyncResult {
-  ok: boolean;
-  records: number;
   matched: number;
-  unmatched: number;
-  conflicts: number;
   synced_at: string;
   confirmed?: number;
   pending?: number;
-  venue_pending?: number;
-  sync_id?: string;
 }
 export interface Summary extends Counts {
-  levels: (Counts & { level: string })[];
   constants: (Counts & { constant: number })[];
-  sync: SyncResult | null;
 }
 export interface Settings {
   configured: boolean;
-  source: 'environment' | 'local' | null;
-  sync: SyncResult | null;
 }
 export interface Preferences {
   default_constant_min: number;

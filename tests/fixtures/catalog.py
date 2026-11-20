@@ -1,4 +1,4 @@
-"""A small generated legacy catalog and synthetic AP imports.
+"""A small generated catalog and synthetic AP imports.
 
 The 101 filler charts deliberately exceed the API's default 100-row page.
 Six hand-authored rows exercise STD/DX identity, Re:MASTER, blank titles,
@@ -16,6 +16,7 @@ IMPORTED_COUNT = 6
 LEGACY_COMPLETE = 2
 LOW_COUNT = 3
 HIGH_COMPLETE = 1
+DIFFICULTY_NAMES = ("BASIC", "ADVANCED", "EXPERT", "MASTER", "Re:MASTER")
 
 
 def write_catalog(directory):
@@ -58,17 +59,12 @@ def write_catalog(directory):
         sid = 2000 + offset
         songs.append((sid, f"Generated song {offset}", "Fixture Artist"))
         charts.append((sid, "standard", 3, 14.0 + (offset % 10) / 10, f"Generated song {offset}"))
+    aliases = {30: ["Fixture alias"]}
     with closing(sqlite3.connect(directory / "catalog.sqlite")) as conn, conn:
         conn.executescript("""
             CREATE TABLE metadata(key TEXT PRIMARY KEY, value_json TEXT);
-            CREATE TABLE songs(id INTEGER PRIMARY KEY,title TEXT,artist TEXT);
-            CREATE TABLE charts(chart_key TEXT PRIMARY KEY,song_id INTEGER,type TEXT,
-                difficulty_index INTEGER,difficulty_name TEXT,level TEXT,constant REAL,
-                divingfish_id TEXT,api_version INTEGER,jp_release_version TEXT,
-                jp_release_version_candidate TEXT,release_status TEXT);
-            CREATE TABLE aliases(song_id INTEGER,alias TEXT);
-            CREATE TABLE external_ids(namespace TEXT,external_id TEXT,song_id INTEGER,
-                type TEXT,mapping_rule TEXT,source_title TEXT);
+            CREATE TABLE charts(id INTEGER, difficulty INTEGER, type TEXT, data_json TEXT,
+                PRIMARY KEY(id, difficulty));
         """)
         conn.execute(
             "INSERT INTO metadata VALUES (?,?)",
@@ -80,32 +76,36 @@ def write_catalog(directory):
         conn.execute(
             "INSERT INTO metadata VALUES (?,?)", ("snapshot_at", json.dumps("2020-01-01T00:00:00Z"))
         )
-        conn.executemany("INSERT INTO songs VALUES (?,?,?)", songs)
+        artists = {sid: artist for sid, _, artist in songs}
+        titles = {sid: title for sid, title, _ in songs}
         for sid, kind, difficulty, constant, external_title in charts:
-            external_id = str(sid + (10000 if kind == "dx" else 0))
-            level = str(int(constant)) + ("+" if constant % 1 >= 0.6 else "")
+            chart_id = sid + (10000 if kind == "dx" else 0)
+            chart = {
+                "id": chart_id,
+                "difficulty": difficulty,
+                "lxns_song_id": sid,
+                "type": kind,
+                "title": titles[sid],
+                "artist": artists[sid],
+                "difficulty_name": DIFFICULTY_NAMES[difficulty],
+                "level": str(int(constant)) + ("+" if constant % 1 >= 0.6 else ""),
+                "constant": constant,
+                "divingfish_id": str(chart_id),
+                "cn_version": 20000,
+                "api_version": 20000,
+                "jp_release_version": "PiNK",
+                "release_status": "resolved",
+                "admission_status": "admitted",
+                "jacket_path": f"jackets/{sid}.png",
+                "aliases": aliases.get(sid, []),
+                "external_ids": [
+                    {"namespace": "divingfish", "id": str(chart_id), "source_title": external_title}
+                ],
+            }
             conn.execute(
-                "INSERT INTO charts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    f"{sid}:{kind}:{difficulty}",
-                    sid,
-                    kind,
-                    difficulty,
-                    ("BASIC", "ADVANCED", "EXPERT", "MASTER", "Re:MASTER")[difficulty],
-                    level,
-                    constant,
-                    external_id,
-                    20000,
-                    "PiNK",
-                    None,
-                    "resolved",
-                ),
+                "INSERT INTO charts VALUES (?,?,?,?)",
+                (chart_id, difficulty, kind, json.dumps(chart, ensure_ascii=False)),
             )
-            conn.execute(
-                "INSERT INTO external_ids VALUES (?,?,?,?,?,?)",
-                ("divingfish", external_id, sid, kind, "fixture_id", external_title),
-            )
-        conn.execute("INSERT INTO aliases VALUES (?,?)", (30, "Fixture alias"))
     return directory
 
 

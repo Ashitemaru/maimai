@@ -20,8 +20,6 @@ export interface CatalogUpdateState {
       songs_added: number;
       charts_added: number;
       constants_changed: number;
-      songs_missing: number;
-      charts_missing: number;
     };
     warnings: string[];
   };

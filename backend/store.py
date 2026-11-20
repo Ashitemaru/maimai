@@ -62,24 +62,9 @@ def normalized(value):
     return unicodedata.normalize("NFKC", str(value)).strip().casefold()
 
 
-def canonical_chart_key(value):
-    """Translate a historical key without changing a chart's identity."""
-    value = str(value)
-    if value.count(":") != 2:
-        return value
-    match = re.fullmatch(r"(\d+):(standard|dx|utage):(\d+)", value)
-    if not match:
-        return value
-    song_id, kind, difficulty = match.groups()
-    return f"{int(song_id) + (10000 if kind == 'dx' else 0)}:{int(difficulty)}"
-
-
 class ChartIndex(dict):
-    schema_version = 1
-
-    def __init__(self, *args, schema_version=1, source_charts=None, versions_cn=(), **kwargs):
+    def __init__(self, *args, source_charts=None, versions_cn=(), **kwargs):
         super().__init__(*args, **kwargs)
-        self.schema_version = schema_version
         self.source_charts = source_charts if source_charts is not None else self
         self.cn_version_ranges = []
         self.cn_versions = []
@@ -205,12 +190,10 @@ class Store(APRecords):
                     "Production personal.sqlite3 has no valid import metadata; restore the existing personal database."
                 ) from exc
         self.runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._initialized = False
         self.reload_catalog()
         if os.environ.get("MAIMAI_ENV") == "production" and not self.catalog:
             raise RuntimeError("Production catalog has no admitted charts.")
         self._initialize()
-        self._initialized = True
 
     @property
     def catalog(self):
@@ -225,9 +208,6 @@ class Store(APRecords):
         return current.resolve() if current.exists() else self.catalog_root
 
     def install_catalog(self, loaded_tuple):
-        if self._initialized and getattr(loaded_tuple[0], "schema_version", 1) >= 2:
-            with self.db() as conn:
-                self._migrate_personal_keys(conn)
         # Publish both indexes together; readers retain their existing snapshot.
         with self._chart_cache_lock:
             self._catalog_snapshot = tuple(loaded_tuple)
@@ -312,34 +292,13 @@ class Store(APRecords):
                 "SELECT value_json FROM metadata WHERE key='versions_cn'"
             ).fetchone()
             versions_cn = json.loads(version_row[0]) if version_row else []
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(charts)")}
-            if {"id", "difficulty"} <= columns:
-                return self._load_chart_catalog(conn, Path(path), versions_cn)
-            aliases = {}
-            for row in conn.execute("SELECT song_id,alias FROM aliases"):
-                aliases.setdefault(row[0], []).append(row[1])
-            charts = ChartIndex(versions_cn=versions_cn)
-            for row in conn.execute(
-                "SELECT c.*,s.title,s.artist FROM charts c JOIN songs s ON s.id=c.song_id WHERE c.type!='utage'"
-            ):
-                c = dict(row)
-                c["display_title"] = c["title"] if c["title"].strip() else "（空白曲名）"
-                c["jacket_url"] = f"/jackets/{c['song_id']}.png"
-                c["_search"] = normalized(
-                    " ".join([c["title"], c["artist"], *aliases.get(c["song_id"], [])])
-                )
-                charts[c["chart_key"]] = c
-            mapping = {
-                str(r["external_id"]): dict(r)
-                for r in conn.execute("SELECT * FROM external_ids WHERE namespace='divingfish'")
-            }
+            return self._load_chart_catalog(conn, Path(path), versions_cn)
         finally:
             conn.close()
-        return charts, mapping
 
     def _load_chart_catalog(self, conn, directory, versions_cn):
         source_charts, mapping = self._source_chart_index(directory)
-        charts = ChartIndex(schema_version=2, source_charts=source_charts, versions_cn=versions_cn)
+        charts = ChartIndex(source_charts=source_charts, versions_cn=versions_cn)
         for row in conn.execute("SELECT data_json FROM charts WHERE type!='utage'"):
             value = json.loads(row[0])
             chart_id, difficulty = int(value["id"]), int(value["difficulty"])
@@ -424,32 +383,6 @@ class Store(APRecords):
                     }
         return source_charts, mapping
 
-    def _migrate_personal_keys(self, conn):
-        row = conn.execute("SELECT value FROM metadata WHERE key='chart_key_schema'").fetchone()
-        if row and json.loads(row[0]) == 2:
-            return
-        for table in ("legacy", "manual", "provider"):
-            rows = conn.execute(f"SELECT chart_key FROM {table}").fetchall()
-            seen = set()
-            for row in rows:
-                old, new = row[0], canonical_chart_key(row[0])
-                if new in seen:
-                    raise ValueError(f"个人记录主键迁移有重复，原记录已保留：{table} {new}")
-                seen.add(new)
-            for row in rows:
-                old, new = row[0], canonical_chart_key(row[0])
-                if new != old:
-                    conn.execute(f"UPDATE {table} SET chart_key=? WHERE chart_key=?", (new, old))
-        for row in conn.execute(
-            "SELECT id,chart_key FROM events WHERE chart_key IS NOT NULL"
-        ).fetchall():
-            conn.execute(
-                "UPDATE events SET chart_key=? WHERE id=?", (canonical_chart_key(row[1]), row[0])
-            )
-        conn.execute(
-            "INSERT INTO metadata VALUES('chart_key_schema','2') ON CONFLICT(key) DO UPDATE SET value='2'"
-        )
-
     def _initialize(self):
         with self.db() as conn:
             conn.executescript("""
@@ -471,8 +404,6 @@ class Store(APRecords):
             initialize_records(conn)
             if not conn.execute("SELECT 1 FROM metadata WHERE key='import' ").fetchone():
                 self._import(conn)
-            if getattr(self.catalog, "schema_version", 1) >= 2:
-                self._migrate_personal_keys(conn)
             conn.execute(
                 "INSERT OR IGNORE INTO metadata(key, value) VALUES ('preferences', ?)",
                 (json.dumps(DEFAULT_PREFERENCES),),
@@ -604,32 +535,18 @@ class Store(APRecords):
                 for row in conn.execute("SELECT chart_key,achievement,fc,synced_at FROM provider")
             }
             record_state = read_record_state(conn)
-            revisions = dict(
-                conn.execute(
-                    "SELECT chart_key,MAX(id) FROM events WHERE kind IN ('manual','manual_reset') GROUP BY chart_key"
-                )
-            )
             row = conn.execute("SELECT value FROM metadata WHERE key='last_sync'").fetchone()
             last_sync = json.loads(row[0]) if row else None
-            provider_source = (last_sync or {}).get("source", "divingfish")
-            provider_label = "水鱼"
         items = ChartList(
             cn_versions=catalog.cn_versions, cn_matrix_versions=catalog.cn_matrix_versions
         )
         for key, c in catalog.items():
-            canonical_key = canonical_chart_key(key)
-
-            def lookup(records, chart_key=key, fallback_key=canonical_key):
-                if chart_key in records:
-                    return records[chart_key]
-                return records.get(fallback_key) if chart_key != fallback_key else None
-
-            old, user, remote = lookup(legacy), lookup(manual), lookup(provider)
-            evidence = lookup(record_state["evidence"])
-            confirmed = lookup(record_state["confirmed"])
-            pending = lookup(record_state["pending"])
-            record_revision = lookup(record_state["revisions"])
-            details = lookup(record_state["details"])
+            old, user, remote = legacy.get(key), manual.get(key), provider.get(key)
+            evidence = record_state["evidence"].get(key)
+            confirmed = record_state["confirmed"].get(key)
+            pending = record_state["pending"].get(key)
+            record_revision = record_state["revisions"].get(key)
+            details = record_state["details"].get(key)
             fields = (
                 "id",
                 "difficulty",
@@ -657,9 +574,7 @@ class Store(APRecords):
                 "_search",
             )
             item = {name: c.get(name) for name in fields}
-            item["id"] = c["id"] if "id" in c else int(canonical_key.split(":")[0])
-            item["difficulty"] = c.get("difficulty", c["difficulty_index"])
-            item["cn_version"] = c.get("cn_version", c.get("api_version"))
+            item["cn_version"] = c.get("cn_version")
             item["_cn_version_group"] = catalog.cn_version_group(item["cn_version"])
             manual_ap = bool(user["ap"]) if user else None
             provider_ap = bool(remote and remote["fc"] in ("ap", "app"))
@@ -683,21 +598,19 @@ class Store(APRecords):
             warnings = []
             if manual_ap is True and not provider_ap:
                 if last_sync:
-                    warnings.append(
-                        f"已保存你的 AP 记录；{provider_label}尚未记录 AP，可能还未更新成绩。"
-                    )
+                    warnings.append("已保存你的 AP 记录；水鱼尚未记录 AP，可能还未更新成绩。")
                 else:
                     warnings.append("已保存你的 AP 记录；尚未同步成绩。")
             if manual_ap is False and provider_ap:
-                warnings.append(f"本地已按你的修改标为未完成；{provider_label}仍有 AP 记录。")
+                warnings.append("本地已按你的修改标为未完成；水鱼仍有 AP 记录。")
             if old and old["complete"] and not is_ap and manual_ap is None:
                 warnings.append("原表完成标记尚未核实为 AP（原表可能包含删曲豁免）。")
                 if last_sync:
-                    warnings.append(f"{provider_label}暂未记录 AP；保留原表完成状态，可稍后核对。")
+                    warnings.append("水鱼暂未记录 AP；保留原表完成状态，可稍后核对。")
             if evidence and not remote:
-                warnings.append(f"本次{provider_label}未返回这张成绩；保留此前核准记录。")
+                warnings.append("本次水鱼未返回这张成绩；保留此前核准记录。")
             elif evidence and not provider_ap:
-                warnings.append(f"{provider_label}当前成绩与此前 AP 证据不一致；保留已核准记录。")
+                warnings.append("水鱼当前成绩与此前 AP 证据不一致；保留已核准记录。")
             item.update(
                 {
                     "group": old["group_name"] if old else "catalog",
@@ -715,13 +628,11 @@ class Store(APRecords):
                     "venue_confirmed_at": confirmed["confirmed_at"] if confirmed else None,
                     "note": user["note"] if user else "",
                     "manual_date": user["achieved_date"] if user else None,
-                    "manual_updated_at": user["updated_at"] if user else None,
-                    "manual_revision": revisions.get(key, revisions.get(canonical_key, 0)),
                     "achievement": achievement,
                     "provider_achievement": remote["achievement"] if remote else None,
                     "provider_fc": remote["fc"] if remote else None,
                     "provider_synced_at": remote["synced_at"] if remote else None,
-                    "provider_source": provider_source if remote else None,
+                    "provider_source": "divingfish" if remote else None,
                     "provider_fs": details["fs"] if details else None,
                     "provider_dx_score": details["dx_score"] if details else None,
                     "provider_rate": details["rate"] if details else None,
@@ -761,8 +672,6 @@ class Store(APRecords):
         return items
 
     def chart(self, key):
-        if getattr(self.catalog, "schema_version", 1) >= 2:
-            key = canonical_chart_key(key)
         return next((chart for chart in self.all_charts() if chart["chart_key"] == key), None)
 
     def token(self):

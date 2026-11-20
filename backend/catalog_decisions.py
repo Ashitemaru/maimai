@@ -70,9 +70,6 @@ class CatalogDecisions:
             document["schema_version"] = schema[0]
         return document
 
-    def save(self, decision, expected_revision):
-        return self.save_many([decision], expected_revision)
-
     def save_many(self, decisions, expected_revision):
         """Store all submitted chart choices atomically, with one durable audit event per field."""
         values = [dict(decision) for decision in decisions]

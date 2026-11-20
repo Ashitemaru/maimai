@@ -7,14 +7,10 @@ type VenueRow = {
   city: string;
   counts: Record<string, number>;
   total: number;
-  pending_count: number;
 };
 type VenueTotals = {
   levels: { value: string; label: string }[];
   items: VenueRow[];
-  totals: Record<string, number>;
-  total: number;
-  pending_count: number;
 };
 
 function sum(items: VenueRow[], level?: string) {

@@ -48,7 +48,7 @@ class CompletionMatrixTests(unittest.TestCase):
         catalog_dir.mkdir()
         shutil.copy2(ROOT / "data/catalog/catalog.sqlite", catalog_dir / "catalog.sqlite")
         self.store = Store(runtime=self.tmp.name, catalog_dir=catalog_dir)
-        self.base = self.store.catalog["22:standard:4"]
+        self.base = self.store.catalog["22:4"]
         self.client = TestClient(create_app(self.store, updater=FakeUpdater()))
 
     def tearDown(self):

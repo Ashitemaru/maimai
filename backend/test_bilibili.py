@@ -634,7 +634,7 @@ class BilibiliProtocolTests(unittest.TestCase):
         mirrored_title = "+PA 9.31retsaM elpmaxE【iamiam】"
         self.assertEqual(title_for(chart, mirror, mirrored_title), mirrored_title)
 
-    def test_mirror_only_changes_recognized_combo_token_and_respects_override(self):
+    def test_mirror_only_changes_recognized_combo_token(self):
         chart = {"title": "Example", "difficulty_index": 3, "type": "standard"}
         mirror = preparation().model_copy(update={"bvid": "BV1bJouBSEiH", "combo": "app"})
         suffix = "  9.31retsaM elpmaxE【iamiam】"
@@ -644,8 +644,6 @@ class BilibiliProtocolTests(unittest.TestCase):
                 with self.assertRaises(BilibiliError) as error:
                     title_for(chart, mirror, original)
                 self.assertEqual(error.exception.status, 422)
-        override = mirror.model_copy(update={"title_override": "Explicit title AP+"})
-        self.assertEqual(title_for(chart, override, "REVERSED"), "Explicit title AP+")
 
     def test_cdn_aliases_equal_but_external_host_not_equal(self):
         self.assertEqual(

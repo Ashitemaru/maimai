@@ -26,7 +26,6 @@ CORE_SCRIPTS = {
     "catalog_policy.py",
     "catalog_record_review.py",
     "catalog_versions.py",
-    "download_jackets.py",
     "remy_html.py",
     "remy_release.py",
     "validate_catalog.py",

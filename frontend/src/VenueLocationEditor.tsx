@@ -1,21 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, messageOf } from './api';
 import { VenueMap, type VenueMapPoint } from './VenueMap';
-import { venuePoint, type VenueLocation, type VenuePlace } from './venueTypes';
+import { venuePoint, type VenueLocation } from './venueTypes';
 import { useNotify } from './Toast';
 
 type SearchPlace = VenueMapPoint & { place_name: string; address: string };
 
 export function VenueLocationEditor({
   venue,
-  venues = [],
   onClose,
   onSaved,
 }: {
   venue: { name: string; location: VenueLocation | null };
-  venues?: VenuePlace[];
   onClose: () => void;
-  onSaved: (name: string) => void;
+  onSaved: (name: string, point: { latitude: number; longitude: number }) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [name, setName] = useState(venue.name);
@@ -72,11 +70,7 @@ export function VenueLocationEditor({
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (busy) return;
-    if (!point) {
-      notify('请先搜索并选择地点。');
-      return;
-    }
+    if (busy || !point) return;
     setBusy(true);
     try {
       await api('/venues/location', {
@@ -87,7 +81,7 @@ export function VenueLocationEditor({
           longitude: point.longitude,
         }),
       });
-      if (active.current) onSaved(name.trim());
+      if (active.current) onSaved(name.trim(), point);
     } catch (error) {
       if (active.current) notify(messageOf(error));
     } finally {
@@ -151,14 +145,7 @@ export function VenueLocationEditor({
             </a>
           </div>
         )}
-        {point && (
-          <VenueMap
-            venues={venues.map((item) => ({ ...item, location: venuePoint(item.location) }))}
-            point={point}
-            onPick={setPoint}
-            focusPoint={focus}
-          />
-        )}
+        {point && <VenueMap venues={[]} point={point} onPick={setPoint} focusPoint={focus} />}
         <form onSubmit={save} className="venue-editor-form">
           <label className="field">
             显示名称

@@ -28,7 +28,6 @@ import {
 interface LoginRequest {
   login_id: string;
   url: string;
-  expires_at: string;
   image: string;
   state: string;
 }
@@ -445,10 +444,11 @@ export function PublishingPage({ onOpenCover }: { onOpenCover?: () => void } = {
       await api('/bilibili/session', { method: 'DELETE' });
       if (generation === sessionGeneration.current) clearSession();
     } catch (error) {
+      if (generation !== sessionGeneration.current) return;
       notify(messageOf(error));
       setRefresh((value) => value + 1);
     } finally {
-      setBusy(false);
+      if (generation === sessionGeneration.current) setBusy(false);
     }
   }
 

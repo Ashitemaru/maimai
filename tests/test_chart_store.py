@@ -5,7 +5,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from backend.store import Store, canonical_chart_key
+from backend.store import Store
 
 
 class ChartStoreTests(unittest.TestCase):
@@ -70,68 +70,11 @@ class ChartStoreTests(unittest.TestCase):
     def test_flat_catalog_and_known_pending_chart(self):
         self.assertEqual(list(self.store.catalog), ["10001:3"])
         self.assertIn("10001:4", self.store.catalog.source_charts)
-        chart = self.store.chart("1:dx:3")
+        chart = self.store.chart("10001:3")
         self.assertEqual((chart["id"], chart["difficulty"], chart["song_id"]), (10001, 3, 10001))
         self.assertEqual(chart["jacket_url"], "/jackets/1.png")
         self.assertIn("nickname", chart["_search"])
         self.assertIsNone(self.store.chart("10001:4"))
-        self.assertEqual(self.store.meta("chart_key_schema"), 2)
-
-    def test_personal_migration_preserves_all_values_and_pending_rows(self):
-        with self.store.db() as conn:
-            conn.execute("DELETE FROM metadata WHERE key='chart_key_schema'")
-            conn.execute(
-                "INSERT INTO legacy VALUES(?,?,?,?,?,?,?,?,?)",
-                ("1:dx:4", "high", 14.0, 1, "机厅", "[ReM, DX] Example", "file.tsv", 2, 3),
-            )
-            conn.execute(
-                "INSERT INTO manual VALUES(?,?,?,?,?,?,?)",
-                ("1:dx:3", 1, "Arcade", 100.9, "Note", "2026-10-10", "then"),
-            )
-            conn.execute(
-                "INSERT INTO provider VALUES(?,?,?,?,?)",
-                ("1:dx:4", 101, "app", "then", '{"original":true}'),
-            )
-            conn.execute(
-                "INSERT INTO events(chart_key,kind,created_at,data_json) VALUES(?,?,?,?)",
-                ("1:dx:3", "manual", "then", '{"audit":true}'),
-            )
-            before = {
-                table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")]
-                for table in ("legacy", "manual", "provider", "events")
-            }
-        self.store.reload_catalog()
-        self.store.reload_catalog()
-        with self.store.db() as conn:
-            for table, old_rows in before.items():
-                new_rows = [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")]
-                position = 1 if table == "events" else 0
-                expected = []
-                for row in old_rows:
-                    row = list(row)
-                    row[position] = canonical_chart_key(row[position])
-                    expected.append(tuple(row))
-                self.assertEqual(new_rows, expected)
-        chart = self.store.chart("10001:3")
-        self.assertTrue(chart["is_ap"])
-        self.assertEqual(chart["venue"], "Arcade")
-        self.assertEqual(chart["achievement"], 100.9)
-
-    def test_collision_rolls_back_without_removing_data(self):
-        with self.store.db() as conn:
-            conn.execute("DELETE FROM metadata WHERE key='chart_key_schema'")
-            for key in ("1:dx:3", "10001:3"):
-                conn.execute(
-                    "INSERT INTO provider VALUES(?,?,?,?,?)", (key, 100.9, "ap", "then", "{}")
-                )
-        with self.assertRaisesRegex(ValueError, "主键迁移有重复"):
-            self.store.reload_catalog()
-        with self.store.db() as conn:
-            self.assertEqual(
-                {row[0] for row in conn.execute("SELECT chart_key FROM provider")},
-                {"1:dx:3", "10001:3"},
-            )
-        self.assertIsNone(self.store.meta("chart_key_schema"))
 
     def test_provider_keeps_known_pending_chart_without_admitting_it(self):
         result = self.store.import_provider(

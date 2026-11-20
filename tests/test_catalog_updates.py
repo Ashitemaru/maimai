@@ -44,6 +44,15 @@ def fixture(directory, generation, verified=False):
     temp.replace(directory / "catalog.sqlite")
 
 
+def decide_one(service, request):
+    """Submit one chart's choices through the batch API the UI uses."""
+    bases = {"base_catalog_revision", "base_decision_revision"}
+    return service.decide_records(
+        {key: request[key] for key in bases}
+        | {"records": [{key: value for key, value in request.items() if key not in bases}]}
+    )
+
+
 class FixtureStore:
     def __init__(self, directory):
         self.catalog_root = directory.resolve()
@@ -356,7 +365,12 @@ class UpdateTests(unittest.TestCase):
             write(stage / "catalog.json", document)
             write(
                 stage / "catalog_record_review.json",
-                {"schema_version": 2, "counts": counts, "records": [record]},
+                {
+                    "schema_version": 2,
+                    "counts": counts,
+                    "remy_counts": {"total": 1, "verified": 1, "pending": 0},
+                    "records": [record],
+                },
             )
             return {"schema_version": 2, "counts": counts, "issues": []}
 
@@ -438,7 +452,7 @@ class UpdateTests(unittest.TestCase):
         service = self.service()
         self.chart_fixture(service)
         self.assertEqual(self.store.catalog, {})
-        service.decide_record(self.chart_request(service))
+        decide_one(service, self.chart_request(service))
         self.finish(service)
         self.assertEqual(self.store.catalog["10001:4"]["artist"], "Selected Artist")
         self.assertEqual(self.store.catalog["10001:4"]["constant"], 13.9)
@@ -461,7 +475,7 @@ class UpdateTests(unittest.TestCase):
         self.chart_fixture(service)
         before = service.status()["revision"]
         service._validate = lambda stage: (_ for _ in ()).throw(ValueError("validation failed"))
-        service.decide_record(self.chart_request(service))
+        decide_one(service, self.chart_request(service))
         self.finish(service)
         self.assertEqual(service.status()["main"]["status"], "failed")
         self.assertEqual(service.status()["revision"], before)
@@ -489,7 +503,7 @@ class UpdateTests(unittest.TestCase):
         self.finish(service, remy=False)
         self.assertTrue(entered.wait(3))
         old_future = service._remy_future
-        service.decide_record(self.chart_request(service))
+        decide_one(service, self.chart_request(service))
         service._main_future.result(timeout=5)
         revision = service.status()["revision"]
         release.set()
@@ -545,7 +559,7 @@ class UpdateTests(unittest.TestCase):
         ]
         for request in invalid:
             with self.subTest(request=request), self.assertRaises(ValueError):
-                service.decide_record(request)
+                decide_one(service, request)
             self.assertEqual(service.decisions.snapshot()["decisions"], [])
             self.assertEqual(service.decisions.history(), [])
             self.assertIsNone(service._main_future)
@@ -561,13 +575,13 @@ class UpdateTests(unittest.TestCase):
 
         service._build = counting_builder
         request = self.chart_request(service)
-        service.decide_record(request)
+        decide_one(service, request)
         self.finish(service)
         self.assertEqual(len(calls), 1)
         self.assertEqual(service.decisions.snapshot()["revision"], 2)
         self.assertEqual({event["batch_id"] for event in service.decisions.history()}, {1})
         with self.assertRaises(StaleDecisionError):
-            service.decide_record(request)
+            decide_one(service, request)
         self.assertEqual(len(calls), 1)
         service.revoke_record(self.revoke_request(service))
         self.finish(service)
@@ -578,7 +592,7 @@ class UpdateTests(unittest.TestCase):
     def test_unknown_revoke_field_rolls_back_whole_request(self):
         service = self.service()
         self.chart_fixture(service)
-        service.decide_record(self.chart_request(service))
+        decide_one(service, self.chart_request(service))
         self.finish(service)
         before = service.decisions.snapshot()
         with self.assertRaises(ValueError):
@@ -768,7 +782,7 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(service.manual_records()["records"], [])
         # Author/constant conflicts quarantine the chart without making a verified JP release unknown.
         self.assertEqual(service._remy_summary()["verified_count"], 1)
-        service.decide_record(self.chart_request(service))
+        decide_one(service, self.chart_request(service))
         self.finish(service)
         self.assertEqual(service.record_review()["records"], [])
         self.assertEqual(service.record_review()["counts"]["admitted"], 1)
