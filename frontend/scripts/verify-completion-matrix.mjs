@@ -326,11 +326,15 @@ async function settled(page, params = new URLSearchParams()) {
   await waitFor(
     async () =>
       expected.summary.total
-        ? (await page
-            .locator('.matrix-table tfoot td')
-            .last()
-            .textContent()
-            .catch(() => '')) === `${expected.summary.complete} / ${expected.summary.total}`
+        ? (
+            await page
+              .locator('.matrix-table tfoot td .matrix-count')
+              .last()
+              .getAttribute('aria-label')
+              .catch(() => '')
+          )?.endsWith(
+            `已完成 ${expected.summary.complete}，共 ${expected.summary.total} 张，剩余 ${expected.summary.remaining} 张`,
+          )
         : (await page
             .locator('.matrix-workspace .empty-state')
             .textContent()
@@ -651,6 +655,12 @@ try {
     assert.equal(await page.getByRole('combobox', { name: '难度', exact: true }).inputValue(), '');
     assert.equal(await page.locator('.matrix-table th[title="maimai"]').textContent(), '初');
     assert.equal(await page.locator('.matrix-table th[title="maimai PLUS"]').textContent(), '真');
+    assert.equal(
+      await page.getByRole('combobox', { name: '显示', exact: true }).inputValue(),
+      'remaining',
+    );
+    assert.equal(await cell(page, 14.9, 'maimai').textContent(), '25');
+    await page.getByRole('combobox', { name: '显示', exact: true }).selectOption('complete');
     assert.equal(await cell(page, 14.9, 'maimai').textContent(), '7 / 32');
     assert.equal(await cell(page, 14.7, 'GreeN').getAttribute('data-complete'), 'true');
     assert((await page.locator('.matrix-table td [data-empty="true"]').count()) > 0);

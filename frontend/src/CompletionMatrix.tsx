@@ -14,7 +14,14 @@ type MatrixData = {
   totals: Record<string, Counts>;
   summary: Counts;
 };
-type RequestState<T> = { key: string; data?: T; error?: string };
+// `query` excludes the data revision: a background refresh keeps showing the previous
+// result for the same filters instead of collapsing the page while it reloads.
+type RequestState<T> = { key: string; query: string; data?: T; error?: string };
+
+function visibleResult<T>(result: RequestState<T> | null, key: string, query: string) {
+  if (result?.key === key) return result;
+  return result?.query === query && result.data ? result : null;
+}
 type Display = 'complete' | 'remaining';
 type Selection = {
   constant: number;
@@ -82,7 +89,7 @@ function MatrixDetail({
   params.set('sort', 'constant_desc');
   const query = params.toString();
   const requestKey = `${query}|${revision}|${retry}`;
-  const current = result?.key === requestKey ? result : null;
+  const current = visibleResult(result, requestKey, query);
   const data = current?.data;
 
   useEffect(() => {
@@ -100,10 +107,11 @@ function MatrixDetail({
     const controller = new AbortController();
     api<ChartList>(`/charts?${query}`, { signal: controller.signal })
       .then((data) => {
-        if (!controller.signal.aborted) setResult({ key: requestKey, data });
+        if (!controller.signal.aborted) setResult({ key: requestKey, query, data });
       })
       .catch((error) => {
-        if (!controller.signal.aborted) setResult({ key: requestKey, error: messageOf(error) });
+        if (!controller.signal.aborted)
+          setResult({ key: requestKey, query, error: messageOf(error) });
       });
     return () => controller.abort();
   }, [query, requestKey]);
@@ -171,7 +179,7 @@ function MatrixDetail({
             未完成 {selection.counts.remaining}
           </button>
         </div>
-        <div className="matrix-detail-list" aria-busy={!current}>
+        <div className="matrix-detail-list" aria-busy={current?.key !== requestKey}>
           {!current && (
             <div className="empty-state" role="status">
               加载谱面…
@@ -258,7 +266,7 @@ export function CompletionMatrix({
   const [range, setRange] = useState<[number, number] | null>(() => [...defaultRange]);
   const [versionMin, setVersionMin] = useState('');
   const [versionMax, setVersionMax] = useState('');
-  const [display, setDisplay] = useState<Display>('complete');
+  const [display, setDisplay] = useState<Display>('remaining');
   const [filters, setFilters] = useState<ChartFilters | null>(null);
   const [filtersError, setFiltersError] = useState('');
   const [filterRetry, setFilterRetry] = useState(0);
@@ -280,7 +288,7 @@ export function CompletionMatrix({
   if (versionMax) params.set('cn_version_max', versionMax);
   const query = params.toString();
   const requestKey = `${query}|${revision}|${retry}`;
-  const current = result?.key === requestKey ? result : null;
+  const current = visibleResult(result, requestKey, query);
   const data = current?.data;
 
   useEffect(() => {
@@ -300,10 +308,11 @@ export function CompletionMatrix({
     const controller = new AbortController();
     api<MatrixData>(`/completion-matrix?${query}`, { signal: controller.signal })
       .then((data) => {
-        if (!controller.signal.aborted) setResult({ key: requestKey, data });
+        if (!controller.signal.aborted) setResult({ key: requestKey, query, data });
       })
       .catch((error) => {
-        if (!controller.signal.aborted) setResult({ key: requestKey, error: messageOf(error) });
+        if (!controller.signal.aborted)
+          setResult({ key: requestKey, query, error: messageOf(error) });
       });
     return () => controller.abort();
   }, [query, requestKey]);
@@ -323,7 +332,6 @@ export function CompletionMatrix({
     setRange(null);
     setVersionMin('');
     setVersionMax('');
-    setDisplay('complete');
   }
 
   function renderCount(counts: Counts, label: string) {
@@ -387,8 +395,8 @@ export function CompletionMatrix({
           <label className="matrix-field">
             <span>显示</span>
             <select value={display} onChange={(event) => setDisplay(event.target.value as Display)}>
-              <option value="complete">完成 / 总数</option>
               <option value="remaining">剩余数量</option>
+              <option value="complete">完成 / 总数</option>
             </select>
           </label>
           <button type="button" className="btn quiet matrix-clear" onClick={resetFilters}>
@@ -410,7 +418,7 @@ export function CompletionMatrix({
           />
         )}
       </div>
-      <div aria-busy={!current}>
+      <div aria-busy={current?.key !== requestKey}>
         {!current && (
           <div className="empty-state" role="status">
             加载完成统计…

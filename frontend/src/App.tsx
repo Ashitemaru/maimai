@@ -542,6 +542,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     new URLSearchParams(location.search).get('view') === 'completion' ? 'completion' : 'list',
   );
   const [completionData, setCompletionData] = useState<CompletionTableData | null>(null);
+  const completionKeyRef = useRef('');
   const [listError, setListError] = useState('');
   const [constantRange, setConstantRange] = useState<[number, number] | null>(null);
   const rangeQuery = useDebounce(constantRange, 160);
@@ -727,7 +728,10 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
     listParams.set('sort', sort);
     let request: Promise<void>;
     if (catalogView === 'completion') {
-      setCompletionData(null);
+      // A focus refresh only bumps `revision`; keep the table so the page keeps its scroll.
+      const completionKey = listParams.toString();
+      if (completionKey !== completionKeyRef.current) setCompletionData(null);
+      completionKeyRef.current = completionKey;
       request = api<CompletionTableData>('/completion-table?' + listParams, {
         signal: controller.signal,
       }).then((data) => {
