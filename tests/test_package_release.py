@@ -9,9 +9,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from deploy.deploy_release import CORE_SCRIPTS as DEPLOY_SCRIPTS
 from deploy.deploy_release import DeployError, extract_archive
-from scripts.package_release import CORE_SCRIPTS, main, package, publish_release, run_gh
+from scripts.package_release import main, package, publish_release, run_gh
 from tests.dependency_fixtures import dependency_files
 
 SHA = "a" * 40
@@ -211,7 +210,6 @@ class PackageReleaseTest(unittest.TestCase):
         destination.mkdir()
         extract_archive(archive, destination, SHA)
         self.assertEqual((destination / "RELEASE_SHA").read_text().strip(), SHA)
-        self.assertEqual(CORE_SCRIPTS, DEPLOY_SCRIPTS)
 
     def test_missing_runtime_module_prevents_release(self):
         (self.root / "backend/store.py").unlink()

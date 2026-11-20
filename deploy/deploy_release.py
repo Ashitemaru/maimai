@@ -33,18 +33,6 @@ MAX_EXTRACTED = 256 * 1024 * 1024
 DEPENDENCY_SCHEMA = 1
 PIP_VERSION = "26.2.1"
 WHEEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*\.whl\Z")
-CORE_SCRIPTS = {
-    "build_catalog.py",
-    "catalog_chart_compiler.py",
-    "catalog_pipeline.py",
-    "catalog_policy.py",
-    "catalog_record_review.py",
-    "catalog_versions.py",
-    "jp_versions.py",
-    "remy_html.py",
-    "remy_release.py",
-    "validate_catalog.py",
-}
 
 
 class DeployError(Exception):
@@ -71,7 +59,11 @@ def allowed_file(parts):
     if parts[0] == "backend":
         return len(parts) == 2 and parts[1].endswith(".py") and not parts[1].startswith("test")
     if parts[0] == "scripts":
-        return len(parts) == 2 and parts[1] in CORE_SCRIPTS
+        # Any top-level non-test module: the installed deployer must not need updating
+        # whenever the packaged script list changes.
+        return (
+            len(parts) == 2 and parts[1].endswith(".py") and not parts[1].startswith(("test", "."))
+        )
     if parts[:2] == ("frontend", "dist"):
         return len(parts) > 2
     return (
