@@ -1749,9 +1749,6 @@ input[type='checkbox'] {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 260px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 .catalog-change-group li {
   gap: var(--space-1);
@@ -2607,8 +2604,6 @@ input[type='checkbox'] {
 }
 .venue-place-results {
   display: grid;
-  max-height: 260px;
-  overflow-y: auto;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
 }
@@ -2726,13 +2721,36 @@ input[type='checkbox'] {
 .publishing-chart-results {
   display: grid;
   gap: var(--space-2);
-  max-height: 360px;
-  overflow-y: auto;
 }
 .publishing-chart img {
   width: 56px;
   height: 56px;
   border-radius: var(--radius-sm);
+}
+.catalog-change-group .stale-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  align-items: start;
+}
+.catalog-change-group .stale-item > input[type='checkbox'] {
+  width: 20px;
+  height: 20px;
+  margin: 2px 0 0;
+}
+.stale-titles {
+  display: grid;
+  gap: var(--space-1);
+}
+.stale-titles s {
+  color: var(--muted);
+}
+.stale-item > :is(small, .stale-achievement, .publishing-cover-previews, [role='status']) {
+  grid-column: 2;
+}
+.catalog-change-group .stale-achievement {
+  width: 100%;
+  max-width: 200px;
 }
 .publishing-mirror input {
   width: 20px;

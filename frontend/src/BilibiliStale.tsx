@@ -142,27 +142,28 @@ export function BilibiliStale({ revision }: { revision: string }) {
             {list.items.map((item) => {
               const result = results[item.bvid];
               return (
-                <li key={item.bvid}>
-                  <label className="publishing-mirror">
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(item.bvid)}
-                      disabled={busy}
-                      onChange={(event) =>
-                        setSelected((current) =>
-                          event.target.checked
-                            ? [...current, item.bvid]
-                            : current.filter((bvid) => bvid !== item.bvid),
-                        )
-                      }
-                    />
-                    <span>
-                      {item.title} → <strong>{item.proposed_title}</strong>
-                    </span>
-                  </label>
-                  <span>{item.reasons.map((reason) => reason.text).join(' · ')}</span>
+                <li key={item.bvid} className="stale-item">
+                  <input
+                    type="checkbox"
+                    aria-label={`更新 ${item.proposed_title}`}
+                    checked={selected.includes(item.bvid)}
+                    disabled={busy}
+                    onChange={(event) =>
+                      setSelected((current) =>
+                        event.target.checked
+                          ? [...current, item.bvid]
+                          : current.filter((bvid) => bvid !== item.bvid),
+                      )
+                    }
+                  />
+                  <div className="stale-titles">
+                    <s>{item.title}</s>
+                    <strong>{item.proposed_title}</strong>
+                  </div>
+                  <small>{item.reasons.map((reason) => reason.text).join(' · ')}</small>
                   {item.achievement === null && (
                     <input
+                      className="stale-achievement"
                       aria-label={`${item.bvid} 录像达成率`}
                       inputMode="decimal"
                       placeholder="录像达成率"
