@@ -78,12 +78,12 @@ export function APPage({
   const [q, setQ] = useState('');
   const query = useDebounce(q);
   const [difficulty, setDifficulty] = useState('');
-  const [status, setStatus] = useState('all');
+  const [status, setStatus] = useState('incomplete');
   const [offset, setOffset] = useState(0);
   const limit = 12;
   const [sort, setSort] = useState('constant_desc');
   const [catalogView, setCatalogView] = useState<'list' | 'completion'>(() =>
-    new URLSearchParams(location.search).get('view') === 'completion' ? 'completion' : 'list',
+    new URLSearchParams(location.search).get('view') === 'list' ? 'list' : 'completion',
   );
   const [completionData, setCompletionData] = useState<CompletionTableData | null>(null);
   const completionKeyRef = useRef('');
@@ -228,7 +228,7 @@ export function APPage({
       constantRange && `定数 ${constantRange[0].toFixed(1)}–${constantRange[1].toFixed(1)}`,
       status !== 'all' &&
         (
-          { complete: '已完成', incomplete: '未标记', conflict: '待核对' } as Record<string, string>
+          { complete: '已完成', incomplete: '未完成', conflict: '待核对' } as Record<string, string>
         )[status],
     ]
       .filter(Boolean)
@@ -237,7 +237,7 @@ export function APPage({
     setCatalogView(value);
     setOffset(0);
     const url = new URL(location.href);
-    if (value === 'completion') url.searchParams.set('view', 'completion');
+    if (value === 'list') url.searchParams.set('view', 'list');
     else url.searchParams.delete('view');
     history.replaceState(null, '', url);
   }
@@ -246,7 +246,7 @@ export function APPage({
     setDifficulty('');
     setConstantRange(null);
     setVersion('');
-    setStatus('all');
+    setStatus('incomplete');
     setOffset(0);
   }
   function changeRange(value: [number, number]) {
@@ -391,7 +391,7 @@ export function APPage({
                 {[
                   ['all', '全部谱面'],
                   ['complete', '已完成'],
-                  ['incomplete', '未标记'],
+                  ['incomplete', '未完成'],
                   ['conflict', '待核对'],
                 ].map(([value, label]) => (
                   <button

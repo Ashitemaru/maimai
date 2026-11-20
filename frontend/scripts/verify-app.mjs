@@ -16,7 +16,7 @@ async function login(page, key = MASTER_KEY) {
 const sections = {
   async auth(app) {
     app.api.state.auth.required = true;
-    const page = await app.open('/#ap');
+    const page = await app.open('/?view=list#ap');
     await page.getByLabel('Master Key', { exact: true }).waitFor();
     assert.equal(await page.locator('.shell').count(), 0);
     assert(
@@ -49,7 +49,9 @@ const sections = {
   },
 
   async list(app) {
-    const page = await app.open('/#ap');
+    const page = await app.open('/?view=list#ap');
+    assert.equal(await page.locator('.status-tab.selected').innerText(), '未完成');
+    await page.locator('.status-tab', { hasText: '全部谱面' }).click();
     await until(async () => (await rows(page).count()) === 12, 'first page');
     assert.equal(await page.locator('.pager-buttons span').innerText(), '1 / 2');
     const alpha = rows(page).filter({ hasText: 'Alpha Rhythm' });
@@ -73,6 +75,7 @@ const sections = {
     );
     assert.equal(app.api.last('/api/summary').query.get('difficulty'), '2', 'stats share filters');
     await button(page, '清除筛选').click();
+    assert.equal(await page.locator('.status-tab.selected').innerText(), '未完成', 'clear resets');
     await page.locator('.status-tab', { hasText: '已完成' }).click();
     await until(async () => (await rows(page).count()) === 4, 'completed tab');
     const stats = await page.locator('.stat-value').allInnerTexts();
@@ -80,7 +83,7 @@ const sections = {
   },
 
   async detail(app) {
-    const page = await app.open('/#ap');
+    const page = await app.open('/?view=list#ap');
     await rows(page).filter({ hasText: 'Charlie Step' }).click();
     await drawer(page).getByRole('heading', { name: 'Charlie Step' }).waitFor();
     assert(await button(drawer(page), '保存待核记录').isDisabled(), 'venue is required');
@@ -115,8 +118,16 @@ const sections = {
   },
 
   async completion(app) {
-    const page = await app.open('/?view=completion#ap');
+    // The home page defaults to the completion table filtered to unfinished charts.
+    const page = await app.open('/#ap');
     const tiles = page.locator('.completion-tile');
+    await until(async () => (await tiles.count()) === 11, 'unfinished tiles by default');
+    assert.equal(
+      await page.locator('.status-tab.selected').innerText(),
+      '未完成',
+      'unfinished tab is the default',
+    );
+    await page.locator('.status-tab', { hasText: '全部谱面' }).click();
     await until(async () => (await tiles.count()) === 15, 'completion tiles');
     assert.equal(await page.locator('.completion-group').count(), 13, 'grouped by constant');
     assert.match(await tiles.first().getAttribute('aria-label'), /Alpha Rhythm .* AP/);
@@ -126,7 +137,7 @@ const sections = {
     await button(drawer(page), '关闭').click();
     await button(page, '列表').click();
     await until(async () => (await rows(page).count()) === 12, 'back to list');
-    assert.equal(new URL(page.url()).searchParams.get('view'), null);
+    assert.equal(new URL(page.url()).searchParams.get('view'), 'list');
   },
 
   async matrix(app) {
@@ -175,8 +186,11 @@ const sections = {
     });
     await page.reload();
     await page.getByRole('link', { name: 'AP 图鉴' }).click();
-    await until(async () => (await rows(page).count()) === 9, 'list uses saved default range');
-    const query = app.api.last('/api/charts').query;
+    await until(
+      async () => app.api.last('/api/completion-table')?.query.get('constant_min') === '13.0',
+      'home table uses saved default range',
+    );
+    const query = app.api.last('/api/completion-table').query;
     assert.deepEqual([query.get('constant_min'), query.get('constant_max')], ['13.0', '14.0']);
     assert.equal(
       await page.getByRole('slider', { name: '最低定数' }).getAttribute('aria-valuenow'),
@@ -409,7 +423,7 @@ const sections = {
   },
 
   async mobile(app) {
-    const page = await app.open('/#ap', { width: 390, height: 844, mobile: true });
+    const page = await app.open('/?view=list#ap', { width: 390, height: 844, mobile: true });
     await rows(page).first().waitFor();
     assert(await noHorizontalOverflow(page), 'AP list fits 390px');
     const nav = page.getByRole('navigation', { name: '主导航' }).getByRole('link');
