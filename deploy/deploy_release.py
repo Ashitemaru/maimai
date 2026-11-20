@@ -511,14 +511,23 @@ class Deployer:
         return "deployed"
 
     def prune(self, keep):
-        """Keep the active and rollback releases and the newest deployment backups."""
-        for release in self.releases.iterdir():
-            if release.name not in keep and SHA.fullmatch(release.name) and release.is_dir():
-                shutil.rmtree(release)
+        """Keep the active and rollback releases and the newest deployment backups.
+
+        Best effort: the new release is already live, so a leftover directory (for
+        example files created by root) is logged instead of failing the deployment.
+        """
         backups = self.root / "backups"
         labels = sorted(p for p in backups.iterdir() if p.is_dir()) if backups.is_dir() else []
-        for old in labels[:-KEEP_BACKUPS]:
-            shutil.rmtree(old)
+        stale = [
+            release
+            for release in self.releases.iterdir()
+            if release.name not in keep and SHA.fullmatch(release.name) and release.is_dir()
+        ]
+        for path in stale + labels[:-KEEP_BACKUPS]:
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                log(f"Could not remove {path.name}: {exc.strerror}")
 
     def run(self):
         self.releases.mkdir(parents=True, exist_ok=True)
