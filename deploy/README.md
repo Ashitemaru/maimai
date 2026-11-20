@@ -2,8 +2,13 @@
 
 Deployment is push-triggered. On a push to main, the last CI job (`deploy`) runs after
 the `release` job and connects over SSH as `mai-deploy`. That key is limited to the
-forced command `ci-deploy.sh`, which starts `mai-journal-deploy.service` and prints its
-journal; the CI job fails when the deployment fails. There is no polling timer.
+forced command `ci-deploy.sh`. The job streams the published archive over that SSH
+connection, because downloads from GitHub to the server are slow; `ci_receive.py`
+stores it where the deployer resumes downloads, named by its SHA-256. The script then
+starts `mai-journal-deploy.service` and prints its journal; the CI job fails when the
+deployment fails. The deployer still fetches SHA256SUMS from the release and uses the
+uploaded file only when it matches, otherwise it downloads from GitHub as before.
+There is no polling timer.
 The release job only runs after every check job succeeded, so the deployer accepts the
 exact release tag `app-<40 lowercase hex SHA>` of current main as CI approval. The tag
 must resolve to that commit. Required release
@@ -46,8 +51,8 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
    unit adds production paths and reads the release SHA from `current/release.env`.
 5. Install the reviewed sudoers file at `/etc/sudoers.d/mai-journal`, root-owned
    0440, and validate with `visudo -cf`. It permits `maimai` only start/stop/restart of the
-   exact application service, and `mai-deploy` only starting the deployment unit and
-   reading its journal. The application unit's `NoNewPrivileges` prevents
+   exact application service, and `mai-deploy` only starting the deployment unit,
+   reading its journal and running `ci_receive.py` as `maimai`. The application unit's `NoNewPrivileges` prevents
    it from using sudo; its filesystem sandbox permits writes only to catalog and
    runtime. The deployment unit can write release/current/backup paths.
 6. Run `systemctl daemon-reload`, then `systemctl start mai-journal-deploy.service`.
@@ -57,7 +62,7 @@ pip options. CI must lint `deploy` and run `tests.test_deploy` alongside other t
    and remove its unit file.
 7. CI deploy access: create the user `mai-deploy` with a normal shell and no password
    (`useradd -m -s /bin/sh mai-deploy; passwd -l mai-deploy`). Install
-   `ci-deploy.sh` as `/opt/mai-journal/ci-deploy.sh`, root-owned 0755. Generate a
+   `ci-deploy.sh` and `ci_receive.py` into `/opt/mai-journal/`, root-owned 0755. Generate a
    dedicated key pair (`ssh-keygen -t ed25519 -N "" -f mai-deploy`) and put the public
    key into `~mai-deploy/.ssh/authorized_keys` as in `authorized_keys.example`. In the
    GitHub repository secrets set `DEPLOY_HOST`, `DEPLOY_SSH_KEY` (private key),

@@ -182,8 +182,15 @@ jobs:
     needs: release
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    permissions:
+      contents: read
     steps:
-      - name: Run the server deployer over SSH
+      - name: Download the published archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release download "app-$GITHUB_SHA" --pattern "mai-journal-$GITHUB_SHA.tar.gz"
+      - name: Upload the archive and run the server deployer over SSH
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -200,6 +207,8 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
           # The server key is restricted to a forced command; the remote command is ignored.
-          ssh -i ~/.ssh/deploy_key -p "${DEPLOY_PORT:-22}" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
-            "${DEPLOY_USER:-mai-deploy}@$DEPLOY_HOST" deploy
+          # GitHub downloads from the server are slow, so the archive travels on stdin.
+          { echo "$GITHUB_SHA"; cat "mai-journal-$GITHUB_SHA.tar.gz"; } |
+            ssh -i ~/.ssh/deploy_key -p "${DEPLOY_PORT:-22}" \
+              -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+              "${DEPLOY_USER:-mai-deploy}@$DEPLOY_HOST" deploy
