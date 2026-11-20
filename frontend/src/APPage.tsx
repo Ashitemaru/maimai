@@ -317,7 +317,6 @@ export function APPage({
               <div className="catalog-filters">
                 <select
                   aria-label="谱面难度"
-                  className="filter-select"
                   value={difficulty}
                   onChange={(e) => filter(setDifficulty, e.target.value)}
                 >
@@ -330,7 +329,6 @@ export function APPage({
                 </select>
                 <select
                   aria-label="登场版本"
-                  className="filter-select"
                   value={version}
                   onChange={(e) => filter(setVersion, e.target.value)}
                 >
@@ -363,7 +361,6 @@ export function APPage({
                 </select>
                 <select
                   id="chart-sort"
-                  className="filter-select"
                   aria-label="谱面排序"
                   value={sort}
                   onChange={(event) => filter(setSort, event.target.value)}
