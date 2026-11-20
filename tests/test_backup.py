@@ -102,7 +102,9 @@ class BackupTests(unittest.TestCase):
         directory = self.base / "backups"
         (directory / "repository").mkdir(parents=True)
         (directory / "repository/config").write_text("")
-        backups = Backups(self.root, directory, self.base / "password", runner=restic)
+        backups = Backups(
+            self.root, directory, self.base / "pw", runner=restic, system_root=self.system
+        )
         backups.backup()
         self.assertEqual([c[0] for c in restic.calls], ["backup", "check", "forget"])
         status = json.loads((directory / "status.json").read_text())

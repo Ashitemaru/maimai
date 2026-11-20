@@ -151,7 +151,9 @@ def verify(payload):
 
 
 class Backups:
-    def __init__(self, root, directory, password, *, restic="restic", runner=subprocess.run):
+    def __init__(
+        self, root, directory, password, *, restic="restic", runner=subprocess.run, system_root="/"
+    ):
         self.root = Path(root)
         self.directory = Path(directory)
         self.repository = self.directory / "repository"
@@ -160,6 +162,7 @@ class Backups:
         self.password = Path(password)
         self.restic_binary = restic
         self.runner = runner
+        self.system_root = Path(system_root)
 
     def restic(self, *arguments, cwd=None):
         command = [
@@ -192,7 +195,9 @@ class Backups:
             try:
                 shutil.rmtree(self.staging, ignore_errors=True)
                 self.staging.mkdir(mode=0o700)
-                manifest = capture(self.root, self.staging / "payload")
+                manifest = capture(
+                    self.root, self.staging / "payload", system_root=self.system_root
+                )
                 output = self.restic("backup", "--json", *RESTIC_SCOPE, "payload", cwd=self.staging)
                 lines = [json.loads(line) for line in output.splitlines() if line.strip()]
                 summary = next((v for v in lines if v.get("message_type") == "summary"), {})
