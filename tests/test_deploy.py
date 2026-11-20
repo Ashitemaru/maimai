@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import re
 import sqlite3
 import subprocess
 import tarfile
@@ -12,7 +13,7 @@ from unittest.mock import patch
 
 from deploy.ci_receive import receive
 from deploy.deploy_release import Deployer, DeployError, extract_archive, switch_current
-from scripts.package_release import package
+from scripts.package_release import is_release_source, package
 from tests.dependency_fixtures import dependency_files, write_bundle, write_files
 
 OLD, NEW, OTHER = "a" * 40, "b" * 40, "c" * 40
@@ -222,6 +223,19 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(set(tar.getnames()), expected)
         (self.root / "extracted").mkdir()
         extract_archive(archive, self.root / "extracted", NEW)
+
+    def test_every_script_the_backend_imports_is_packaged(self):
+        root = Path(__file__).resolve().parents[1]
+        imported = set()
+        for source in [*root.glob("backend/*.py"), *root.glob("scripts/*.py")]:
+            text = source.read_text()
+            imported |= set(re.findall(r"^\s*from scripts\.(\w+) import", text, re.M))
+            if source.parent.name == "scripts":
+                imported |= set(re.findall(r"^\s*from \.(\w+) import", text, re.M))
+        self.assertTrue(imported)
+        for name in sorted(imported):
+            with self.subTest(module=name):
+                self.assertTrue(is_release_source(Path(f"scripts/{name}.py")))
 
     def test_wheel_with_wrong_hash_is_rejected(self):
         (self.root / "release-dependencies/example-1.0.0-py3-none-any.whl").write_text("tampered")

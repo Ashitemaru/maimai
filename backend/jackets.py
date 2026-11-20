@@ -45,8 +45,9 @@ class JacketPreviews:
                 continue
             if not path.is_file():
                 continue
-            # ctime also invalidates replacements that deliberately preserve mtime.
-            identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            # Size and mtime only: snapshot copies hardlink jackets, which changes ctime
+            # and would invalidate every preview URL the browser already holds.
+            identity = (stat.st_size, stat.st_mtime_ns)
             revision = hashlib.sha256(repr((ENCODER_VERSION, identity)).encode()).hexdigest()[:24]
             return path, revision
         raise FileNotFoundError(filename)

@@ -19,16 +19,6 @@ if __package__ in (None, ""):
 
 from deploy.deploy_release import dependency_bundle  # noqa: E402
 
-CORE_SCRIPTS = {
-    "catalog_chart_compiler.py",
-    "catalog_pipeline.py",
-    "catalog_policy.py",
-    "catalog_record_review.py",
-    "catalog_versions.py",
-    "jp_versions.py",
-    "remy_html.py",
-    "remy_release.py",
-}
 REQUIRED_FILES = (
     "frontend/dist/index.html",
     "backend/app.py",
@@ -42,7 +32,8 @@ def is_release_source(path: Path) -> bool:
     if path.parts[0] == "backend":
         return len(path.parts) == 2 and path.suffix == ".py" and not path.name.startswith("test")
     if path.parts[0] == "scripts":
-        return len(path.parts) == 2 and path.name in CORE_SCRIPTS
+        # Every top-level module: the backend imports catalog modules by name.
+        return len(path.parts) == 2 and path.suffix == ".py" and not path.name.startswith("test")
     return (
         path.parts[0] == "deploy"
         and path.suffix == ".py"
