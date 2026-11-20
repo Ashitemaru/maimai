@@ -14,37 +14,12 @@ from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlsplit
 
-_VERSIONS = (
-    "maimai",
-    "maimai PLUS",
-    "GreeN",
-    "GreeN PLUS",
-    "ORANGE",
-    "ORANGE PLUS",
-    "PiNK",
-    "PiNK PLUS",
-    "MURASAKi",
-    "MURASAKi PLUS",
-    "MiLK",
-    "MiLK PLUS",
-    "FiNALE",
-    "DX",
-    "DX PLUS",
-    "Splash",
-    "Splash PLUS",
-    "UNiVERSE",
-    "UNiVERSE PLUS",
-    "FESTiVAL",
-    "FESTiVAL PLUS",
-    "BUDDiES",
-    "BUDDiES PLUS",
-    "PRiSM",
-    "PRiSM PLUS",
-    "CiRCLE",
-    "CiRCLE PLUS",
-    "MAGiCAL",
-    "MAGiCAL PLUS",
-)
+try:
+    from .jp_versions import JP_VERSION_NAMES
+except ImportError:
+    from jp_versions import JP_VERSION_NAMES
+
+_VERSIONS = JP_VERSION_NAMES
 _CANONICAL = {v.casefold(): v for v in _VERSIONS}
 _OLD_VERSIONS = set(_VERSIONS[:13])
 _NEW_SONGS = {"new songs", "new songs / dx charts"}

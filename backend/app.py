@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from scripts.jp_versions import JP_VERSION_NAMES
+
 from .ap_records import RecordConflictError
 from .auth import (
     AuthConfig,
@@ -49,36 +51,7 @@ from .venue_locations import (
 )
 from .venue_summary import summarize_venues
 
-VERSION_ORDER = (
-    "maimai",
-    "maimai PLUS",
-    "GreeN",
-    "GreeN PLUS",
-    "ORANGE",
-    "ORANGE PLUS",
-    "PiNK",
-    "PiNK PLUS",
-    "MURASAKi",
-    "MURASAKi PLUS",
-    "MiLK",
-    "MiLK PLUS",
-    "FiNALE",
-    "DX",
-    "DX PLUS",
-    "Splash",
-    "Splash PLUS",
-    "UNiVERSE",
-    "UNiVERSE PLUS",
-    "FESTiVAL",
-    "FESTiVAL PLUS",
-    "BUDDiES",
-    "BUDDiES PLUS",
-    "PRiSM",
-    "PRiSM PLUS",
-    "CiRCLE",
-    "CiRCLE PLUS",
-    "MAGiCAL",
-)
+VERSION_ORDER = JP_VERSION_NAMES
 
 ChartSort = Literal[
     "constant_desc",

@@ -15,38 +15,14 @@ import sys
 import unicodedata
 from pathlib import Path
 
+try:
+    from .jp_versions import JP_VERSIONS
+except ImportError:
+    from jp_versions import JP_VERSIONS
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = ROOT / "data" / "catalog"
-JP_VERSION_BOUNDARIES = [
-    (10000, "maimai"),
-    (11000, "maimai PLUS"),
-    (12000, "GreeN"),
-    (13000, "GreeN PLUS"),
-    (14000, "ORANGE"),
-    (15000, "ORANGE PLUS"),
-    (16000, "PiNK"),
-    (17000, "PiNK PLUS"),
-    (18000, "MURASAKi"),
-    (18500, "MURASAKi PLUS"),
-    (19000, "MiLK"),
-    (19500, "MiLK PLUS"),
-    (19900, "FiNALE"),
-    (20000, "DX"),
-    (20500, "DX PLUS"),
-    (21000, "Splash"),
-    (21500, "Splash PLUS"),
-    (22000, "UNiVERSE"),
-    (22500, "UNiVERSE PLUS"),
-    (23000, "FESTiVAL"),
-    (23500, "FESTiVAL PLUS"),
-    (24000, "BUDDiES"),
-    (24500, "BUDDiES PLUS"),
-    (25000, "PRiSM"),
-    (25500, "PRiSM PLUS"),
-    (26000, "CiRCLE"),
-    (26500, "CiRCLE PLUS"),
-    (27000, "MAGiCAL"),
-]
+JP_VERSION_BOUNDARIES = JP_VERSIONS
 
 
 def load(path: Path):

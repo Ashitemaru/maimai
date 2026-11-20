@@ -487,6 +487,43 @@ class PipelineTests(unittest.TestCase):
         validate(self.stage)
         self.assertTrue(all("sega.jp" not in url for url in self.calls))
 
+    def test_unknown_jp_version_waits_for_a_decision_then_publishes(self):
+        from scripts.catalog_chart_compiler import load_record_review, validate_chart_decisions
+        from tests.test_catalog_versions import arcade
+
+        self.responses["arcade_songs.json"] = arcade(title="Song 1", version="NEXT VERSION")
+        self.prepare()
+        report = build(self.stage)
+        self.assertEqual(report["counts"]["pending"], 1)
+        self.assertNotIn("Song 1", [c["title"] for c in self.catalog()["charts"]])
+        review = load_record_review(self.stage)
+        record = next(r for r in review["records"] if r["status"] == "pending")
+        field = next(f for f in record["fields"] if f["field_key"] == "jp_release_version")
+        self.assertEqual([o["value"] for o in field["options"]], ["NEXT VERSION"])
+        self.assertIn("unknown_jp_version", field["reasons"])
+        selected = [
+            {"field_key": f["field_key"], "option_id": f["options"][0]["option_id"]}
+            for f in record["fields"]
+        ]
+        decisions = validate_chart_decisions(review, record["id"], record["difficulty"], selected)
+        atomic_json(
+            self.stage / "catalog_adjudications.json",
+            {"schema_version": 2, "revision": 1, "decisions": decisions},
+        )
+        build(self.stage)
+        chart = next(c for c in self.catalog()["charts"] if c["title"] == "Song 1")
+        self.assertEqual(
+            (chart["jp_release_version"], chart["release_status"]), ("NEXT VERSION", "manual")
+        )
+
+    def test_known_version_list_has_magical_plus_once(self):
+        from scripts.jp_versions import JP_VERSION_NAMES, JP_VERSIONS
+
+        self.assertEqual(JP_VERSION_NAMES[-1], "MAGiCAL PLUS")
+        self.assertEqual(len(set(JP_VERSION_NAMES)), len(JP_VERSION_NAMES))
+        codes = [code for code, _ in JP_VERSIONS]
+        self.assertEqual(codes, sorted(set(codes)))
+
     def test_arcade_empty_fresh_response_reuses_cache(self):
         from tests.test_catalog_versions import arcade
 

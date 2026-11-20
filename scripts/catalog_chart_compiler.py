@@ -254,7 +254,8 @@ def compile_charts(lxns, legacy_catalog, legacy_review, document):
                 values = {
                     fingerprint({"value": o["value"], "date": o.get("date")}) for o in options
                 }
-                if len(values) <= 1:
+                unknown_version = is_jp and "unknown_jp_version" in source_field.get("reasons", [])
+                if len(values) <= 1 and not (unknown_version and options):
                     if options and not is_jp and not any(o["source"] == "lxns" for o in options):
                         supplied = options[0]
                         flat[field] = deepcopy(supplied["value"])

@@ -10,38 +10,14 @@ from copy import deepcopy
 from datetime import date
 from urllib.parse import urlsplit
 
+try:
+    from .jp_versions import JP_VERSION_NAMES
+except ImportError:
+    from jp_versions import JP_VERSION_NAMES
+
 ARCADE_URL = "https://dp4p6x0xfi5o9.cloudfront.net/maimai/data.json"
 ORDINARY = {"basic": 0, "advanced": 1, "expert": 2, "master": 3}
-KNOWN_VERSIONS = (
-    "maimai",
-    "maimai PLUS",
-    "GreeN",
-    "GreeN PLUS",
-    "ORANGE",
-    "ORANGE PLUS",
-    "PiNK",
-    "PiNK PLUS",
-    "MURASAKi",
-    "MURASAKi PLUS",
-    "MiLK",
-    "MiLK PLUS",
-    "FiNALE",
-    "DX",
-    "DX PLUS",
-    "Splash",
-    "Splash PLUS",
-    "UNiVERSE",
-    "UNiVERSE PLUS",
-    "FESTiVAL",
-    "FESTiVAL PLUS",
-    "BUDDiES",
-    "BUDDiES PLUS",
-    "PRiSM",
-    "PRiSM PLUS",
-    "CiRCLE",
-    "CiRCLE PLUS",
-    "MAGiCAL",
-)
+KNOWN_VERSIONS = JP_VERSION_NAMES
 
 
 def fingerprint(value):
@@ -427,7 +403,12 @@ def resolve_field_versions(lxns, arcade, remy_records, remy_conflicts=None, deci
                     candidate
                 )
         release = empty_release()
-        if len(values) == 1:
+        unknown = sorted({v for v, _ in values if v not in KNOWN_VERSIONS})
+        if unknown:
+            # A version missing from jp_versions.py is never published automatically.
+            release["release_status"] = "conflict"
+            item["status"], item["reasons"] = "conflict", ["unknown_jp_version"]
+        elif len(values) == 1:
             evidence = next(iter(values.values()))
             selected = min(
                 evidence, key=lambda c: (c["source"], c["external_id"], c["evidence_fingerprint"])
